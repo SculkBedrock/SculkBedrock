@@ -132,6 +132,7 @@ console.world.exit_flush_unconfirmed: "§cWorld error >> §eexit flush not fully
 console.world.dirty_ack: "§eWorld >> §adirty writeback acks: saved=%{saved}, failed=%{failed}, superseded=%{superseded}§r"
 console.world.dirty_overdue: "§eWorld >> §adirty writeback age threshold exceeded: newly_overdue=%{new}, total_overdue=%{total}, oldest=%{oldest}, keys=%{keys}; storage calls are not canceled§r"
 console.world.cwd_fail: "§cWorld error >> §efailed to resolve current directory: %{error}§r"
+console.world.waiting_for_world: "§eWorld >> §ano overworld found, startup paused >> put the world folder into %{dir} (the overworld folder's levelname.txt must contain “%{name}”; currently found: %{found}), startup resumes automatically§r"
 console.world.chunk_workers_fail: "§cWorld error >> §efailed to start chunk workers: %{error}§r"
 console.world.writeback_workers_fail: "§cWorld error >> §efailed to start dirty writeback workers: %{error}§r"
 console.world.spillover_window: "§eWorld >> §aspillover target hit its %{max}-cell arbitration window: further positions re-queue and apply in operation-id order next round (total_deferred=%{deferred}, target=%{target})§r"

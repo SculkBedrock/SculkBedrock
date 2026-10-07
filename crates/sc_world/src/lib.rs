@@ -210,6 +210,68 @@ fn process_chunk_writebacks(world: World) {
     }
 }
 
+/// 是否已有与主世界名匹配的世界（世界身份取各世界目录下
+/// `levelname.txt` 内容，缺失时为 `SculkBedrock Level`）。
+fn has_overworld_name(worlds: &[crate::world::MinecraftWorld], overworld_name: &str) -> bool {
+    worlds
+        .iter()
+        .any(|world| world.world_name == overworld_name)
+}
+
+/// 轮询 `worlds/` 直到出现主世界；启动暂停在此处，不退出进程。
+///
+/// 返回 `Some` 时必含主世界；等待期间收到关闭信号返回 `None`
+/// （调用方发 SCExit 走正常退出）。每 30s 重打一次提醒，
+/// 提醒里带出已发现的世界名，方便用户对照改名。
+fn wait_for_overworld(
+    loader: &WorldDirectoryLoader,
+    overworld_name: &str,
+) -> Option<Vec<crate::world::MinecraftWorld>> {
+    const POLL_INTERVAL: Duration = Duration::from_secs(1);
+    const REMINDER_EVERY_SECS: u64 = 30;
+    const MAX_LISTED_WORLDS: usize = 5;
+
+    let prompt = |found: &[String]| {
+        let mut listed = found.iter().take(MAX_LISTED_WORLDS).cloned().collect::<Vec<_>>();
+        if found.len() > MAX_LISTED_WORLDS {
+            listed.push("…".to_string());
+        }
+        log::warn!(
+            "{}",
+            t_log!(
+                "console.world.waiting_for_world",
+                dir = loader.dir().display(),
+                name = overworld_name,
+                found = if listed.is_empty() {
+                    "-".to_string()
+                } else {
+                    listed.join(", ")
+                }
+            )
+        );
+    };
+    prompt(&[]);
+    let mut waited_secs = 0u64;
+    loop {
+        std::thread::sleep(POLL_INTERVAL);
+        if sc_utils::event::shutdown_requested() {
+            return None;
+        }
+        waited_secs += 1;
+        let worlds = loader.get_worlds();
+        if has_overworld_name(&worlds, overworld_name) {
+            return Some(worlds);
+        }
+        if waited_secs % REMINDER_EVERY_SECS == 0 {
+            let found = worlds
+                .iter()
+                .map(|world| world.world_name.clone())
+                .collect::<Vec<_>>();
+            prompt(&found);
+        }
+    }
+}
+
 fn load_world(world: World, server_properties: Res<ServerProperties>) {
     //world
     let start = Local::now().timestamp_millis();
@@ -226,12 +288,28 @@ fn load_world(world: World, server_properties: Res<ServerProperties>) {
     };
     current_dir.push("worlds");
     let loader = WorldDirectoryLoader::new(current_dir);
-    let worlds = loader.get_worlds();
-    let mut world_manager = MinecraftWorldManager::new();
-
     let overworld_name = server_properties.overworld_name.clone();
     let the_nether_name = server_properties.the_nether_name.clone();
     let the_end_name = server_properties.the_end_name.clone();
+    let mut worlds = loader.get_worlds();
+    // 还没有主世界（全新部署）：暂停启动并等待放入，而不是直接退出——
+    // 这里退出在用户看来就是闪退，且每次都要重启才能重试。
+    if !has_overworld_name(&worlds, &overworld_name) {
+        let Some(waited) = wait_for_overworld(&loader, &overworld_name) else {
+            // 等待期间收到 Ctrl+C/关闭信号：走正常 SCExit 路径退出，
+            // 主循环启动后 Last 系统会做优雅收尾。
+            world.send_event(SCExit::new(
+                SCExitReason::Error(Box::new(Error::new(
+                    ErrorKind::Interrupted,
+                    "world wait interrupted",
+                ))),
+                SCExitType::Shutdown,
+            ));
+            return;
+        };
+        worlds = waited;
+    }
+    let mut world_manager = MinecraftWorldManager::new();
 
     let mut has_overworld = false;
 
@@ -255,6 +333,8 @@ fn load_world(world: World, server_properties: Res<ServerProperties>) {
     }
 
     // Shut the server down when no overworld is found.
+    // (Unreachable after the wait above, which only returns with an
+    // overworld present; kept as a guard.)
     if !has_overworld {
         world.send_event(SCExit::new(
             SCExitReason::Error(Box::new(Error::new(
@@ -316,4 +396,38 @@ fn load_world(world: World, server_properties: Res<ServerProperties>) {
         "{}",
         t_log!("console.level.load", count = worlds.len(), ms = end - start)
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_overworld_name;
+    use crate::manager::MinecraftWorldId;
+    use crate::storage::{EmptyWorldStorage, WorldChunkProvider};
+    use crate::world::MinecraftWorld;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    fn test_world(name: &str) -> MinecraftWorld {
+        MinecraftWorld::new(
+            MinecraftWorldId::random(),
+            name.to_string(),
+            PathBuf::from(name),
+            sc_utils::world::data::MinecraftWorldData::default(),
+            WorldChunkProvider::new(Arc::new(EmptyWorldStorage)),
+        )
+    }
+
+    /// 等待恢复条件：主世界名匹配即继续，空目录/名字对不上就一直等。
+    #[test]
+    fn overworld_match_resumes_but_empty_or_mismatched_names_keep_waiting() {
+        assert!(!has_overworld_name(&[], "OverWorld"));
+        assert!(has_overworld_name(&[test_world("OverWorld")], "OverWorld"));
+        assert!(!has_overworld_name(&[test_world("SculkBedrock Level")], "OverWorld"));
+        assert!(has_overworld_name(
+            &[test_world("SculkBedrock Level"), test_world("OverWorld")],
+            "OverWorld"
+        ));
+        // 大小写/前后空格不算匹配（与启动期分类逻辑一致的严格相等）。
+        assert!(!has_overworld_name(&[test_world("overworld")], "OverWorld"));
+    }
 }

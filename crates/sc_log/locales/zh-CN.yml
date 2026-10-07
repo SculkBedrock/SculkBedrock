@@ -134,6 +134,7 @@ console.world.exit_flush_unconfirmed: "§c世界错误 >> §e退出写回未完�
 console.world.dirty_ack: "§e世界 >> §a脏区块写回确认: saved=%{saved}, failed=%{failed}, superseded=%{superseded}§r"
 console.world.dirty_overdue: "§e世界 >> §a脏区块写回超时阈值:新增过期=%{new}, 总过期=%{total}, 最老=%{oldest}, keys=%{keys};存储调用不取消§r"
 console.world.cwd_fail: "§c世界错误 >> §e无法解析当前目录: %{error}§r"
+console.world.waiting_for_world: "§e世界 >> §a未发现主世界，启动已暂停 >> 请将世界文件夹放入 %{dir}（主世界文件夹内 levelname.txt 内容须为“%{name}”；当前已发现：%{found}），放入后自动继续§r"
 console.world.chunk_workers_fail: "§c世界错误 >> §e区块 worker 启动失败: %{error}§r"
 console.world.writeback_workers_fail: "§c世界错误 >> §e脏区块写回 worker 启动失败: %{error}§r"
 console.world.spillover_window: "§e世界 >> §a溢出列达到 %{max} 格仲裁窗口:其余位置重排队，下轮按 operation-id 顺序应用(总延迟=%{deferred}, 目标=%{target})§r"

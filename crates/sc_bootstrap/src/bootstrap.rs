@@ -12,6 +12,7 @@ static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// Signal handler: only sets the atomic flag (async-signal-safe; remaining logic runs in the main loop).
 extern "C" fn handle_shutdown_signal(_signal: libc::c_int) {
     SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
+    sc_utils::event::note_shutdown_requested();
 }
 use chrono::Local;
 use log::{error, info, warn, LevelFilter};

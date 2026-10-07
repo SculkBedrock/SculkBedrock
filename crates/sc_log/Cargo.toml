@@ -6,6 +6,9 @@ edition = "2021"
 [dependencies]
 rust-i18n = "3"
 rust-i18n-macro = "=3.0.0"
+# 与 macro 配对的 support：3.1.5 起 `load_locales` 改返回 BTreeMap，
+# 与 macro 3.0.0 要的 HashMap 签名冲突，升级即全仓无法编译，钉死。
+rust-i18n-support = "=3.1.2"
 sc_log_macros = { path = "../sc_log_macros" }
 chrono = "0.4"
 log = "0.4"

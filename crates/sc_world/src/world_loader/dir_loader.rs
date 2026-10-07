@@ -14,6 +14,11 @@ impl WorldDirectoryLoader {
             dir_path: dir_path.as_ref().to_path_buf(),
         }
     }
+
+    /// 被扫描的世界根目录（等待提示显示用）。
+    pub fn dir(&self) -> &Path {
+        &self.dir_path
+    }
 }
 
 impl WorldLoaderTrait for WorldDirectoryLoader {
