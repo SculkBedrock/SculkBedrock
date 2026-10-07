@@ -1,0 +1,20 @@
+[package]
+name = "sc_vanilla_overworld"
+version = "0.1.0"
+edition = "2021"
+description = "sc_vanilla 主世界地形生成器（in-process Rust 插件：Java 版风格 Perlin 噪声地形，方块 id 来自核心调色板）"
+
+[lib]
+# rlib：供 sc_network 的 chunk_payload_validator 测试以 dev-dependency 链接；
+# cdylib：版本包插件打包产物。
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+sc_plugin = { path = "../../../sc_plugin" }
+sc_ecs = { path = "../../../sc_ecs" }
+sc_world = { path = "../../../sc_world" }
+sc_utils = { path = "../../../sc_utils" }
+sc_packloader = { path = "../../../sc_packloader" }
+sc_block = { path = "../../../sc_block" }
+sc_log = { path = "../../../sc_log" }
+log = "0.4"

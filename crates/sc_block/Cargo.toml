@@ -1,0 +1,21 @@
+[package]
+name = "sc_block"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sc_ecs = { path = "../sc_ecs" }
+sc_world = { path = "../sc_world" }
+sc_command = { path = "../sc_command" }
+sc_log = { path = "../sc_log" }
+sc_utils = { path = "../sc_utils" }
+sc_binary = { path = "../sc_binary" }
+sc_nbt = { path = "../sc_nbt" }
+sc_packloader = { path = "../sc_packloader" }
+log = "0.4.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.43.0", features = ["sync"] }
+
+[dev-dependencies]
+zip = "2"

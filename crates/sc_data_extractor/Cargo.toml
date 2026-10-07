@@ -1,0 +1,16 @@
+[package]
+name = "sc_data_extractor"
+version = "0.1.0"
+edition = "2021"
+description = "离线数据转换工具：把生态导出物（Nukkit block_palette_*.nbt 等）转换为 SC 规范数据文件"
+
+[dependencies]
+flate2 = "1"
+serde_json = "1"
+sc_binary = { path = "../sc_binary" }
+sc_nbt = { path = "../sc_nbt" }
+sc_packloader = { path = "../sc_packloader" }
+
+[dev-dependencies]
+sc_block = { path = "../sc_block" }
+zip = "2"

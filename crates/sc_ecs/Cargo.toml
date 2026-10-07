@@ -1,0 +1,21 @@
+[package]
+name = "sc_ecs"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "An no lock asynchronous ECS framework"
+keywords = ["ECS", "Asynchronous", "Entity", "Component", "System"]
+
+[dependencies]
+sc_ecs_macros = { path = "sc_ecs_macros", version = "0.1.0" }
+sc_log = { path = "../sc_log" }
+tokio = { version = "1.43.0", features = ["full"] }
+parking_lot = { version = "0.12", features = ["arc_lock", "send_guard"] }
+indexmap = "2.7.0"
+ahash = "*"
+log = "*"
+anyhow = "*"
+lazy_static = "1.5.0"
+flume = "*"
+sha2 = "0.10.8"
+

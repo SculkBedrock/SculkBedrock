@@ -1,0 +1,45 @@
+# Console chrome (TUI + welcome + pre-TUI notices), Chinese (Simplified).
+#
+# 约定（`config::tests` 检查）：
+# - 每个键必须在所有语言文件中存在（不允许 raw key 漏到界面上）；
+# - `%{n}` / `%{v}` 为插值标记（原生 `t!` 变量），带参数的模板恰好一个，
+#   不带参数的没有；
+# - 所有语言的 `tui.search_prefix` 必须恰好 6 显示列（`SEARCH_PREFIX_W` 布局）。
+#
+# 加语言：复制本文件为 `locales/{code}.yml` 翻译值（保留键和 `%{…}` 标记），
+# 把 code 加到 `config.rs` 的 `SUPPORTED_LANGS`。缺键会回退到 en-US，
+# 但完整性测试会失败——请翻全。
+_version: 1
+tui.language_name: "中文（简体）"
+tui.hint_back_to_bottom: "按 Esc 回到底部"
+tui.exit_confirm: "再按一次 Ctrl+C 关闭服务端"
+tui.hint_keys: "TAB 补全 · ↑↓ 历史/选择 · 滚轮/PgUp/PgDn 滚动 · Ctrl+C 停止 · Ctrl+D 清空日志"
+tui.search_prefix: "查找: "
+tui.search_placeholder: "输入关键字…"
+tui.search_no_match: "无匹配"
+tui.players_title: "在线玩家(%{n})"
+tui.players_empty: "暂无玩家在线"
+tui.term_too_small: "终端窗口过小"
+tui.new_logs: "▼新增%{n}条日志"
+tui.alias_tag: "[别名]"
+tui.no_packs: "无版本包"
+tui.status_complete: "补全:%{n}"
+tui.status_reviewing: " · ▲回看中(%{n})"
+tui.status_dropped: " · !丢弃日志%{n}"
+tui.status_locked: " · 锁定"
+tui.server_starting: "服务端正在启动中..."
+tui.input_placeholder: "输入命令…（Tab 补全 · ↑↓ 历史 · 回车发送）"
+tui.console_ready: "§a控制台 GUI 已就绪 §7— 输入 §fhelp §7查看命令，§fTab §7补全，§f↑↓ §7翻历史"
+tui.copy_ok: "已复制%{n}个字符到剪贴板"
+tui.copy_fail_clipboard: "复制失败：无可用剪贴板"
+tui.copy_fail_write: "复制失败：无法写入终端"
+tui.copy_fail_spawn: "复制失败：无法启动复制线程"
+tui.input_truncated: "输入超长，已截断至 %{n} 字符"
+tui.queue_full: "命令队列已满，本行被丢弃（服务端繁忙，稍后重试）"
+tui.plain_ready: "[sc_console] 纯文本控制台已就绪（输入命令后回车执行，Ctrl+D 结束）"
+tui.not_tty: "[sc_console] 非 TTY 环境，GUI 不可用，回退 plain 模式"
+tui.take_over_fail: "[sc_console] 终端接管失败，回退为 plain 输出"
+tui.unknown_console: "[sc_console] 未知 SC_CONSOLE=%{v}，使用 auto"
+tui.unknown_boot: "[sc_console] 未知 SC_CONSOLE_BOOT_ANIM=%{v}，保持默认（开）"
+tui.unknown_welcome: "[sc_console] 未知 SC_CONSOLE_WELCOME=%{v}，保持默认（开）"
+tui.unknown_lang: "[sc_console] 未知 SC_CONSOLE_LANG=%{v}，使用 en-US"

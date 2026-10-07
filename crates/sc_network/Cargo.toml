@@ -1,0 +1,45 @@
+[package]
+name = "sc_network"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sc_ecs = { path = "../sc_ecs" }
+sc_raknet = { path = "../sc_raknet" }
+sc_utils = { path = "../sc_utils" }
+sc_log = { path = "../sc_log" }
+sc_binary = { path = "../sc_binary" }
+sc_nbt = { path = "../sc_nbt" }
+sc_network_macros = { path = "sc_network_macros" }
+sc_packloader = { path = "../sc_packloader" }
+sc_entity = { path = "../sc_entity" }
+sc_game = { path = "../sc_game" }
+sc_eventbus = { path = "../sc_eventbus" }
+sc_world = { path = "../sc_world" }
+sc_command = { path = "../sc_command" }
+sc_block = { path = "../sc_block" }
+sc_item = { path = "../sc_item" }
+sc_recipe = { path = "../sc_recipe" }
+parking_lot = { version = "0.12", features = ["arc_lock", "send_guard"] }
+log = "*"
+tokio = { version = "1.43.0", features = ["rt", "sync", "macros", "io-util", "time"] }
+uuid = { version = "1.11.0", features = ["v4", "v3"] }
+serde = { version = "1.0.203", features = ["derive"] }
+serde_json = "1.0.133"
+jwt = "0.16.0"
+jsonwebtoken = "9.3.0"
+p384 = { version = "*", features = ["arithmetic", "ecdh", "pkcs8"] }
+aes = "0.8"
+base64 = "*"
+rand = "0.8.5"
+sha2 = "0.10.8"
+hmac = "0.12.0"
+flate2 = "1.0"
+snap = "*"
+async-trait = "*"
+lazy_static = "*"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+md-5 = "0.10"
+[dev-dependencies]
+sc_vanilla_overworld = { path = "../sc_vanilla/crates/overworld_generator" }
+zip = "*"

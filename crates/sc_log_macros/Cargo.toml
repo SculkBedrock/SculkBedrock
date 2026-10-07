@@ -1,0 +1,8 @@
+[package]
+name = "sc_log_macros"
+version = "0.1.0"
+edition = "2021"
+description = "sc_log 的编译期宏：把字符串字面量里的 Minecraft § 码转为 ANSI 转义序列（零依赖 proc-macro）"
+
+[lib]
+proc-macro = true

@@ -1,0 +1,435 @@
+//! # Binary Util
+//! A panic-free way to read and write binary data over the wire.
+//!
+//! BinaryUtils provides the following features:
+//! * [`sc_binary::io`], to read and write to streams manually.
+//! * [`sc_binary::interfaces`], to allow automation of reading data structures.
+//! * [`sc_binary::BinaryIo`], to automatically implement [`sc_binary::interfaces::Reader`]
+//!   and [`sc_binary::interfaces::Writer`] .
+//! * [`sc_binary::types`] for reading and writing non-primitive types like `u24` and `varint`.
+//!
+//! [`sc_binary::io`]: io
+//! [`sc_binary::interfaces`]: crate::interfaces
+//! [`sc_binary::BinaryIo`]: crate::BinaryIo
+//! [`sc_binary::interfaces::Reader`]: crate::interfaces::Reader
+//! [`sc_binary::interfaces::Writer`]: crate::interfaces::Writer
+//! [`sc_binary::types`]: crate::types
+//!
+//! <style>
+//!   .warning2 {
+//!     background: rgba(255,76,76,0.34) !important;
+//!     padding: 0.75em;
+//!     border-left: 2px solid #fc0f0f;
+//!   }
+//!
+//!    .warning2 code {
+//!         background: rgba(96,37,37,0.64) !important;
+//!     }
+//! </style>
+//! <div class="warning2">
+//!     <strong>v0.4.0</strong> is the next major release of Binary Utils and will contain breaking changes.
+//!     <br>
+//!     These changes include:
+//!     <ul>
+//!        <li>
+//!             Removal of the <code>Streamable</code> trait in favor of
+//!             <code>sc_binary::io::Reader</code> and <code>sc_binary::io::Writer</code>.
+//!         </li>
+//!        <li>
+//!             Removal of the <code>Error</code> module in favor of
+//!             <code>std::io::Error</code>.
+//!         </li>
+//!     </ul>
+//! </div>
+//!
+//! # Getting Started
+//! Binary Utils is available on [crates.io](https://crates.io/crates/sc_binary), add the following to your `Cargo.toml`:
+//! ```toml
+//! [dependencies]
+//! sc_binary = "0.3.4"
+//! ```
+//!
+//! Optionally, if you wish to remove the `ecs_macros` feature, you can add the following to your `Cargo.toml`:
+//! ```toml
+//! [dependencies]
+//! sc_binary = { version = "0.3.4", default-features = false }
+//! ```
+//!
+//! # Binary IO
+//! The [`io`] module provides a way to contingiously write and read binary data with the garauntees of being panic-free.
+//! This module provides two structs, [`ByteReader`] and [`ByteWriter`], which are both wrappers
+//! around [`bytes::Buf`] and [`bytes::BufMut`] respectively.
+//!
+//! Generally, you will want to use [`ByteReader`] and [`ByteWriter`] when you are reading and writing binary data manually.
+//!
+//! **Read Example:**
+//!
+//! The following example shows how to read a varint from a stream:
+//! ```no_run
+//! use sc_binary::io::ByteReader;
+//!
+//! const BUFFER: &[u8] = &[255, 255, 255, 255, 7]; // 2147483647
+//!
+//! fn main() {
+//!     let mut buf = ByteReader::from(&BUFFER[..]);
+//!     buf.read_var_u32().unwrap();
+//! }
+//! ```
+//!
+//! **Write Example:**
+//!
+//! The following is an example of how to write a string to a stream:
+//! ```no_run
+//! use sc_binary::io::ByteWriter;
+//!
+//! fn main() {
+//!     let mut buf = ByteWriter::new();
+//!     buf.write_string("Hello levels!");
+//! }
+//! ```
+//!
+//! **Real-levels example:**
+//!
+//! A more real-levels use-case of this module could be a simple pong server,
+//! where you have two packets, `Ping` and `Pong`, that respectively get relayed
+//! over udp.
+//! This is an example using both [`ByteReader`] and [`ByteWriter`] utilizing [`std::net::UdpSocket`]
+//! to send and receive packets.
+//! ```ignore
+//! use sc_binary::io::{ByteReader, ByteWriter};
+//! use std::net::UdpSocket;
+//!
+//! pub struct PingPacket {
+//!     pub time: u64
+//! }
+//!
+//! pub struct PongPacket {
+//!     pub time: u64,
+//!     pub ping_time: u64
+//! }
+//!
+//! fn main() -> std::io::Result<()> {
+//!     let socket = UdpSocket::bind("127.0.0.1:5000")?;
+//!     let mut buf = [0; 1024];
+//!
+//!     loop {
+//!         let (amt, src) = socket.recv_from(&mut buf)?;
+//!         let mut buf = ByteReader::from(&buf[..amt]);
+//!
+//!         match buf.read_u8()? {
+//!             0 => {
+//!                 let ping = PingPacket {
+//!                     time: buf.read_var_u64()?
+//!                 };
+//!
+//!                 println!("Received ping from {}", src);
+//!
+//!                 let mut writer = ByteWriter::new();
+//!                 let pong = PongPacket {
+//!                     time: std::time::SystemTime::now()
+//!                             .duration_since(
+//!                                 std::time::UNIX_EPOCH
+//!                             )
+//!                             .unwrap()
+//!                             .as_millis() as u64,
+//!                     ping_time: ping.time
+//!                 };
+//!
+//!                 // Write pong packet
+//!                 writer.write_u8(1);
+//!                 writer.write_var_u64(pong.time);
+//!                 writer.write_var_u64(pong.ping_time);
+//!                 socket.send_to(writer.as_slice(), src)?;
+//!             },
+//!             1 => {
+//!                 let pong = PongPacket {
+//!                     time: buf.read_var_u64()?,
+//!                     ping_time: buf.read_var_u64()?
+//!                 };
+//!                 println!(
+//!                     "Received pong from {} with ping time of {}ms",
+//!                     src,
+//!                     pong.time - pong.ping_time
+//!                 );
+//!             }
+//!             _ => {
+//!                 println!("Received unknown packet from {}", src);
+//!             }
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! [`io`]: crate::io
+//! [`ByteReader`]: crate::io::ByteReader
+//! [`ByteWriter`]: crate::io::ByteWriter
+//! [`bytes::Buf`]: bytes::Buf
+//! [`bytes::BufMut`]: bytes::BufMut
+//! [`std::net::UdpSocket`]: std::net::UdpSocket
+//!
+//! # Interfaces
+//! The [`interfaces`] module provides a way to implement reading and writing binary data with
+//! two traits, [`Reader`] and [`Writer`].
+//!
+//! Generally, you will refer to using [`BinaryIo`] when you are implementing or enum; However in the
+//! scenario you are implementing a type that may not be compatible with [`BinaryIo`], you can use
+//! these traits instead.
+//!
+//! **Example:**
+//! The following example implements the [`Reader`] and [`Writer`] traits for a `HelloPacket` allowing
+//! it to be used with [`BinaryIo`]; this example also allows you to read and write the packet with an
+//! easier convention.
+//!
+//! ```ignore
+//! use sc_binary::interfaces::{Reader, Writer};
+//! use sc_binary::io::{ByteReader, ByteWriter};
+//!
+//! pub struct HelloPacket {
+//!     pub name: String,
+//!     pub age: u8,
+//!     pub is_cool: bool,
+//!     pub friends: Vec<String>
+//! }
+//!
+//! impl Reader<HelloPacket> for HelloPacket {
+//!     fn read(buf: &mut ByteReader) -> std::io::Result<Self> {
+//!         Ok(Self {
+//!             name: buf.read_string()?,
+//!             age: buf.read_u8()?,
+//!             is_cool: buf.read_bool()?,
+//!             friends: Vec::<String>::read(buf)?
+//!         })
+//!     }
+//! }
+//!
+//! impl Writer<HelloPacket> for HelloPacket {
+//!     fn write(&self, buf: &mut ByteWriter) -> std::io::Result<()> {
+//!         buf.write_string(&self.name);
+//!         buf.write_u8(self.age);
+//!         buf.write_bool(self.is_cool);
+//!         self.friends.write(buf)?;
+//!         Ok(())
+//!     }
+//! }
+//! ```
+//!
+//! With the example above, you now are able to read and write the packet with [`BinaryIo`],
+//! as well as the added functionality of being able to read and write the packet with
+//! easier with the `read` and `write` methods that are now implemented.
+//!
+//! ```ignore
+//! fn main() {
+//!     let mut buf = ByteWriter::new();
+//!     let packet = HelloPacket {
+//!         name: "John".to_string(),
+//!         age: 18,
+//!         is_cool: true,
+//!         friends: vec!["Bob".to_string(), "Joe".to_string()]
+//!     };
+//!     buf.write_type(&packet).unwrap();
+//! }
+//! ```
+//!
+//! [`interfaces`]: crate::interfaces
+//! [`Reader`]: crate::interfaces::Reader
+//! [`Writer`]: crate::interfaces::Writer
+//! [`BinaryIo`]: crate::BinaryIo
+//!
+//! # Types
+//! The [`types`] module provides a way to implement non-primitive types when using the [`BinaryIo`] derive macro.
+
+//! This module provides the following helper types:
+//! * [`varu32`] - An unsigned 32-bit variable length integer
+//! * [`vari32`] - A signed 32-bit variable length integer
+//! * [`varu64`] - An unsigned 64-bit variable length integer
+//! * [`vari64`] - A signed 64-bit variable length integer
+//! * [`u24`] - A 24-bit unsigned integer
+//! * [`i24`] - A 24-bit signed integer
+//! * [`LE`] - A little endian type
+//! * [`BE`] - A big endian type
+//!
+//! **General Usage:**
+//! ```ignore
+//! use sc_binary::BinaryIo;
+//! use sc_binary::io::{ByteReader, ByteWriter};
+//! use sc_binary::types::{varu64, varu32, u24, i24, LE, BE};
+//!
+//! #[derive(BinaryIo)]
+//! pub struct ProxyStatusPacket {
+//!     pub clients: u24,
+//!     pub max_clients: u24,
+//!     pub net_download: varu32,
+//!     pub net_upload: varu64,
+//! }
+//!
+//! fn main() {
+//!     let mut buf = ByteWriter::new();
+//!     let packet = ProxyStatusPacket {
+//!         clients: 10,
+//!         max_clients: 100,
+//!         net_download: 1000.into(),
+//!         net_upload: 1000.into()
+//!     };
+//!
+//!     buf.write_type(&packet).unwrap();
+//!     let mut buf = ByteReader::from(buf.as_slice());
+//!     let packet = ProxyStatusPacket::read(&mut buf).unwrap();
+//!     println!("Clients: {}", packet.clients);
+//!     println!("Max Clients: {}", packet.max_clients);
+//!     println!("Net Download: {}", packet.net_download.0);
+//!     println!("Net Upload: {}", packet.net_upload.0);
+//! }
+//! ```
+//!
+//! [`types`]: crate::types
+//! [`varu32`]: crate::types::varu32
+//! [`vari32`]: crate::types::vari32
+//! [`varu64`]: crate::types::varu64
+//! [`vari64`]: crate::types::vari64
+//! [`u24`]: crate::types::u24
+//! [`i24`]: crate::types::i24
+//! [`LE`]: crate::types::LE
+//! [`BE`]: crate::types::BE
+//! [`BinaryIo`]: crate::BinaryIo
+//!
+//! # Codegen
+//! The [`BinaryIo`] derive macro provides a way to implement both [`Reader`] and [`Writer`] for a type.
+//! This macro is extremely useful when you are trying to implement multiple data structures that you want
+//! to seemlessly read and write with the [`io`] module.
+//!
+//! **Example:**
+//! The following example implements the [`BinaryIo`] trait for a `HelloPacket`, shortening the previous
+//! example to just a few lines of code.
+//! ```ignore
+//! use sc_binary::BinaryIo;
+//!
+//! #[derive(BinaryIo)]
+//! pub struct HelloPacket {
+//!     pub name: String,
+//!     pub age: u8,
+//!     pub is_cool: bool,
+//!     pub friends: Vec<String>
+//! }
+//!
+//! fn main() {
+//!     let mut buf = ByteWriter::new();
+//!     let packet = HelloPacket {
+//!         name: "John".to_string(),
+//!         age: 18,
+//!         is_cool: true,
+//!         friends: vec!["Bob".to_string(), "Joe".to_string()]
+//!     };
+//!     buf.write_type(&packet).unwrap();
+//! }
+//! ```
+//!
+//! You can view additional implementations of the derive macro by looking at the examples on the [module](crate::BinaryIo) page.
+//!
+//! [`BinaryIo`]: crate::BinaryIo
+//! [`io`]: crate::io
+//! [`Reader`]: crate::interfaces::Reader
+//! [`Writer`]: crate::interfaces::Writer
+//!
+/// Provides a panic-free way to read and write binary data.
+/// All of the methods within this module follow the protobuf specification at <https://protobuf.dev/programming-guides/encoding/>.
+///
+/// ## Example
+/// ```no_run
+/// use sc_binary::io::ByteReader;
+///
+/// const VARINT: &[u8] = &[255, 255, 255, 255, 7]; // 2147483647
+/// fn main() {
+///     let mut buf = ByteReader::from(&VARINT[..]);
+///     assert_eq!(buf.read_var_u32().unwrap(), 2147483647);
+/// }
+/// ```
+pub mod interfaces;
+
+/// Provides a derive macro that implements `::sc_binary::interfaces::Reader<T>` and `::sc_binary::interfaces::Writer<T>`.
+///
+pub use sc_binary_macros::*;
+/// The io module contains implementations of these traits for `bytes::Buf` and `bytes::BufMut`.
+///
+/// Example:
+/// ```no_run
+/// use sc_binary::io::ByteReader;
+/// use bytes::{Buf, BufMut, BytesMut, Bytes};
+///
+/// fn main() {
+///    const VARINT: &[u8] = &[255, 255, 255, 255, 7]; // 2147483647
+///    let mut buf = ByteReader::from(&VARINT[..]);
+///    assert_eq!(buf.read_var_u32().unwrap(), 2147483647);
+/// }
+/// ```
+pub mod io;
+pub mod mc;
+pub mod pool;
+/// This module contains all of the types that are used within the `sc_binary` crate.
+/// For example, Sometimes you may need to use a `u24` or `varu32` type, on structs,
+/// and this module provides those types.
+pub mod types;
+
+/// This is a legacy module that will be removed in the future.
+/// This module has been replaced in favor of `std::io::Error`.
+///
+/// <p style="background:rgba(255,181,77,0.16);padding:0.75em;border-left: 2px solid orange;">
+///     <strong>Warning:</strong> This module is deprecated and will be removed in <strong>v0.4.0</strong>.
+/// </p>
+#[deprecated = "This module is deprecated in favor of std::io::Error."]
+pub mod error {
+    /// An enum consisting of a Binary Error
+    /// (recoverable)
+    #[derive(Debug, PartialEq)]
+    pub enum BinaryError {
+        /// Offset is out of bounds
+        ///
+        /// **Tuple Values:**
+        /// - `usize` = Given Offset.
+        /// - `usize` = Stream length.
+        /// - `&'static str` = Message to add on to the error.
+        OutOfBounds(usize, usize, &'static str),
+
+        /// Similar to `OutOfBounds` except it means;
+        /// the stream tried to read more than possible.
+        ///
+        /// **Tuple Values:**
+        /// - `usize` = Stream length.
+        EOF(usize),
+
+        /// A known error that was recoverable to safely proceed the stack.
+        RecoverableKnown(String),
+
+        /// An unknown error occurred, but it wasn't critical,
+        /// we can safely proceed on the stack.
+        RecoverableUnknown,
+    }
+
+    impl BinaryError {
+        pub fn get_message(&self) -> String {
+            match self {
+                Self::OutOfBounds(offset, length, append) => {
+                    format!("Offset {} out of range for a buffer size with: {}. {}", offset, length, append)
+                },
+                Self::EOF(length) => format!("Buffer reached End Of File at offset: {}", length),
+                Self::RecoverableKnown(msg) => msg.clone(),
+                Self::RecoverableUnknown => "An interruption occurred when performing a binary operation, however this error was recovered safely.".to_string()
+            }
+        }
+    }
+
+    impl From<std::io::Error> for BinaryError {
+        fn from(_error: std::io::Error) -> Self {
+            Self::RecoverableUnknown
+        }
+    }
+
+    impl std::fmt::Display for BinaryError {
+        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            write!(f, "{}", self.get_message())
+        }
+    }
+}
+
+#[allow(deprecated)]
+pub use interfaces::Streamable;
+pub use io::{ByteReader, ByteWriter};

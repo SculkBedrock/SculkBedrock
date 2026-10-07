@@ -1,0 +1,47 @@
+# Console chrome (TUI + welcome + pre-TUI notices), English (US).
+#
+# Conventions (checked by `config::tests`):
+# - every key here must exist in every other locale file (no raw-key leaks);
+# - `%{n}` / `%{v}` are interpolation markers (native `t!` vars), exactly one
+#   per template that takes an argument, none otherwise.
+# - `tui.search_prefix` in every locale must be 6 display columns
+#   (feeds `SEARCH_PREFIX_W` layout math).
+#
+# Adding a language: copy this file to `locales/{code}.yml`, translate the
+# values (keep the keys and the `%{…}` markers), add the code to
+# `SUPPORTED_LANGS` in `config.rs`. Missing keys fall back to en-US, but the
+# completeness test fails until the file is whole — translate everything.
+_version: 1
+tui.language_name: "English (US)"
+tui.hint_back_to_bottom: "Press Esc for bottom"
+tui.exit_confirm: "Press Ctrl+C again to stop the server"
+tui.hint_keys: "TAB complete · ↑↓ history/select · wheel/PgUp/PgDn scroll · Ctrl+C stop · Ctrl+D clear logs"
+tui.search_prefix: "Find: "
+tui.search_placeholder: "Type keyword…"
+tui.search_no_match: "No match"
+tui.players_title: "Online (%{n})"
+tui.players_empty: "No players online"
+tui.term_too_small: "Terminal too small"
+tui.new_logs: "▼ %{n} new logs"
+tui.alias_tag: "[alias]"
+tui.no_packs: "No pack"
+tui.status_complete: "Completion:%{n}"
+tui.status_reviewing: " · ▲ reviewing (%{n})"
+tui.status_dropped: " · ! dropped %{n}"
+tui.status_locked: " · locked"
+tui.server_starting: "Starting server..."
+tui.input_placeholder: "Type command… (Tab complete · ↑↓ history · Enter send)"
+tui.console_ready: "§aConsole GUI ready §7— type §fhelp §7for commands, §fTab §7to complete, §f↑↓ §7for history"
+tui.copy_ok: "Copied %{n} characters to clipboard"
+tui.copy_fail_clipboard: "Copy failed: no clipboard available"
+tui.copy_fail_write: "Copy failed: cannot write to terminal"
+tui.copy_fail_spawn: "Copy failed: cannot spawn copy thread"
+tui.input_truncated: "Input too long, truncated to %{n} chars"
+tui.queue_full: "Command queue full, line dropped (server busy, retry later)"
+tui.plain_ready: "[sc_console] Plain console ready (type a command, Enter to run, Ctrl+D to quit)"
+tui.not_tty: "[sc_console] Not a TTY, GUI unavailable, falling back to plain mode"
+tui.take_over_fail: "[sc_console] Terminal takeover failed, falling back to plain output"
+tui.unknown_console: "[sc_console] Unknown SC_CONSOLE=%{v}, using auto"
+tui.unknown_boot: "[sc_console] Unknown SC_CONSOLE_BOOT_ANIM=%{v}, keeping default (on)"
+tui.unknown_welcome: "[sc_console] Unknown SC_CONSOLE_WELCOME=%{v}, keeping default (on)"
+tui.unknown_lang: "[sc_console] Unknown SC_CONSOLE_LANG=%{v}, using en-US"

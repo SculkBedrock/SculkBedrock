@@ -1,0 +1,18 @@
+[package]
+name = "sc_plugin"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sc_ecs = { path = "../sc_ecs" }
+sc_plugin_api = { path = "../sc_plugin_api" }
+sc_log = { path = "../sc_log" }
+sc_binary = { path = "../sc_binary" }
+sc_utils = { path = "../sc_utils" }
+sc_plugin_macros = { path = "sc_plugin_macros" }
+libloading = "*"
+zip = "*"
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+log = "0.4.22"
+chrono = "*"

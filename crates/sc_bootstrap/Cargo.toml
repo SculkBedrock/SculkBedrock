@@ -1,0 +1,32 @@
+[package]
+name = "sc_bootstrap"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sc_ecs = { path = "../sc_ecs" }
+sc_utils = { path = "../sc_utils" }
+sc_network = { path = "../sc_network" }
+sc_log = { path = "../sc_log" }
+sc_entity = { path = "../sc_entity" }
+sc_game = { path = "../sc_game" }
+sc_packloader = { path = "../sc_packloader" }
+sc_world = { path = "../sc_world" }
+sc_plugin = { path = "../sc_plugin" }
+sc_command = { path = "../sc_command" }
+sc_block = { path = "../sc_block" }
+sc_item = { path = "../sc_item" }
+anyhow = "*"
+pretty_env_logger = "*"
+log = "*"
+chrono = "0.4"
+serde_json = "1.0"
+libc = "0.2"
+ureq = "3"
+sc_nbt = { path = "../sc_nbt" }
+sc_plugin_api = { path = "../sc_plugin_api" }
+sc_console = { path = "../sc_console" }
+sc_recipe = { path = "../sc_recipe" }
+
+[dev-dependencies]
+zip = "*"

@@ -1,0 +1,11 @@
+[package]
+name = "sc_log"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rust-i18n = "3"
+rust-i18n-macro = "=3.0.0"
+sc_log_macros = { path = "../sc_log_macros" }
+chrono = "0.4"
+log = "0.4"

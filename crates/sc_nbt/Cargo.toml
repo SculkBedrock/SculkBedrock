@@ -1,0 +1,15 @@
+[package]
+name = "sc_nbt"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sc_binary = { path = "../sc_binary" }
+sc_utils = { path = "../sc_utils" }
+sc_nbt_macros = { path = "sc_nbt_macros" }
+anyhow = "1.0.86"
+flate2 = "1.0.30"
+bytes = "1.6.1"
+serde = "1.0"
+serde_json = "1.0.120"
+uuid = { version = "1.11.0", features = ["v4"] }

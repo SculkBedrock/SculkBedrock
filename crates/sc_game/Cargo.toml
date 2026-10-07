@@ -1,0 +1,28 @@
+[package]
+name = "sc_game"
+version = "0.1.0"
+edition = "2021"
+description = "游戏逻辑域：多 World ECS 架构（WorldHub/CrossWorldBus/NetworkOutbox），与网络域隔离"
+
+# 依赖方向：sc_game → (sc_world, sc_entity, sc_block) → sc_ecs/sc_utils
+# 硬约束：**不依赖 sc_network**（网络逻辑靠 sc_network 的 schedule plugin 消费本域的边界类型）
+[dependencies]
+sc_ecs = { path = "../sc_ecs" }
+sc_entity = { path = "../sc_entity" }
+sc_world = { path = "../sc_world" }
+sc_utils = { path = "../sc_utils" }
+sc_block = { path = "../sc_block" }
+sc_item = { path = "../sc_item" }
+sc_eventbus = { path = "../sc_eventbus" }
+sc_log = { path = "../sc_log" }
+sc_recipe = { path = "../sc_recipe" }
+log = "0.4"
+rand = "0.8.5"
+parking_lot = { version = "0.12", features = ["arc_lock", "send_guard"] }
+async-trait = "0.1"
+
+# 仅测试用：从方块 JSON 字节编译快照，验证破坏时长确实由 JSON 数据驱动。
+# 不进入生产依赖图（生产方向仍是 sc_game → sc_block → sc_packloader）。
+[dev-dependencies]
+sc_packloader = { path = "../sc_packloader" }
+serde_json = "1.0.133"

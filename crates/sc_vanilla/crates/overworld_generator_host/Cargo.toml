@@ -1,0 +1,11 @@
+[package]
+name = "sc_vanilla_overworld_host"
+version = "0.1.0"
+edition = "2021"
+description = "sc_vanilla overworld generator HostPluginV1 dynamic plugin"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+sc_plugin_api = { path = "../../../sc_plugin_api" }

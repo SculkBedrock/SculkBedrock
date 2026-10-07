@@ -1,0 +1,19 @@
+[package]
+name = "sc_utils"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sc_ecs = { path = "../sc_ecs" }
+parking_lot = { version = "0.12", features = ["arc_lock", "send_guard"] }
+toml = "*"
+serde = { version = "*", features = ["derive"] }
+serde-inline-default = "*"
+rand = "*"
+uuid = "*"
+base64 = "*"
+p384 = "*"
+tempdir = "*"
+
+[dev-dependencies]
+serde_json = "*"

@@ -1,0 +1,22 @@
+[package]
+name = "sc_packloader"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sc_ecs = { path = "../sc_ecs" }
+sc_utils = { path = "../sc_utils" }
+sc_binary = { path = "../sc_binary" }
+sc_nbt = { path = "../sc_nbt" }
+sc_log = { path = "../sc_log" }
+sc_plugin = { path = "../sc_plugin" }
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+serde-inline-default = "*"
+uuid = { version = "1.11.0", features = ["v4"] }
+zip = "*"
+log = "0.4.22"
+json_comments = "0.2.2"
+chrono = "*"
+sha2 = "0.10.8"
+parking_lot = { version = "0.12", features = ["arc_lock", "send_guard"] }

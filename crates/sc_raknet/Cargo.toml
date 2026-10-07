@@ -1,0 +1,16 @@
+[package]
+name = "sc_raknet"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sc_ecs = { path = "../sc_ecs" }
+sc_binary = { path = "../sc_binary" }
+sc_utils = { path = "../sc_utils" }
+sc_log = { path = "../sc_log" }
+parking_lot = { version = "0.12", features = ["arc_lock", "send_guard"] }
+tokio = { version = "*", features = ["full"] }
+log = "*"
+async-channel = "*"
+future-utils = "*"
+arc-swap = "1"

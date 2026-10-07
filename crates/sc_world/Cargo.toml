@@ -1,0 +1,24 @@
+[package]
+name = "sc_world"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+parking_lot = { version = "0.12", features = ["arc_lock", "send_guard"] }
+sc_ecs = { path = "../sc_ecs" }
+sc_nbt = { path = "../sc_nbt" }
+sc_utils = { path = "../sc_utils" }
+sc_log = { path = "../sc_log" }
+sc_binary = { path = "../sc_binary" }
+zip = "2.1.3"
+serde = "1.0"
+serde-inline-default = "0.2"
+serde_json = "1.0.120"
+chrono = "0.4"
+uuid = { version = "1.10.0", features = ["v4"] }
+log = "0.4.22"
+rusty-leveldb = "3"
+crc = "3.2"
+flate2 = "1.0"
+ahash = "0.8"
+tokio = { version = "1.43.0", features = ["sync"] }

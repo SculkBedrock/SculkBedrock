@@ -1,0 +1,15 @@
+[package]
+name = "vanilla_command"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+sc_plugin = { path = "../../../sc_plugin" }
+sc_ecs = { path = "../../../sc_ecs" }
+sc_command = { path = "../../../sc_command" }
+sc_utils = { path = "../../../sc_utils" }
+sc_log = { path = "../../../sc_log" }
+log = "0.4.22"

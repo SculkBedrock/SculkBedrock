@@ -1,0 +1,11 @@
+[package]
+name = "sc_command"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sc_ecs = { path = "../sc_ecs" }
+sc_utils = { path = "../sc_utils" }
+sc_log = { path = "../sc_log" }
+log = "0.4.22"
+uuid = { version = "1.10.0", features = ["v4"] }
