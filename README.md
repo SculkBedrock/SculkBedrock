@@ -81,7 +81,8 @@ Thanks to the following open-source projects for reference and inspiration (in n
 - [PowerNukkitX](https://github.com/PowerNukkitX/PowerNukkitX)
 - [PocketMine-MP](https://github.com/pmmp/PocketMine-MP)
 - [JSPrismarine](https://github.com/JSPrismarine/JSPrismarine)
-
+- [NetrexMC](https://github.com/NetrexMC)
+- [Bevy](https://github.com/bevyengine/bevy)
 ## 👉 Feedback 👈
 
 Bug reports and suggestions are welcome. Please include the version-pack identity, protocol version, logs, and reproduction steps. Do not paste login tokens from logs.
