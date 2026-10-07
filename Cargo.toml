@@ -33,5 +33,4 @@ members = [
     "crates/sc_plugin_api",
     "crates/sc_vanilla/crates/overworld_generator",
     "crates/sc_vanilla/crates/overworld_generator_host",
-    "crates/sc_app/src-tauri",
 ]

@@ -9,8 +9,8 @@ sc_binary = { path = "../sc_binary" }
 sc_utils = { path = "../sc_utils" }
 sc_log = { path = "../sc_log" }
 parking_lot = { version = "0.12", features = ["arc_lock", "send_guard"] }
-tokio = { version = "*", features = ["full"] }
-log = "*"
-async-channel = "*"
-future-utils = "*"
+tokio = { version = "=1.53.2", features = ["full"] }
+log = "=0.4.34"
+async-channel = "=2.5.0"
+future-utils = "=0.12.1"
 arc-swap = "1"

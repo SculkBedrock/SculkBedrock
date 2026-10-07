@@ -13,4 +13,4 @@ sc_packloader = { path = "../sc_packloader" }
 
 [dev-dependencies]
 sc_block = { path = "../sc_block" }
-zip = "2"
+zip = "=8.6.0"

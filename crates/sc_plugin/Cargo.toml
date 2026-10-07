@@ -10,9 +10,9 @@ sc_log = { path = "../sc_log" }
 sc_binary = { path = "../sc_binary" }
 sc_utils = { path = "../sc_utils" }
 sc_plugin_macros = { path = "sc_plugin_macros" }
-libloading = "*"
-zip = "*"
-serde = { version = "*", features = ["derive"] }
-serde_json = "*"
+libloading = "=0.9.0"
+zip = "=8.6.0"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
 log = "0.4.22"
-chrono = "*"
+chrono = "=0.4.45"

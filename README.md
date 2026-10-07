@@ -11,16 +11,18 @@
 
 ### SculkBedrock is a third-party server software for Minecraft: Bedrock Edition written in Rust.
 
-It uses a custom **ECS** architecture, a Bedrock protocol stack with RakNet, version packs (`.scver`) for game data, and LevelDB saves.
+It uses **ECS** architecture, a Bedrock protocol stack with RakNet, version packs (`.scver`) for game data, and LevelDB saves.
 
 > [!IMPORTANT]
-> This project is in a very early stage of development. It contains **unknown bugs** and **many unimplemented features**. There is no official release. Do not use it in **production**.
+> This project is in a very early stage of development. 
+>
+> It contains **unknown bugs** and **many unimplemented features**. There is no official release. Do not use it in **production**.
 
 📚 Detailed architecture and capability guide: [DOCS.md](DOCS.md)
 
 ## 🎶 Features 🎶
 
-- **ECS architecture**: custom ECS for game management, evolving toward parallel ticking of independent areas.
+- **ECS architecture**: ECS for game management, evolving toward parallel ticking of independent areas.
 - **Version packs**: the server does not hardcode one Minecraft version. Drop a version pack into `version_packs/` and it loads blocks, items, and worldgen data at startup.
 - **Data-driven blocks/items**: per-block JSON definitions compiled into read-only snapshots at startup.
 - **Bounded chunk pipeline**: shared loading, shared encoding, and ordered delivery with budgets and backpressure.

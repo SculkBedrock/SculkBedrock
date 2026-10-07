@@ -25,6 +25,8 @@ pub struct ServerProperties {
     // Log
     pub log_file_name_format: String,
     pub log_flush_interval_ms: u64,
+    /// 日志级别（`[log] log_level`）：`info` 或 `debug`，改完重启生效。
+    pub log_level: String,
 
     // Game
     pub server_name: String,
@@ -274,6 +276,14 @@ impl ServerProperties {
         };
         let log_flush_interval_ms =
             optional_u64(log, "flush_interval_ms", "log.flush_interval_ms", 200)?;
+        // 可选（缺省 debug，保持此前硬编码行为）；只接受小写 info/debug，
+        // 写错直接启动失败，比静默跑错级别好。
+        let log_level = optional_string(log, "log_level", "log.log_level", "debug")?;
+        if log_level != "info" && log_level != "debug" {
+            return Err(
+                "config key `log.log_level` must be \"info\" or \"debug\"".to_string(),
+            );
+        }
 
         let experimental_gameplay = required_section(&toml, "experimental_gameplay")?;
         let experimental_data_driven_items = required_bool(
@@ -361,6 +371,7 @@ impl ServerProperties {
             enable_hitokoto,
             log_file_name_format,
             log_flush_interval_ms,
+            log_level,
             experimental_data_driven_items,
             experimental_data_driven_biomes,
             experimental_upcoming_creator_features,

@@ -31,7 +31,7 @@ fn sha256_hash(data: &[u8]) -> Vec<u8> {
 pub(crate) fn get_file_by_name<'a, T: Read + Seek>(
     zip: &'a mut ZipArchive<T>,
     path: &str,
-) -> ZipResult<ZipFile<'a>> {
+) -> ZipResult<ZipFile<'a, T>> {
     // Look up the zip entry by name and own the file name
     let file_name = {
         zip.file_names()

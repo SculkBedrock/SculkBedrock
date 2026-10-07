@@ -6,4 +6,4 @@ edition = "2021"
 [dependencies]
 tokio = { version = "1.43.0", features = ["rt", "rt-multi-thread", "sync", "macros", "io-util", "time"] }
 parking_lot = { version = "0.12", features = ["arc_lock", "send_guard"] }
-lazy_static = "*"
+lazy_static = "=1.5.1"

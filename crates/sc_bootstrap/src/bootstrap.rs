@@ -103,9 +103,15 @@ spawn_threshold = 56
 [log]
 file_name_format = "sc_log_%Y-%m-%d_%H-%M-%S.log"
 flush_interval_ms = 200
+# Only info/debug
+log_level = "info"
 
 [debug]
-blocked_packets = []
+# The blocked protocol packet currently contains errors.
+blocked_packets = [
+  #0x3f, # PlayerList
+  #0x7a, # BiomeDefinitionList
+]
 "#;
 
 /// 确保运行目录布局存在：建缺失目录；缺失主配置时写默认文件。
@@ -882,8 +888,16 @@ fn startup(world: World) {
     }
     // try_init: a host (GUI/mobile app) may install its own log capturer first, in which case this
     // silently skips; standalone behavior matches init() exactly.
+    // Console/file output level comes from `[log] log_level` (info/debug, default debug).
+    let level_filter = world
+        .get_resource::<ServerProperties>()
+        .map(|properties| match properties.log_level.as_str() {
+            "info" => LevelFilter::Info,
+            _ => LevelFilter::Debug,
+        })
+        .unwrap_or(LevelFilter::Debug);
     let _ = pretty_env_logger::formatted_timed_builder()
-        .filter_level(LevelFilter::Debug)
+        .filter_level(level_filter)
         // Custom format: keeps the pretty_env_logger default layout (timestamp plus colored level), while
         // messages stream through sc_log::color::ColorizingWriter converting section codes to colorful ANSI
         // output (codeless chunks pass through allocation-free; NO_COLOR/TERM=dumb strips).
@@ -1009,6 +1023,39 @@ mod tests {
         assert_eq!(properties.ipv4_port, 19132);
         assert_eq!(properties.overworld_name, "OverWorld");
         assert!(properties.debug_blocked_packets.is_empty());
+        assert_eq!(properties.log_level, "debug");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `log_level` 缺省即 debug；非法值直接拒绝（不静默跑错级别）。
+    #[test]
+    fn log_level_defaults_and_rejects_garbage() {
+        use sc_utils::game::structs::server_properties::ServerProperties;
+        let dir = std::env::temp_dir().join(format!(
+            "sculk_log_level_test_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("测试目录创建失败");
+        let missing = dir.join("missing.toml");
+        std::fs::write(
+            &missing,
+            super::DEFAULT_SERVER_PROPERTIES.replace("log_level = \"debug\"\n", ""),
+        )
+        .expect("测试配置写入失败");
+        let properties =
+            ServerProperties::load(&missing).expect("缺 log_level 必须可解析");
+        assert_eq!(properties.log_level, "debug");
+
+        let bad = dir.join("bad.toml");
+        std::fs::write(
+            &bad,
+            super::DEFAULT_SERVER_PROPERTIES.replace("log_level = \"debug\"", "log_level = \"verbose\""),
+        )
+        .expect("测试配置写入失败");
+        assert!(
+            ServerProperties::load(&bad).is_err(),
+            "非法 log_level 必须拒绝"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

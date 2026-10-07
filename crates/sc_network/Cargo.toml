@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+# 版本钉死说明：全仓第三方依赖一律精确钉死（"=x.y.z"），禁止 "*" 全浮动——
+# 浮动曾导致 rust-i18n-support 3.1.2→3.1.5（全仓无法编译）、p384 0.13→0.14
+# （SecretKey::random 的 RNG bound 变了，encryption.rs 编译失败）。
+# 跨包传 zip 类型要求所有包同 major（现统一 8.6.0，sc_plugin/sc_packloader
+# 代码用的就是 8.x 的 ZipFile<'a, T> 写法）。升级依赖时必须全仓 test 跑过。
 sc_ecs = { path = "../sc_ecs" }
 sc_raknet = { path = "../sc_raknet" }
 sc_utils = { path = "../sc_utils" }
@@ -21,25 +26,25 @@ sc_block = { path = "../sc_block" }
 sc_item = { path = "../sc_item" }
 sc_recipe = { path = "../sc_recipe" }
 parking_lot = { version = "0.12", features = ["arc_lock", "send_guard"] }
-log = "*"
+log = "=0.4.34"
 tokio = { version = "1.43.0", features = ["rt", "sync", "macros", "io-util", "time"] }
 uuid = { version = "1.11.0", features = ["v4", "v3"] }
 serde = { version = "1.0.203", features = ["derive"] }
 serde_json = "1.0.133"
 jwt = "0.16.0"
 jsonwebtoken = "9.3.0"
-p384 = { version = "*", features = ["arithmetic", "ecdh", "pkcs8"] }
+p384 = { version = "=0.13.0", features = ["arithmetic", "ecdh", "pkcs8"] }
 aes = "0.8"
-base64 = "*"
+base64 = "=0.23.1"
 rand = "0.8.5"
 sha2 = "0.10.8"
 hmac = "0.12.0"
 flate2 = "1.0"
-snap = "*"
-async-trait = "*"
-lazy_static = "*"
+snap = "=1.1.2"
+async-trait = "=0.1.92"
+lazy_static = "=1.5.1"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 md-5 = "0.10"
 [dev-dependencies]
 sc_vanilla_overworld = { path = "../sc_vanilla/crates/overworld_generator" }
-zip = "*"
+zip = "=8.6.0"
