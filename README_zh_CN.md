@@ -20,7 +20,7 @@
 
 ## 🎶特性🎶
 
-- **ECS 架构**：自研 ECS 管理游戏，正在向独立区域并行 tick 演进。
+- **ECS 架构**：自研 ECS 管理游戏，正在向独立区域并行 tick 演进。(设计灵感来自 Bevy ECS)
 - **版本包**：服务端不写死某一个 Minecraft 版本，把版本包放入 `version_packs/`，启动时自动加载方块、物品与世界生成数据。
 - **数据驱动的方块/物品**：单方块 JSON 定义，启动时编译为只读快照。
 - **带预算的区块管线**：共享加载、共享编码、有序交付，全部有界、有回执、有背压。
@@ -81,7 +81,8 @@ cargo build -p sc_bootstrap
 - [PowerNukkitX](https://github.com/PowerNukkitX/PowerNukkitX)
 - [PocketMine-MP](https://github.com/pmmp/PocketMine-MP)
 - [JSPrismarine](https://github.com/JSPrismarine/JSPrismarine)
-
+- [NetrexMC](https://github.com/NetrexMC)
+- [Bevy](https://github.com/bevyengine/bevy)
 ## 👉反馈👈
 
 欢迎报告 Bug 或提出建议。请附带版本包身份、协议版本、日志与复现步骤，不要粘贴日志中的登录 token。
