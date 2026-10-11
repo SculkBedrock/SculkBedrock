@@ -457,6 +457,8 @@ struct SpilloverConflictState {
     /// block position → largest `SpilloverOperationId` already applied there.
     winners: HashMap<SpilloverCell, SpilloverOperationId>,
     /// Writes skipped because a higher-priority generation already won.
+    // Spillover/journal reserved capability (see unified architecture doc §9).
+    #[allow(dead_code)]
     superseded: u64,
     /// Positions that were re-queued because the tracked window was full.
     untracked: u64,
@@ -660,6 +662,8 @@ impl ChunkColumn {
     }
 
     /// Number of distinct block positions currently arbitrated by this column.
+    // Spillover/journal reserved capability (see unified architecture doc §9).
+    #[allow(dead_code)]
     pub(crate) fn tracked_spillover_cells(&self) -> usize {
         self.spillover_conflicts
             .lock()
@@ -669,6 +673,8 @@ impl ChunkColumn {
     }
 
     /// Generation writes skipped because a higher-priority source won.
+    // Spillover/journal reserved capability (see unified architecture doc §9).
+    #[allow(dead_code)]
     pub(crate) fn superseded_spillover_writes(&self) -> u64 {
         self.spillover_conflicts
             .lock()
@@ -677,6 +683,8 @@ impl ChunkColumn {
     }
 
     /// Positions applied without arbitration because the tracked window was full.
+    // Spillover/journal reserved capability (see unified architecture doc §9).
+    #[allow(dead_code)]
     pub(crate) fn untracked_spillover_writes(&self) -> u64 {
         self.spillover_conflicts
             .lock()
@@ -786,6 +794,8 @@ impl ChunkColumn {
     }
 
     /// Publish the superseded counter of a batch that was applied.
+    // Spillover/journal reserved capability (see unified architecture doc §9).
+    #[allow(dead_code)]
     fn note_superseded(&self, superseded: u64) {
         if superseded == 0 {
             return;
@@ -2387,10 +2397,14 @@ impl WorldChunkProvider {
     /// Writes whose position is outside the column's bounded arbitration window
     /// are **not** resolved here; the routing path re-queues them so the owning
     /// column applies them in operation-id order when it is next materialized.
+    // Spillover/journal reserved capability (see unified architecture doc §9).
+    #[allow(dead_code)]
     fn apply_writes_to_column(column: &ChunkColumn, writes: &[SpilloverJournalEntry]) {
         Self::apply_writes_to_column_with_metadata(column, writes, false, false, false);
     }
 
+    // Spillover/journal reserved capability (see unified architecture doc §9).
+    #[allow(dead_code)]
     fn apply_writes_to_column_with_metadata(
         column: &ChunkColumn,
         writes: &[SpilloverJournalEntry],

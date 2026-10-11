@@ -2,6 +2,7 @@ use crate::entity::MinecraftEntitySpawner;
 use crate::item::MinecraftItemSpawner;
 use crate::pack::manifest::ResourcePackManifest;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 pub mod manifest;
@@ -21,11 +22,22 @@ pub enum ResourcePackType {
 /// a refcount. `entities`/`items` can be cleared via
 /// [`ResourcePack::clear_parsed_content`] once pushed into
 /// [`crate::version_control::runtime::MinecraftRuntimeManager`] (the registry holds the only copy).
+/// Where a pack is parsed from. Zip sources keep shared bytes (recipes,
+/// client download); directory sources read natively from the filesystem.
+#[derive(Clone, Debug)]
+pub enum PackData {
+    Zip(Arc<Vec<u8>>),
+    Dir(PathBuf),
+}
+
 #[derive(Clone, Debug)]
 pub struct ResourcePack {
     pub manifest: ResourcePackManifest,
     pub pack_type: ResourcePackType,
+    /// Client-download bytes (empty for directory packs: author locally,
+    /// distribute as zip).
     pub pack_data: Arc<Vec<u8>>,
+    pub source: PackData,
     pub entities: HashMap<String, MinecraftEntitySpawner>,
     pub items: HashMap<String, MinecraftItemSpawner>,
 }
@@ -48,10 +60,12 @@ impl ResourcePack {
         entities: HashMap<String, MinecraftEntitySpawner>,
         items: HashMap<String, MinecraftItemSpawner>,
     ) -> Self {
+        let source = PackData::Zip(Arc::clone(&pack_data));
         Self {
             manifest,
             pack_type,
             pack_data,
+            source,
             entities,
             items,
         }

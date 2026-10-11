@@ -28,6 +28,7 @@ use sc_packloader::block::{
 };
 
 use crate::mining_drops::{compile_drops, compile_mining, DropCompiled, MiningCompiled};
+use crate::workstation::{compile_process, compile_workstation, ProcessDecl, WorkstationDecl};
 
 // ---------------------------------------------------------------------------
 // Typed canonical state keys (unambiguous identity for the new compile path; replaces the old
@@ -163,7 +164,7 @@ pub struct SnapState {
 ///
 /// Callers share an `Arc` read-only reference without per-Region deep copies; hot paths only read
 /// this snapshot and the dense tables derived from it.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct BlockJsonSnapshot {
     pub schema_version: u32,
     pub network_id_mode: String,
@@ -207,6 +208,12 @@ pub struct BlockJsonSnapshot {
     /// Compiled `sc:drops` profile (`None` means no drops, nothing guessed;
     /// `Some(enabled=false)` means explicitly drop-free; same length as `states`).
     pub drops: Vec<Option<DropCompiled>>,
+    /// Compiled `sc:workstation` declaration (`None` means no workstation
+    /// window; same length as `states`).
+    pub workstation: Vec<Option<WorkstationDecl>>,
+    /// Compiled `sc:process` declaration (`None` means no duration process;
+    /// same length as `states`).
+    pub process: Vec<Option<ProcessDecl>>,
     /// Non-fixed component verbatim values (name to value; schema validated by plugin registration, cold path).
     pub plugin_components: Vec<Vec<(Box<str>, serde_json::Value)>>,
 }
@@ -379,6 +386,8 @@ fn compile_state_columns(
         warnings,
     )?;
     let drops = compile_drops(merged, pack_id, file, key, budgets, item_exists)?;
+    let workstation = compile_workstation(merged, pack_id, file, key, budgets)?;
+    let process = compile_process(merged, workstation.as_ref(), pack_id, file, key)?;
 
     let mut plugin = Vec::new();
     for (name, value) in merged.iter() {
@@ -399,6 +408,8 @@ fn compile_state_columns(
     snapshot.can_contain_liquid.push(can_contain_liquid);
     snapshot.mining.push(mining);
     snapshot.drops.push(drops);
+    snapshot.workstation.push(workstation);
+    snapshot.process.push(process);
     snapshot.plugin_components.push(plugin);
     Ok(())
 }
@@ -680,6 +691,8 @@ pub fn compile_bundle(
         can_contain_liquid: Vec::with_capacity(total_states),
         mining: Vec::with_capacity(total_states),
         drops: Vec::with_capacity(total_states),
+        workstation: Vec::with_capacity(total_states),
+        process: Vec::with_capacity(total_states),
         plugin_components: Vec::with_capacity(total_states),
     };
 
@@ -970,6 +983,16 @@ impl BlockJsonSnapshot {
     /// Compiled `sc:drops` profile (hot-path read-only; `None` means no drops, nothing guessed).
     pub fn drops_of(&self, index: u32) -> Option<&DropCompiled> {
         self.drops.get(index as usize)?.as_ref()
+    }
+
+    /// Compiled `sc:workstation` declaration (hot-path read-only).
+    pub fn workstation_of(&self, index: u32) -> Option<&WorkstationDecl> {
+        self.workstation.get(index as usize)?.as_ref()
+    }
+
+    /// Compiled `sc:process` declaration (hot-path read-only).
+    pub fn process_of(&self, index: u32) -> Option<&ProcessDecl> {
+        self.process.get(index as usize)?.as_ref()
     }
 
     /// Plugin component verbatim values (cold path; schema validated by plugin registration).
@@ -2172,20 +2195,11 @@ mod tests {
     fn real_single_state_subset_compiles_and_matches_legacy() {
         use sc_packloader::block::split_legacy_palette;
         use std::collections::HashMap;
-        use std::io::Read;
-        let pack_path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../version_packs/[SC原版版本包] Vanilla-1.26.40.scver"
-        );
-        let bytes = std::fs::read(pack_path).expect("版本包缺失");
-        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("zip");
-        let palette_bytes = {
-            let mut f = zip
-                .by_name("definitions/block_palette.nbt")
-                .expect("palette");
-            let mut buf = Vec::new();
-            f.read_to_end(&mut buf).unwrap();
-            buf
+        let Some(palette_bytes) = sc_packloader::test_pack::read_test_pack_file(
+            "definitions/block_palette.nbt",
+        ) else {
+            eprintln!("[skip] 版本包缺失，跳过测试");
+            return;
         };
         let entries = parse_legacy_palette_entries(&palette_bytes).expect("旧 palette 解析");
         let mut by_name: HashMap<&str, usize> = HashMap::new();
@@ -2254,25 +2268,20 @@ mod real_pack_tests {
     /// per-state equivalence with the legacy palette. Covers load-time budgets and full compilation.
     #[test]
     fn real_pack_bundle_compiles_and_matches_legacy() {
-        use std::io::Read;
-        let pack_path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../version_packs/[SC原版版本包] Vanilla-1.26.40.scver"
-        );
-        let bytes = std::fs::read(pack_path).expect("版本包缺失");
-        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("zip");
-        let palette_bytes = {
-            let mut f = zip
-                .by_name("definitions/block_palette.nbt")
-                .expect("palette");
-            let mut buf = Vec::new();
-            f.read_to_end(&mut buf).unwrap();
-            buf
+        let Some(palette_bytes) = sc_packloader::test_pack::read_test_pack_file(
+            "definitions/block_palette.nbt",
+        ) else {
+            eprintln!("[skip] 版本包缺失，跳过测试");
+            return;
+        };
+        let Some(mut source) = sc_packloader::test_pack::open_test_pack() else {
+            eprintln!("[skip] 版本包缺失，跳过测试");
+            return;
         };
         let entries = parse_legacy_palette_entries(&palette_bytes).expect("旧 palette 解析");
         let budgets = BlockBundleBudgets::default();
         let bundle = sc_packloader::block::load_block_json_bundle(
-            &mut zip,
+            &mut source,
             &BlockDataManifest {
                 schema_version: 1,
                 directory: sc_packloader::block::BLOCKS_DIRECTORY.to_string(),

@@ -8,6 +8,8 @@
 use super::misc::{EntityMetadataEntry, EntityMetadataValue};
 
 /// Entity metadata keys.
+// Wire-protocol namespace mirrors official docs.
+#[allow(non_snake_case)]
 pub mod EntityKeys {
     pub const FLAGS: u32 = 0; // long
     pub const HEALTH: u32 = 1; // int
@@ -46,6 +48,8 @@ pub mod EntityKeys {
 }
 
 /// Entity data flags.
+// Wire-protocol namespace mirrors official docs.
+#[allow(non_snake_case)]
 pub mod EntityFlags {
     pub const ONFIRE: u8 = 0;
     pub const SNEAKING: u8 = 1;
@@ -181,6 +185,10 @@ pub mod EntityFlags {
 }
 
 /// Metadata value type ids.
+// Wire-protocol namespace mirrors official docs.
+#[allow(non_snake_case)]
+// Retained wire-protocol constants; not all variants are read yet.
+#[allow(dead_code)]
 pub mod EntityDataTypes {
     pub const BYTE: u32 = 0;
     pub const SHORT: u32 = 1;

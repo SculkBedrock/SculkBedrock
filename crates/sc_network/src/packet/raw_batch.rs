@@ -72,7 +72,7 @@ mod tests {
     use crate::packet::batch_packet::BatchPacket;
     use crate::protocol::server::misc::SetTime;
     use crate::protocol::MinecraftPackets;
-    use sc_binary::interfaces::{Reader, Writer as _};
+    use sc_binary::interfaces::Reader;
     use sc_binary::ByteReader;
 
     #[test]

@@ -90,6 +90,9 @@ impl RecipeKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
 pub enum StationKind {
     CraftingTable,
+    /// Player-inventory 2x2 crafting (no station block). Never parsed from
+    /// recipe tags; attached at compile time to grid recipes that fit 2x2.
+    InventoryCrafting,
     Stonecutter,
     Furnace,
     BlastFurnace,
@@ -103,6 +106,12 @@ pub enum StationKind {
     Loom,
     Grindstone,
     Unknown,
+}
+
+impl Default for StationKind {
+    fn default() -> Self {
+        Self::Unknown
+    }
 }
 
 impl StationKind {
@@ -131,6 +140,7 @@ impl StationKind {
     pub fn tag(self) -> &'static str {
         match self {
             Self::CraftingTable => "crafting_table",
+            Self::InventoryCrafting => "inventory",
             Self::Stonecutter => "stonecutter",
             Self::Furnace => "furnace",
             Self::BlastFurnace => "blast_furnace",

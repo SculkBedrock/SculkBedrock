@@ -26,14 +26,15 @@ pub mod unlock;
 pub mod wire;
 
 pub use compile::{
-    compile_ordered, compile_source, registry_fingerprint, BrewingBody, CompileBudgets,
-    CompileError, CompileOutput, CompiledRecipe, DisabledRecipe, FurnaceBody, MaterialReducerBody,
-    RecipeBody, ShapedBody, ShapelessBody, SmithingTransformBody, SmithingTrimBody, SourceRecipe,
+    compile_ordered, compile_source, fits_inventory_grid, registry_fingerprint, BrewingBody,
+    CompileBudgets, CompileError, CompileOutput, CompiledRecipe, DisabledRecipe, FurnaceBody,
+    MaterialReducerBody, RecipeBody, ShapedBody, ShapelessBody, SmithingTransformBody,
+    SmithingTrimBody, SourceRecipe,
 };
 pub use kind::{RecipeKind, StationKind};
 pub use matching::{
     find_best_instant, item_family_matches, match_process_input, match_shaped, match_shapeless,
-    plan_consumption, MapTagResolver, MatchInput, TagResolver,
+    plan_consumption, rename_alias, MapTagResolver, MatchInput, TagResolver,
 };
 pub use registry::{
     CompileOutputDiagnostics, RecipeId, RecipeIndex, RecipeRegistryFingerprint,

@@ -13,7 +13,7 @@ use parking_lot::RwLock;
 use sc_ecs::component::Component;
 use sc_ecs::params::resource::ResMut;
 use sc_ecs::world::World;
-use sc_entity::motion::{Aabb, PhysicsBody, Position, Rotation, Transform};
+use sc_entity::motion::{Aabb, FallState, PhysicsBody, Position, Rotation, Transform};
 use sc_utils::game::client::MinecraftClient;
 use sc_utils::game::structs::position::MinecraftPosition;
 use sc_world::block_dictionary::air_runtime_id;
@@ -23,9 +23,11 @@ use sc_world::storage::ChunkKey;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use crate::net::{NetworkIntent, NetworkOutbox, PlayerInput, PlayerMoveMode};
-use crate::net_backpressure::IntentPublisher;
-use crate::net_faults::PendingConnectionFaults;
+use crate::damage::{apply_fall_damage, decide_fall_damage, FallDamageOutcome, LandingMaterial};
+use crate::net::{
+    IntentPublisher, MoveEntityAbsolute, MovePlayer, NetworkOutbox, PendingConnectionFaults,
+    PlayerInput, PlayerMoveMode, SetEntityMotion,
+};
 
 /// Input buffer cap per player: packets beyond it are dropped.
 pub const MAX_PENDING_INPUT: usize = 64;
@@ -130,6 +132,14 @@ pub fn movement_input_drain(world: World, mut outbox: ResMut<NetworkOutbox>) {
         // Teleport lock: ignore movement inputs until done.
         if state.teleport_position.is_some() {
             state.input_buffer.clear();
+            // Teleport breaks the fall chain (resets fall distance).
+            if let Some(fall) = world.get_component::<FallState>(&entity) {
+                let pos = state.last_position.unwrap_or_else(|| {
+                    let p = client.data.read().position;
+                    Position::new(p.x, p.y, p.z)
+                });
+                fall.reset(pos.y, true);
+            }
             continue;
         }
 
@@ -155,6 +165,7 @@ pub fn movement_input_drain(world: World, mut outbox: ResMut<NetworkOutbox>) {
                 apply_position(&client, server_pos);
                 state.last_position = Some(server_pos);
                 state.last_rotation = rotation;
+                ensure_fall_state(&world, &entity, server_pos.y, false);
                 continue;
             }
 
@@ -245,17 +256,34 @@ pub fn movement_input_drain(world: World, mut outbox: ResMut<NetworkOutbox>) {
             state.last_rotation = rotation;
             apply_position(&client, server_pos);
 
-            // Write the motion Transform component.
-            if let Some(transform) = world.get_component::<Transform>(&entity) {
+            // Server-authoritative ground probe (never trust client onGround).
+            let on_ground = {
                 let below = physics
                     .aabb
                     .at(server_pos.x, server_pos.y - 0.02, server_pos.z);
-                let on_ground = world_collides(&world_manager, &world_id, &below);
+                world_collides(&world_manager, &world_id, &below)
+            };
+            // Write the motion Transform component.
+            if let Some(transform) = world.get_component::<Transform>(&entity) {
                 let mut tf = transform.inner.write();
                 tf.position = server_pos;
                 tf.rotation = rotation;
                 tf.on_ground = on_ground;
             }
+            // Fall settlement: air-to-ground transition settles exactly once.
+            settle_player_fall(
+                &world,
+                &world_manager,
+                &world_id,
+                &entity,
+                entity_id.0,
+                &client,
+                server_pos,
+                on_ground,
+                input.sneaking,
+                &physics,
+                &mut publisher,
+            );
             // Chunk membership change.
         }
     }
@@ -274,7 +302,7 @@ fn push_reset(
     // Correction packets are lossless facts: on budget shortfall record
     // the terminal state. `force_position` stays armed, so persistent
     // drift resets again next tick without a retry queue here.
-    publisher.publish(NetworkIntent::MovePlayer {
+    publisher.publish(MovePlayer {
         entity_id,
         x: target.x,
         y: target.y + physics.base_offset,
@@ -295,10 +323,19 @@ fn apply_position(client: &MinecraftClient, pos: Position) {
 // Non-player entity physics.
 
 /// Non-player entity physics: gravity plus per-axis collision.
-pub fn movement_physics(world: World) {
+///
+/// Mob fall damage settles here (owner tick, `is_player=false` so the
+/// `fallDamage` gamerule is ignored for mobs). Entities without
+/// `MinecraftEntityId` or `EntityAttributes.health` track fall state but
+/// skip damage gracefully (e.g. demo/region entities before spawners run).
+pub fn movement_physics(world: World, mut outbox: ResMut<NetworkOutbox>) {
     let Some(world_manager) = world.get_resource::<MinecraftWorldManager>() else {
         return;
     };
+    let mut faults = world.get_resource_mut::<PendingConnectionFaults>();
+    let mut publisher = IntentPublisher::new(&mut outbox)
+        .with_world(&world)
+        .maybe_with_faults(faults.as_deref_mut());
     for entity in world.entities_with_component::<Transform>() {
         if world.get_component::<PlayerMovement>(&entity).is_some() {
             continue;
@@ -358,6 +395,39 @@ pub fn movement_physics(world: World) {
         tf.position = pos;
         tf.velocity = vel;
         tf.on_ground = on_ground;
+        drop(tf);
+        // Mob fall settlement: same air-to-ground state machine as players,
+        // `is_player=false` (gamerule ignored), no sneaking, flight from
+        // the physics flag only (mobs have no AdventureSettings).
+        if world.get_component::<FallState>(&entity).is_none() {
+            world.add_component(&entity, FallState::new(pos.y, on_ground));
+            continue;
+        }
+        let Some(fall) = world.get_component::<FallState>(&entity) else {
+            continue;
+        };
+        let Some(distance) = fall.observe(pos.y, on_ground) else {
+            continue;
+        };
+        fall.reset(pos.y, on_ground);
+        let landing = landing_material(&world_manager, &world_id, pos);
+        match decide_fall_damage(distance, landing, false, false, physics.flying, true, false) {
+            FallDamageOutcome::NoDamage => {}
+            FallDamageOutcome::Damage(damage) => {
+                let Some(runtime) = world.get_component::<sc_entity::MinecraftEntityId>(&entity)
+                else {
+                    continue;
+                };
+                log::debug!(
+                    "mob fall damage: entity={} distance={:.2} damage={:.2} landing={:?}",
+                    runtime.0,
+                    distance,
+                    damage,
+                    landing
+                );
+                apply_fall_damage(&world, &entity, runtime.0, damage, &mut publisher);
+            }
+        }
     }
 }
 
@@ -373,6 +443,15 @@ pub fn movement_broadcast(world: World, mut outbox: ResMut<NetworkOutbox>) {
         .with_world(&world)
         .maybe_with_faults(faults.as_deref_mut());
     for entity in world.entities_with_component::<Transform>() {
+        // Dead entities stop broadcasting: the client already received
+        // HURT(/DEATH); further Move/Motion would resurrect the actor
+        // visually. Health resync still flows via SyncHealth facts.
+        if world
+            .get_component::<crate::damage::Dead>(&entity)
+            .is_some_and(|d| d.0)
+        {
+            continue;
+        }
         let Some(entity_id) = world.get_component::<sc_entity::MinecraftEntityId>(&entity) else {
             continue;
         };
@@ -410,7 +489,7 @@ pub fn movement_broadcast(world: World, mut outbox: ResMut<NetworkOutbox>) {
                     .get_component::<PhysicsBody>(&entity)
                     .map(|physics| physics.base_offset)
                     .unwrap_or(1.62);
-                publisher.publish(NetworkIntent::MovePlayer {
+                publisher.publish(MovePlayer {
                     entity_id: entity_id.0,
                     x: pos.x,
                     y: pos.y + base_offset,
@@ -422,7 +501,7 @@ pub fn movement_broadcast(world: World, mut outbox: ResMut<NetworkOutbox>) {
                     mode: PlayerMoveMode::Normal,
                 });
             } else {
-                publisher.publish(NetworkIntent::MoveEntityAbsolute {
+                publisher.publish(MoveEntityAbsolute {
                     entity_id: entity_id.0,
                     x: pos.x,
                     y: pos.y,
@@ -436,7 +515,7 @@ pub fn movement_broadcast(world: World, mut outbox: ResMut<NetworkOutbox>) {
         }
 
         if velocity_changed {
-            publisher.publish(NetworkIntent::SetEntityMotion {
+            publisher.publish(SetEntityMotion {
                 entity_id: entity_id.0,
                 x: vel.x,
                 y: vel.y,
@@ -486,4 +565,140 @@ pub(crate) fn world_collides(
         }
     }
     false
+}
+
+/// Ensure a `FallState` exists (login fallback + first-move adoption).
+fn ensure_fall_state(
+    world: &World,
+    entity: &sc_ecs::entity::EntityId,
+    feet_y: f32,
+    on_ground: bool,
+) {
+    if world.get_component::<FallState>(entity).is_none() {
+        world.add_component(entity, FallState::new(feet_y, on_ground));
+    }
+}
+
+/// Settle one authoritative player landing through the fall pipeline.
+#[allow(clippy::too_many_arguments)]
+fn settle_player_fall(
+    world: &World,
+    world_manager: &MinecraftWorldManager,
+    world_id: &MinecraftWorldId,
+    entity: &sc_ecs::entity::EntityId,
+    runtime_id: u64,
+    client: &MinecraftClient,
+    feet: Position,
+    on_ground: bool,
+    sneaking: bool,
+    physics: &PhysicsBody,
+    publisher: &mut IntentPublisher<'_>,
+) {
+    if world
+        .get_component::<crate::damage::Dead>(entity)
+        .is_some_and(|d| d.0)
+    {
+        return;
+    }
+    ensure_fall_state(world, entity, feet.y, on_ground);
+    let Some(fall) = world.get_component::<FallState>(entity) else {
+        return;
+    };
+    let Some(distance) = fall.observe(feet.y, on_ground) else {
+        return;
+    };
+    // Landing happens; pin highest to current regardless of damage outcome.
+    fall.reset(feet.y, on_ground);
+
+    let landing = landing_material(world_manager, world_id, feet);
+    let data = client.data.read();
+    let immune_gamemode = data.gamemode.is_creative() || data.gamemode.is_spectator();
+    drop(data);
+    // Flight immunity: physics flag or AllowFlight ability.
+    let mut can_fly = physics.flying;
+    if let Some(settings) =
+        world.get_component::<sc_entity::player::adventure_settings::AdventureSettings>(entity)
+    {
+        use sc_entity::player::adventure_settings::AdventureSettingsType;
+        if settings.get(&AdventureSettingsType::AllowFlight)
+            || settings.get(&AdventureSettingsType::Flying)
+        {
+            can_fly = true;
+        }
+    }
+    let gamerule_enabled = world_manager
+        .get_world(world_id)
+        .map(|w| w.world_data.gamerules.fall_damage_enabled())
+        .unwrap_or(true);
+    match decide_fall_damage(
+        distance,
+        landing,
+        sneaking,
+        immune_gamemode,
+        can_fly,
+        gamerule_enabled,
+        true,
+    ) {
+        FallDamageOutcome::NoDamage => {}
+        FallDamageOutcome::Damage(damage) => {
+            log::debug!(
+                "fall damage: entity={} distance={:.2} damage={:.2} landing={:?}",
+                runtime_id,
+                distance,
+                damage,
+                landing
+            );
+            apply_fall_damage(world, entity, runtime_id, damage, publisher);
+        }
+    }
+}
+
+/// Classify the landing blocks (feet + below, both layers) into water/slime/normal.
+///
+/// Cache-only (`cached_chunk`): unloaded columns return `Normal` and let the
+/// collision probe own the ground truth; never trigger IO here.
+fn landing_material(
+    world_manager: &MinecraftWorldManager,
+    world_id: &MinecraftWorldId,
+    feet: Position,
+) -> LandingMaterial {
+    let Some(minecraft_world) = world_manager.get_world(world_id) else {
+        return LandingMaterial::Normal;
+    };
+    let dimension = minecraft_world.world_data.get_dimension();
+    let bx = feet.x.floor() as i32;
+    let bz = feet.z.floor() as i32;
+    let by = feet.y.floor() as i32;
+    let key = ChunkKey::new(dimension, ChunkPosition::from_world(bx, bz));
+    let Some(column) = minecraft_world.chunk_provider.cached_chunk(key) else {
+        return LandingMaterial::Normal;
+    };
+    let chunk = column.read();
+    let lx = bx.rem_euclid(16) as u8;
+    let lz = bz.rem_euclid(16) as u8;
+    let dict = sc_world::block_dictionary::BlockStateDictionary::global();
+    let is_water = |id: Option<sc_world::chunk::BlockRuntimeId>| {
+        id.is_some_and(|id| {
+            dict.get(id.0)
+                .is_some_and(|entry| entry.name == "minecraft:water")
+        })
+    };
+    let is_slime = |id: Option<sc_world::chunk::BlockRuntimeId>| {
+        id.is_some_and(|id| {
+            dict.get(id.0)
+                .is_some_and(|entry| entry.name == "minecraft:slime")
+        })
+    };
+    // Feet block (either layer) water cushions; below-block slime cushions.
+    let feet0 = chunk.block_at_layer(0, lx, by, lz);
+    let feet1 = chunk.block_at_layer(1, lx, by, lz);
+    if is_water(feet0) || is_water(feet1) {
+        return LandingMaterial::Water;
+    }
+    let below0 = chunk.block_at_layer(0, lx, by - 1, lz);
+    let below1 = chunk.block_at_layer(1, lx, by - 1, lz);
+    if is_slime(below0) || is_slime(below1) || is_slime(feet0) || is_slime(feet1) {
+        return LandingMaterial::Slime;
+    }
+    LandingMaterial::Normal
 }

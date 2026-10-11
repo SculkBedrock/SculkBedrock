@@ -2,9 +2,7 @@
 //! Usage: cargo run -p sc_world --example gen_level_dat -- <level.dat>
 use sc_binary::{ByteReader, ByteWriter};
 use sc_nbt::local::BedrockLocalNbt;
-use sc_nbt::reader::NbtReadTrait;
 use sc_nbt::reader::NbtReader;
-use sc_nbt::writer::NbtWriteTrait;
 use sc_nbt::writer::NbtWriter;
 use sc_nbt::NbtValue;
 

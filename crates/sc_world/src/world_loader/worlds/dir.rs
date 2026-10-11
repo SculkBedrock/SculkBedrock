@@ -31,12 +31,20 @@ fn directory_has_database_state(db_path: &std::path::Path) -> bool {
 pub struct DirectoryWorld;
 
 impl DirectoryWorld {
+    /// Display name of a world directory without touching `level.dat` or the
+    /// LevelDB (`levelname.txt`, falling back exactly like [`DirectoryWorld::get_world`]).
+    ///
+    /// Used by the startup wait loop so polling for a missing overworld is a
+    /// cheap file read instead of an open/close cycle per world per second.
+    pub(crate) fn peek_name(dir: &std::path::Path) -> String {
+        let mut level_name_path = dir.to_path_buf();
+        level_name_path.push("levelname.txt");
+        fs::read_to_string(level_name_path).unwrap_or_else(|_| "SculkBedrock Level".to_string())
+    }
+
     pub fn get_world(path: PathBuf) -> Result<MinecraftWorld, WorldDataReaderError> {
         //world name
-        let mut level_name_path = path.clone();
-        level_name_path.push("levelname.txt");
-        let world_name = fs::read_to_string(level_name_path)
-            .unwrap_or_else(|_| "SculkBedrock Level".to_string());
+        let world_name = Self::peek_name(&path);
 
         //world data
         let mut level_dat_path = path.clone();

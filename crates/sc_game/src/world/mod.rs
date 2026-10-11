@@ -4,13 +4,20 @@
 //! game command code. `WorldHub` lives on the root world; `hub_tick` runs
 //! in-world commands over Running instances each tick.
 
+pub mod bus;
+pub mod ids;
+
+pub use bus::{
+    AnnouncementBus, CrossWorldBus, CrossWorldEvent, CrossWorldPing, PingBus, PingMailbox,
+    RegionPing, RegionPingBus, TeleportBus, TeleportRequest, WorldAnnouncement, WorldMailbox,
+};
+pub use ids::{RegionEpoch, RegionShardId, RegionTick, WorldInstanceId};
+
 use sc_ecs::component::Component;
 use sc_ecs::resource::Resource;
 use sc_ecs::world::World;
 use sc_world::manager::MinecraftWorldId;
 use std::collections::HashMap;
-
-use crate::bus::PingMailbox;
 
 /// World instance id (0=overworld, 1=nether, 2=end, higher=custom).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -56,7 +63,7 @@ impl WorldHub {
     pub fn spawn_world(&mut self, id: GameWorldId) -> GameWorldId {
         let world = World::new();
         world.insert_resource(TickCounter::default());
-        world.insert_resource(PingMailbox::default());
+        world.insert_resource(bus::PingMailbox::default());
         self.worlds.insert(
             id,
             GameWorld {

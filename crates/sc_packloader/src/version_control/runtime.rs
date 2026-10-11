@@ -319,7 +319,10 @@ impl MinecraftRuntimeManager {
                 true
             }
             Err(error) => {
-                log::warn!("{}", t_log!("console.pack.runtime_creative_fail", error = error));
+                log::warn!(
+                    "{}",
+                    t_log!("console.pack.runtime_creative_fail", error = error)
+                );
                 false
             }
         }

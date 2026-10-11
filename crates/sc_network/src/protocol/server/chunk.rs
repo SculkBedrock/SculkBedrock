@@ -11,8 +11,6 @@ use sc_world::chunk::{
 };
 use std::io::{Error, ErrorKind};
 
-use crate::protocol::ProtocolInfo;
-
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct ChunkRadiusUpdated {
     pub radius: i32,
@@ -376,7 +374,7 @@ mod tests {
         use std::sync::Once;
         static ONCE: Once = Once::new();
         ONCE.call_once(|| {
-            crate::protocol::ProtocolInfo::new_global(
+            let _ = crate::protocol::ProtocolInfo::new_global(
                 MinecraftProtocolVersions::single(2168),
                 MinecraftVersions::new(),
                 "1.26.40".to_string(),
@@ -498,7 +496,7 @@ mod tests {
         let packet = LevelChunk::from_chunk(&chunk).expect("chunk encoding");
         assert_eq!(packet.sub_chunk_count, 5);
         let air = air_runtime_id() as i32;
-        let storage_len = 1 // storage header
+        let _storage_len = 1 // storage header
             + 128 * 4 // bits=1 → 4096/32=128 words × 4B
             + var_i32_len(2) // palette length ([air, 777])
             + var_i32_len(air)

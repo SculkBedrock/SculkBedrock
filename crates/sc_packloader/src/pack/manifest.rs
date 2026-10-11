@@ -91,15 +91,23 @@ pub(crate) struct ResourcePackManifestJsonHeader {
 
 #[derive(Deserialize, Debug)]
 pub(crate) struct ResourcePackManifestJsonModules {
+    // 数据包 schema/数据模型字段，为兼容性保留
+    #[allow(dead_code)]
     #[serde(default)]
     pub description: Option<String>,
     #[serde(alias = "type")]
     #[serde(default)]
     pub module_type: String,
+    // 数据包 schema/数据模型字段，为兼容性保留
+    #[allow(dead_code)]
     #[serde(default)]
     pub uuid: String,
+    // 数据包 schema/数据模型字段，为兼容性保留
+    #[allow(dead_code)]
     #[serde(default)]
     pub version: Option<MinecraftVersionEnum>,
+    // 数据包 schema/数据模型字段，为兼容性保留
+    #[allow(dead_code)]
     #[serde(default)]
     pub language: Option<String>,
 }

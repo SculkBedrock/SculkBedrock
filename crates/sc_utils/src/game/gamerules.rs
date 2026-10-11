@@ -166,6 +166,17 @@ impl GameRules {
         Default::default()
     }
 
+    pub fn get_bool(&self, rule: &GameRule) -> Option<bool> {
+        match self.map.get(rule)?.value {
+            GameRuleType::Bool(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    pub fn fall_damage_enabled(&self) -> bool {
+        self.get_bool(&GameRule::FallDamage).unwrap_or(true)
+    }
+
     pub fn change(&mut self, rule: GameRule, value: GameRuleValue) {
         self.map.insert(rule, value);
     }
@@ -329,5 +340,34 @@ impl<'de> Deserialize<'de> for GameRules {
         D: Deserializer<'de>,
     {
         Ok(Self::new())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fall_damage_defaults_on_and_reads_bool() {
+        let rules = GameRules::default();
+        assert!(rules.fall_damage_enabled());
+        assert_eq!(rules.get_bool(&GameRule::FallDamage), Some(true));
+    }
+
+    #[test]
+    fn fall_damage_off_is_honored_and_non_bool_is_none() {
+        let mut rules = GameRules::default();
+        rules.change(
+            GameRule::FallDamage,
+            GameRuleValue::new(GameRuleType::Bool(false)),
+        );
+        assert!(!rules.fall_damage_enabled());
+        rules.change(
+            GameRule::FallDamage,
+            GameRuleValue::new(GameRuleType::Int(0)),
+        );
+        assert_eq!(rules.get_bool(&GameRule::FallDamage), None);
+        // Unknown-type reads fall back to enabled (fail-open for damage).
+        assert!(rules.fall_damage_enabled());
     }
 }

@@ -33,6 +33,8 @@ use sc_nbt::NbtValue;
 use sc_packloader::block::{parse_legacy_palette_entries, split_state_key, LegacyPaletteEntry};
 
 const CB_PROPS: &str = "org.powernukkitx.block.property.CommonBlockProperties";
+// Reserved for data-extraction defaults (kept for upstream class-path symmetry).
+#[allow(dead_code)]
 const BLOCK_ID: &str = "org.powernukkitx.block.BlockID";
 
 /// Property default (internal form; checked by exact NBT match).
@@ -291,15 +293,15 @@ struct PropDecl {
 }
 
 pub fn run(args: &[String]) {
-    let mut pnx: Option<&str> = None;
+    let mut java_src: Option<&str> = None;
     let mut palette: Option<&str> = None;
     let mut out: Option<&str> = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--pnx" => {
+            "--java-src" => {
                 i += 1;
-                pnx = args.get(i).map(String::as_str);
+                java_src = args.get(i).map(String::as_str);
             }
             "--palette" => {
                 i += 1;
@@ -316,11 +318,11 @@ pub fn run(args: &[String]) {
         }
         i += 1;
     }
-    let (Some(pnx), Some(palette), Some(out)) = (pnx, palette, out) else {
-        eprintln!("usage: extract-defaults --pnx <src/main/java> --palette <block_palette.nbt> --out <defaults.json>");
+    let (Some(java_src), Some(palette), Some(out)) = (java_src, palette, out) else {
+        eprintln!("usage: extract-defaults --java-src <src/main/java> --palette <block_palette.nbt> --out <defaults.json>");
         std::process::exit(2);
     };
-    match extract(Path::new(pnx), Path::new(palette)) {
+    match extract(Path::new(java_src), Path::new(palette)) {
         Ok(report) => {
             let json = serde_json::to_string_pretty(&report.defaults).unwrap_or_else(|e| {
                 eprintln!("defaults JSON serialize failed: {e}");
@@ -1063,7 +1065,6 @@ pub fn extract_from_entries(java_root: &Path, entries: &[LegacyPaletteEntry]) ->
 mod pipeline_tests {
     use super::*;
     use std::collections::{BTreeMap, HashMap};
-    use std::io::Read;
 
     /// Full version-pack pipeline: NBT to JSON to compile to equivalence.
     ///
@@ -1078,28 +1079,26 @@ mod pipeline_tests {
             BlockJsonBundle,
         };
 
-        let pack_path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../version_packs/[SC原版版本包] Vanilla-1.26.40.scver"
-        );
-        let pnx_root = concat!(
+        let fetched_src_root = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../.fetch/PowerNukkitX-master/src/main/java"
         );
-        let bytes = fs::read(pack_path).expect("read version pack");
-        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("open zip");
-        let read_entry = |zip: &mut zip::ZipArchive<std::io::Cursor<Vec<u8>>>, name: &str| {
-            let mut f = zip.by_name(name).unwrap_or_else(|_| panic!("{name} missing"));
-            let mut buf = Vec::new();
-            f.read_to_end(&mut buf).unwrap();
-            buf
+        let Some(mut source) = sc_packloader::test_pack::open_test_pack() else {
+            eprintln!("[skip] 版本包缺失，跳过测试");
+            return;
         };
-        let palette_bytes = read_entry(&mut zip, "definitions/block_palette.nbt");
+        let read_entry = |source: &mut sc_packloader::pack_loader::pack::zipped::PackSource,
+                          name: &str| {
+            source
+                .read_file(name)
+                .unwrap_or_else(|| panic!("{name} missing"))
+        };
+        let palette_bytes = read_entry(&mut source, "definitions/block_palette.nbt");
         let entries = parse_legacy_palette_entries(&palette_bytes).expect("parse legacy palette");
         assert!(entries.len() > 10000, "real pack must have scale");
 
         // 1. Default extraction: zero hard errors, zero misses.
-        let report = extract_from_entries(Path::new(pnx_root), &entries);
+        let report = extract_from_entries(Path::new(fetched_src_root), &entries);
         assert_eq!(report.hard_errors, 0, "hard errors must be 0");
         assert!(
             report.combo_miss.is_empty(),
@@ -1140,7 +1139,7 @@ mod pipeline_tests {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         let hardness_report =
-            crate::extract_hardness::extract_hardness_from_entries(Path::new(pnx_root), &entries);
+            crate::extract_hardness::extract_hardness_from_entries(Path::new(fetched_src_root), &entries);
         assert_eq!(
             hardness_report.hard_errors, 0,
             "hardness hard errors must be 0 (non-literals/unknown chains only skip)"

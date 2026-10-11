@@ -61,7 +61,7 @@ pub use completion::{
 };
 pub use config::{ConsoleConfig, ConsoleMode, ResolvedMode};
 pub use driver::{spawn_console, spawn_console_hosted, ConsoleDriver, ConsoleHandle, WelcomeChoice};
-pub use logger::{install_logger, ExtraSink};
+pub use logger::{install_logger, set_console_max_level, ExtraSink};
 pub use model::{ConsoleHeader, ConsoleStats, LogLevel, LogLine, ServerPhase};
 
 // Quote typewriter (`Typewriter` / `TwFrame`) is defined below: the state machine is independent of terminal IO,

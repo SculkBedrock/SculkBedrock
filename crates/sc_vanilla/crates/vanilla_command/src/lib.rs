@@ -75,6 +75,11 @@ impl SCPlugin for VanillaCommand {
             log::warn!("{}", t_log!("console.command.registry_missing"));
         }
         app.add_systems(SCPluginEventUpdate, say_command);
+        // NOTE: /give moved host-side (sc_command builtin registration +
+        // sc_network execution): grants touch entity components, which do
+        // not cross the cdylib boundary, so a plugin implementation can
+        // register but never execute. Keep argument-parsing-only commands
+        // here; anything needing components belongs to the host.
         log::info!("{}", t_log!("console.command.loaded", registered = registered));
     }
 

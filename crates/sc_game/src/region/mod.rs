@@ -7,9 +7,12 @@
 //!
 //! Shared framework types re-export here for game-domain use.
 
+pub mod transaction;
+
 pub use sc_ecs::region::{
     EntityRegion, Region, RegionBus, RegionDriver, RegionEvent, RegionHub, RegionStatus,
 };
+pub use transaction::{OperationId, ParticipantVote, TransactionCoordinator, TransactionState};
 
 use parking_lot::RwLock;
 use sc_ecs::resource::Resource;
@@ -20,7 +23,7 @@ use sc_world::manager::MinecraftWorldManager;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::bus::{RegionPing, RegionPingBus};
+use crate::world::bus::{RegionPing, RegionPingBus};
 use crate::world::GameWorldId;
 
 /// Region identity (in-world grid coordinates).
@@ -274,6 +277,19 @@ fn region_physics(world: &World, region: RegionId) {
                 tf.on_ground = true;
             }
             tf.velocity.y = 0.0;
+        }
+        let feet_y = tf.position.y;
+        let on_ground = tf.on_ground;
+        drop(tf);
+        // Same tracking-only contract as `movement_physics`: settle exactly
+        // once per landing, pin highest, no damage until the P3 pipeline.
+        use sc_entity::motion::FallState;
+        if world.get_component::<FallState>(&entity).is_none() {
+            world.add_component(&entity, FallState::new(feet_y, on_ground));
+        } else if let Some(fall) = world.get_component::<FallState>(&entity) {
+            if fall.observe(feet_y, on_ground).is_some() {
+                fall.reset(feet_y, on_ground);
+            }
         }
     }
 }

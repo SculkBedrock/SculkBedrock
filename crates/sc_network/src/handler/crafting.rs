@@ -16,7 +16,7 @@
 //!
 //! All functions are pure and synchronous; no locks are held.
 
-use sc_recipe::{CraftActor, CraftContext, CraftIntent, ExpectedSlot, StationKind};
+use sc_recipe::{CraftActor, CraftContext, CraftIntent, StationKind};
 
 use crate::protocol::client::crafting_request::{ItemStackRequest, ItemStackRequestAction};
 use crate::protocol::client::transaction::{InventoryTransaction, TransactionType};
@@ -264,6 +264,17 @@ mod tests {
             A::Unsupported
         ));
     }
+
+    #[test]
+    fn creative_action_translates_to_grant_not_unsupported() {
+        use sc_game::craft_inventory::InventoryAction as A;
+        // The live creative take must survive translation (it used to be
+        // Unknown -> Unsupported, rejecting the whole request server-side).
+        assert!(matches!(
+            translate_inventory_action(&ItemStackRequestAction::CraftCreative { creative_id: 1 }),
+            A::Grant { creative_id: 1 }
+        ));
+    }
 }
 
 // ===================== Event translation =====================
@@ -380,25 +391,36 @@ fn translate_inventory_action(
     let slot = |reference: &crate::protocol::client::crafting_request::RequestSlotRef| {
         // ContainerEnumName (wire values; 21+ shifted by +1 since v560, hence off by one
         // from the old v407 table: 28=HOTBAR, 29=INVENTORY, 59=CURSOR, 60=CREATED_OUTPUT).
-        let container = match reference.container_enum {
-            12 => C::CombinedInventory,
-            28 => C::Hotbar,
-            29 => C::Inventory,
-            13 => C::Grid,
-            59 => C::Cursor,
-            60 => C::Output,
+        // Furnace windows (protocol container table, v407 ids +1 shift since
+        // v560): 24=fuel, 25=ingredient,
+        // 26=result, 45=blast ingredient, 46=smoker ingredient.
+        let (container, furnace_slot) = match reference.container_enum {
+            12 => (C::CombinedInventory, 0),
+            28 => (C::Hotbar, 0),
+            29 => (C::Inventory, 0),
+            13 => (C::Grid, 0),
+            59 => (C::Cursor, 0),
+            60 => (C::Output, 0),
+            24 => (C::Furnace, sc_game::furnace::FUEL_SLOT),
+            25 | 45 | 46 => (C::Furnace, sc_game::furnace::INPUT_SLOT),
+            26 => (C::Furnace, sc_game::furnace::RESULT_SLOT),
             _ => return None,
         };
         // dynamic only appears on windowed crafting grids (= workbench window id, used only
         // for routing; all other containers always use None, so dynamic there means untrusted).
-        if reference.dynamic_slot.is_some() && container != C::Grid {
+        // Furnace windows pass it through: the game layer accepts None or the open window id.
+        if reference.dynamic_slot.is_some() && container != C::Grid && container != C::Furnace {
             return None;
         }
         Some(CraftSlotRef {
             container,
-            slot: reference.slot,
+            slot: if container == C::Furnace {
+                furnace_slot
+            } else {
+                reference.slot
+            },
             net_id: reference.net_id,
-            dynamic: if container == C::Grid {
+            dynamic: if container == C::Grid || container == C::Furnace {
                 reference.dynamic_slot
             } else {
                 None
@@ -447,6 +469,9 @@ fn translate_inventory_action(
         ItemStackRequestAction::Consume { .. } => A::Consume,
         ItemStackRequestAction::Create { .. } => A::Create,
         ItemStackRequestAction::CraftResults { .. } => A::Results,
+        ItemStackRequestAction::CraftCreative { creative_id } => A::Grant {
+            creative_id: *creative_id,
+        },
         _ => A::Unsupported,
     }
 }

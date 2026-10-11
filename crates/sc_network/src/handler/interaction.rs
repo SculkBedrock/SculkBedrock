@@ -208,6 +208,7 @@ fn handle_inventory_transaction(
                         face: packet.face,
                         hotbar_slot: packet.slot,
                         item_id: packet.item.runtime_id as i32,
+                        click_y: packet.click_y,
                     });
                 }
                 // BREAK is translated by the ordered receive path.

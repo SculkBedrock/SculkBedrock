@@ -5,6 +5,8 @@ use sc_ecs::entity::EntityId;
 use sc_ecs::world::World;
 use sc_utils::game::structs::server::Server;
 
+// Retained owner-scoped broadcast API; wired up in a later phase.
+#[allow(dead_code)]
 #[async_trait]
 pub trait SCNetworkServer {
     async fn broadcast_packet<P: MinecraftPacket + Clone + Send + Sync + 'static>(

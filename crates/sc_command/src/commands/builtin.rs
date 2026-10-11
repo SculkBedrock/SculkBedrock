@@ -1,8 +1,11 @@
 //! SC core builtin commands.
 //!
-//! Only server-lifecycle commands independent of version-pack data (/help, /stop);
-//! vanilla gameplay commands (/say, /gamemode, /give, ...) depend on the version-pack registry
-//! and are registered/implemented by version-pack plugins (e.g. vanilla_command).
+//! Server-lifecycle commands (/help, /stop) plus host-executed gameplay
+//! commands (/gamemode, /give). Command bodies that only parse arguments and
+//! emit events may live in version-pack plugins (e.g. vanilla_command /say),
+//! but bodies that touch entity components must execute host-side:
+//! components do not cross the cdylib boundary (`Any` downcast fails
+//! plugin-side), so /gamemode and /give run in sc_network with full access.
 
 use sc_ecs::params::event::EventReader;
 use sc_ecs::world::World;
@@ -51,6 +54,46 @@ pub fn register_builtin_commands(registry: &mut CommandRegistry) {
                 crate::registry::CommandParameter::optional(
                     "player",
                     crate::registry::CommandParamType::Target,
+                ),
+            ],
+        }),
+    );
+    // Test/debug grant (operator tool, not vanilla parity): executed
+    // host-side in sc_network (component access cannot cross the plugin
+    // DLL boundary). Permission stays Any until the player permission
+    // component lands; tighten to Host/Admin with that work.
+    let _ = registry.register(
+        CommandDefinition::new(
+            "give",
+            "Gives items to yourself (testing)",
+            CommandSource::BuiltIn,
+        )
+        .with_permission(CommandPermissionLevel::Any)
+        .with_overload(crate::registry::CommandOverload {
+            parameters: vec![
+                crate::registry::CommandParameter::required(
+                    "item",
+                    crate::registry::CommandParamType::String,
+                ),
+                crate::registry::CommandParameter::optional(
+                    "count",
+                    crate::registry::CommandParamType::Int,
+                ),
+            ],
+        })
+        .with_overload(crate::registry::CommandOverload {
+            parameters: vec![
+                crate::registry::CommandParameter::required(
+                    "player",
+                    crate::registry::CommandParamType::Target,
+                ),
+                crate::registry::CommandParameter::required(
+                    "item",
+                    crate::registry::CommandParamType::String,
+                ),
+                crate::registry::CommandParameter::optional(
+                    "count",
+                    crate::registry::CommandParamType::Int,
                 ),
             ],
         }),

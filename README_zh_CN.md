@@ -40,8 +40,8 @@
 - **多线程/异步支持**: SculkBedrock 原生支持 **多线程/异步**. 网络/游戏逻辑 等通过调度器并发运行, 保障游戏流畅度.
 - **基于意图的网络系统**: 通过意图解耦游戏逻辑层及网络层, 防止互相影响.
 - **兼容 MCBE 官方的 Addons**: 通过 **Molang 解释器及 JavaScript 解释器**, 轻松运行 MCBE 官方的 Addons. 未来可能会进一步兼容 **我的世界: 中国版** Python插件.
-- **插件系统**：**Rust 内置插件** 与 **C-ABI 动态库插件** 共存, 未来可能还会支持 **PowerNukkitX插件、TypeScript插件** 等.
-- **精美的TUI界面**: 不知道有什么用, 反正看着很牛逼就对了. 
+- **插件系统**：**Rust 内置插件** 与 **C-ABI 动态库插件** 共存, 未来可能还会支持 **PowerNukkitX/AllayMC插件、TypeScript插件** 等(根据实际情况而定, 不保证会实现).
+- **精美的TUI界面**: 不知道有什么用, 反正看着很牛逼就对了.
 - **更多等你发现**
 
 ## 🎆开始使用🎆
@@ -53,9 +53,9 @@
 
 服务端运行**需要版本包**，否则无法正常启动和进服。
 
-- 版本包仓库：[SculkBedrock-VersionPack](https://github.com/SculkBedrock/SculkBedrock-VersionPacks)
-- 将下载的 `.scver` 文件放入 `version_packs/` 目录。
-- 版本包内的插件代码位于版本包仓库的 `crates/ur_vanilla` 下。
+- 版本包仓库：[VersionPack](https://github.com/SculkBedrock/VersionPacks)
+- 将下载的 `.scver` 文件放入 `version_packs/` 目录.
+- 版本包内的插件代码位于版本包仓库的 `crates/ur_vanilla` 下.
 
 ### 2. 运行 / 构建
 
@@ -68,29 +68,33 @@ cargo check -p sc_bootstrap
 cargo build -p sc_bootstrap
 ```
 
-常用配置在 `server_properties.toml`（端口、MOTD、视距、每 tick 区块数、出生阈值）。
+常用配置在 `server_properties.toml`(端口、MOTD、视距、每 tick 区块数、出生阈值)
 
 > [!NOTE]
-> 目前需要先用 Minecraft 生成 `level.dat` 并放入世界文件夹（例如 `worlds/OverWorld/level.dat`），才能启动服务端。
+> 目前需要先用 Minecraft 生成 `level.dat` 并放入世界文件夹(例如 `worlds/OverWorld/level.dat`), 才能启动服务端.
 
 ## ✅当前项目进度✅
 
 ### 网络:
 
 - [x] 基础协议包实现
-- [ ] 完整协议包实现
 - [x] 登录与出生
 - [x] 区块订阅 / 编码 / 有序交付循环与回执 **(部分完成)**
+- [ ] ⏸️ **(正在进行)** **(重磅功能)** 基于 数据驱动和ECS 的 ProtoBuf 网络协议格式
+- [ ] 完整协议包实现
 
 ### 游戏逻辑:
 
 - [x] 物品配方合成 **(部分完成)**
 - [ ] ⏸️ **(正在进行)** 工作台/熔炉/切石机 等方块功能
 - [ ] ⏸️ **(正在进行)** 实体摔落伤害计算/饱食度
+- [ ] ⏸️ **(正在进行)** 物品耐久度
+- [ ] ⏸️ **(正在进行)** 末影箱/箱子/发射器/投掷器 等容器方块功能
+- [ ] ⏸️ **(正在进行)** 掉落物碰撞
 - [ ] 物品附魔/数值
 
 ### 方块:
-- [ ] Block Entity支持
+- [ ] ⏸️ **(正在进行)** Block Entity支持
 - [ ] 功能方块
 
 ### 其他功能:
@@ -108,7 +112,7 @@ cargo build -p sc_bootstrap
 - [PowerNukkitX](https://github.com/PowerNukkitX/PowerNukkitX)
 - [PocketMine-MP](https://github.com/pmmp/PocketMine-MP)
 - [JSPrismarine](https://github.com/JSPrismarine/JSPrismarine)
-- [NetrexMC](https://github.com/NetrexMC)
+- [NetrexMC](https://github.com/NetrexMC) (rak-rs & binary-utils)
 - [Bevy](https://github.com/bevyengine/bevy)
 ## 👉反馈👈
 

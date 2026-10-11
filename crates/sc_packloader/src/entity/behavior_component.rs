@@ -822,6 +822,8 @@ pub struct BehaviorGoAndGiveItemsToOwner {
     #[serde_inline_default(3.0)]
     pub reach_block_distance: f64,
     #[serde_inline_default(1.0)]
+    // 数据包 schema/数据模型字段，为兼容性保留
+    #[allow(dead_code)]
     pubrun_speed: f64,
     #[serde_inline_default(0.2)]
     pub throw_force: f64,

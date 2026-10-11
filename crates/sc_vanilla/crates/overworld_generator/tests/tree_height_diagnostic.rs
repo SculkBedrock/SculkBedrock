@@ -93,12 +93,12 @@ fn tree_height_diagnostic() {
             total_logs += logs.len();
 
             // Per column (x,z) x per type: contiguous run length down from the top log
-            use std::collections::{BTreeMap, HashMap, HashSet};
+            use std::collections::{HashMap, HashSet};
             let mut cols: HashMap<(u8, u8, BlockRuntimeId), HashSet<i32>> = HashMap::new();
             for (lx, y, lz, b) in &logs {
                 cols.entry((*lx, *lz, *b)).or_default().insert(*y);
             }
-            for ((lx, lz, b), ys) in &cols {
+            for ((_lx, _lz, b), ys) in &cols {
                 let name = log_ids
                     .iter()
                     .find(|(_, id)| id == b)

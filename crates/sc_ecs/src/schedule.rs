@@ -104,6 +104,8 @@ impl ScheduleManager {
         self.startup_labels.insert(index + 1, schedule.intern());
     }
 
+    // Plugin API surface reserved for registering systems on a schedule.
+    #[allow(dead_code)]
     pub(crate) fn add_systems<S, Marker>(&mut self, schedule: impl ScheduleLabel, system: S)
     where
         S: IntoSystem<S, Marker> + 'static,

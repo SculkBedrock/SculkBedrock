@@ -626,7 +626,7 @@ impl PlayerConnection {
         packet: BatchPacket,
         immediate: bool,
         permit: sc_raknet::connection::OutboundSlotPermit,
-        barrier: u64,
+        _barrier: u64,
     ) -> Result<(), PlayerConnectionError> {
         // Debug: per-packet delay on all paths (SC_SEND_DELAY_MS in ms; 0 = no delay).
         // The login sequence, chunk pipeline, and first spawn all pass through

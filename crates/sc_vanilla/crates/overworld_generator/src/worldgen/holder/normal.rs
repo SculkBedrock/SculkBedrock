@@ -249,6 +249,7 @@ impl BiomeHolder {
 /// Terrain density-function holder (continents/erosion/ridges/caves/veins/materials/aquifer).
 ///
 /// Reads biome noise through the explicitly passed `&BiomeHolder`.
+#[allow(dead_code)]
 pub struct TerrainHolder {
     random: Xoroshiro128,
     surface_noise: Arc<NormalNoise>,

@@ -1,4 +1,7 @@
 [workspace]
+# Pinned to v1 to preserve the current lockfile resolution; bumping to "2"
+# would re-resolve features and rebuild the dependency graph.
+resolver = "1"
 members = [
     "crates/sc_async",
     "crates/sc_ecs",
@@ -28,6 +31,7 @@ members = [
     "crates/sc_data_extractor",
     "crates/sc_log_macros",
     "crates/sc_game",
+    "crates/sc_game/sc_game_macros",
     "crates/sc_recipe",
     "crates/sc_console",
     "crates/sc_plugin_api",

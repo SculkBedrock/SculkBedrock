@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
+use sc_block::workstation::SlotRole;
 use sc_ecs::component::Component;
 use sc_ecs::resource::Resource;
 use sc_item::{ItemRegistry, ItemStack, PlayerInventory};
@@ -22,8 +23,8 @@ use sc_recipe::{
     TxSlot, UnlockPolicy,
 };
 
-use crate::container::ContainerOpen;
-use crate::net::{NetworkIntent, NetworkOutbox};
+use crate::inventory::ContainerOpen;
+use crate::net::{CraftResponse, NetworkIntent, NetworkOutbox, OpenCraftingStation, ResyncInventory, UpdateInventorySlot};
 
 // ===================== components / resources =====================
 
@@ -171,6 +172,11 @@ impl SharedItemTags {
 /// Owner-local duration-process state (furnace / blast / smoker / campfire /
 /// brewing / smithing). Bounded, ticked by the owning region; async workers
 /// never write this directly.
+///
+/// Generic over slot count: `slots`/`roles` mirror the block's
+/// `sc:workstation` decl slots one-to-one (furnace 3, campfire 4+ with
+/// `Extra`). Dual clocks are mandatory (burn runs on its own, cook only
+/// advances while smeltable; one `progress_ticks` cannot express a furnace).
 #[derive(Component, Clone, Debug)]
 pub struct BlockProcessState {
     inner: Arc<RwLock<ProcessData>>,
@@ -179,26 +185,43 @@ pub struct BlockProcessState {
 #[derive(Clone, Debug)]
 struct ProcessData {
     kind: StationKind,
-    input: Option<ItemStack>,
-    fuel: Option<ItemStack>,
-    output: Option<ItemStack>,
-    progress_ticks: u32,
-    required_ticks: u32,
+    slots: Vec<ItemStack>,
+    roles: Vec<SlotRole>,
+    burn_remaining: u32,
+    burn_max: u32,
+    cook_progress: u16,
+    cook_total: u16,
     dirty: bool,
     saved_generation: u64,
     generation: u64,
 }
 
+/// Full-slot snapshot for persistence without holding the guard across IO
+/// (storage wiring is a later slice; this only defines the interface).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessSnapshot {
+    pub generation: u64,
+    pub dirty: bool,
+    pub kind: StationKind,
+    pub slots: Vec<(SlotRole, ItemStack)>,
+    pub burn_remaining: u32,
+    pub burn_max: u32,
+    pub cook_progress: u16,
+    pub cook_total: u16,
+}
+
 impl BlockProcessState {
-    pub fn new(kind: StationKind, required_ticks: u32) -> Self {
+    pub fn new(kind: StationKind, roles: Vec<SlotRole>, cook_total: u16) -> Self {
+        let slots = vec![ItemStack::empty(); roles.len()];
         Self {
             inner: Arc::new(RwLock::new(ProcessData {
                 kind,
-                input: None,
-                fuel: None,
-                output: None,
-                progress_ticks: 0,
-                required_ticks: required_ticks.max(1),
+                slots,
+                roles,
+                burn_remaining: 0,
+                burn_max: 0,
+                cook_progress: 0,
+                cook_total: cook_total.max(1),
                 dirty: false,
                 saved_generation: 0,
                 generation: 0,
@@ -208,56 +231,194 @@ impl BlockProcessState {
     pub fn kind(&self) -> StationKind {
         self.inner.read().kind
     }
-    /// Insert input if the slot is free and bounded (one stack max).
+    pub fn is_burning(&self) -> bool {
+        self.inner.read().burn_remaining > 0
+    }
+    pub fn burn_remaining(&self) -> u32 {
+        self.inner.read().burn_remaining
+    }
+    pub fn burn_max(&self) -> u32 {
+        self.inner.read().burn_max
+    }
+    pub fn cook_progress(&self) -> u16 {
+        self.inner.read().cook_progress
+    }
+    pub fn cook_total(&self) -> u16 {
+        self.inner.read().cook_total
+    }
+    /// Lit-time progress for `ContainerSetData` property 1
+    /// (`ceil(burn/max * cook_total)`, burn-duration scaling). Duration is
+    /// owned (decl-fed), so no parameter unlike the store-side version.
+    pub fn lit_progress(&self) -> u16 {
+        let data = self.inner.read();
+        if data.burn_max == 0 || data.burn_remaining == 0 {
+            return 0;
+        }
+        let ready = data.cook_total as u32;
+        ((data.burn_remaining as u64 * ready as u64 + data.burn_max as u64 - 1)
+            / data.burn_max as u64) as u16
+    }
+    /// Slots in furnace window order `[input, fuel, result]` (missing roles
+    /// read as empty; decls always carry all three for fuel processes, so a
+    /// missing role here only fires on invalid packs or role-less kinds).
+    pub fn furnace_slots(&self) -> [ItemStack; 3] {
+        let data = self.inner.read();
+        let at = |role: SlotRole| {
+            Self::role_index(&data, role)
+                .map(|index| data.slots[index].clone())
+                .unwrap_or_else(ItemStack::empty)
+        };
+        [
+            at(SlotRole::Input),
+            at(SlotRole::Fuel),
+            at(SlotRole::Result),
+        ]
+    }
+    fn role_index(data: &ProcessData, role: SlotRole) -> Option<usize> {
+        data.roles.iter().position(|candidate| *candidate == role)
+    }
+    /// Cloned slot by role (`None` when the decl carries no such role;
+    /// never panics on role absence).
+    pub fn slot(&self, role: SlotRole) -> Option<ItemStack> {
+        let data = self.inner.read();
+        Self::role_index(&data, role).map(|index| data.slots[index].clone())
+    }
+    /// Overwrite a slot by role (false when the decl carries no such role).
+    pub fn set_slot(&self, role: SlotRole, stack: ItemStack) -> bool {
+        let mut data = self.inner.write();
+        let Some(index) = Self::role_index(&data, role) else {
+            return false;
+        };
+        if data.slots[index] != stack {
+            data.slots[index] = stack;
+            data.generation = data.generation.wrapping_add(1);
+            data.dirty = true;
+        }
+        true
+    }
+    /// Take a slot by role, leaving it empty (`None` when the decl carries
+    /// no such role; `Some` possibly-empty stack otherwise).
+    pub fn take_slot(&self, role: SlotRole) -> Option<ItemStack> {
+        let mut data = self.inner.write();
+        let index = Self::role_index(&data, role)?;
+        let taken = std::mem::replace(&mut data.slots[index], ItemStack::empty());
+        if !taken.is_empty() {
+            data.generation = data.generation.wrapping_add(1);
+            data.dirty = true;
+        }
+        Some(taken)
+    }
+    /// Insert input if the input slot is free and bounded (one stack max).
     pub fn insert_input(&self, stack: ItemStack) -> bool {
         let mut data = self.inner.write();
-        if data.input.as_ref().is_some_and(|s| !s.is_empty()) {
+        let Some(index) = Self::role_index(&data, SlotRole::Input) else {
+            return false;
+        };
+        if !data.slots[index].is_empty() {
             return false;
         }
-        data.input = Some(stack);
+        data.slots[index] = stack;
         data.generation = data.generation.wrapping_add(1);
         data.dirty = true;
         true
     }
-    /// One owner tick of progress. Returns true when the process finished
-    /// and output is ready (caller moves output into the inventory through
-    /// the normal craft path, not by writing ECS from a worker).
-    pub fn tick(&self) -> bool {
+    /// One owner tick of burn/cook (vanilla furnace semantics: burn decrements
+    /// per tick, cook advances while smeltable, completion moves one output
+    /// into the result slot, fuel exhaustion resets progress). `output` is the current smelt
+    /// result for the input (`None` = nothing smeltable); `max_stack` caps
+    /// the result slot. Duration comes from the decl-fed `cook_total`, never
+    /// from the station here.
+    pub fn advance(
+        &self,
+        output: Option<&ItemStack>,
+        fuel_ticks: u32,
+        max_stack: u16,
+    ) -> crate::furnace::TickOutcome {
+        use crate::furnace::TickOutcome;
         let mut data = self.inner.write();
-        if data.input.as_ref().is_none_or(|s| s.is_empty()) {
-            data.progress_ticks = 0;
-            return false;
+        let was_burning = data.burn_remaining > 0;
+        let mut outcome = TickOutcome::default();
+        let input = Self::role_index(&data, SlotRole::Input);
+        let fuel = Self::role_index(&data, SlotRole::Fuel);
+        let result = Self::role_index(&data, SlotRole::Result);
+        let can_smelt = match (input, result) {
+            (Some(input), Some(result)) => output.is_some_and(|out| {
+                !data.slots[input].is_empty()
+                    && (data.slots[result].is_empty()
+                        || (data.slots[result].runtime_id == out.runtime_id
+                            && data.slots[result].count.saturating_add(out.count)
+                                <= max_stack.max(1)))
+            }),
+            _ => false,
+        };
+        if data.burn_remaining == 0 && can_smelt && fuel_ticks > 0 {
+            if let Some(fuel) = fuel {
+                if !data.slots[fuel].is_empty() {
+                    data.slots[fuel].count = data.slots[fuel].count.saturating_sub(1);
+                    data.slots[fuel].clear_if_empty();
+                    data.burn_remaining = fuel_ticks;
+                    data.burn_max = fuel_ticks;
+                    outcome.consumed_fuel = true;
+                }
+            }
         }
-        data.progress_ticks = data.progress_ticks.saturating_add(1);
-        if data.progress_ticks >= data.required_ticks {
-            data.progress_ticks = 0;
+        if data.burn_remaining > 0 {
+            data.burn_remaining = data.burn_remaining.saturating_sub(1);
+            if can_smelt {
+                if let Some(out) = output {
+                    data.cook_progress = data.cook_progress.saturating_add(1);
+                    if data.cook_progress >= data.cook_total {
+                        if let (Some(input), Some(result)) = (input, result) {
+                            if data.slots[result].is_empty() {
+                                data.slots[result] = out.clone();
+                            } else {
+                                data.slots[result].count =
+                                    data.slots[result].count.saturating_add(out.count);
+                            }
+                            data.slots[input].count = data.slots[input].count.saturating_sub(1);
+                            data.slots[input].clear_if_empty();
+                            data.cook_progress = data.cook_progress.saturating_sub(data.cook_total);
+                            outcome.completed = true;
+                        }
+                    }
+                }
+            }
+        } else {
+            // Out of fuel with nothing burning: progress resets (furnace turn-off).
+            data.cook_progress = 0;
+            data.burn_max = 0;
+        }
+        if outcome.consumed_fuel || outcome.completed {
             data.generation = data.generation.wrapping_add(1);
             data.dirty = true;
-            true
-        } else {
-            data.dirty = true;
-            false
         }
+        outcome.lit_changed = was_burning != (data.burn_remaining > 0);
+        outcome
     }
     pub fn take_output(&self) -> Option<ItemStack> {
-        let mut data = self.inner.write();
-        let out = data.output.take();
-        if out.is_some() {
-            data.generation = data.generation.wrapping_add(1);
-            data.dirty = true;
-        }
-        out
+        self.take_slot(SlotRole::Result)
     }
     pub fn set_output(&self, stack: ItemStack) {
-        let mut data = self.inner.write();
-        data.output = Some(stack);
-        data.generation = data.generation.wrapping_add(1);
-        data.dirty = true;
+        self.set_slot(SlotRole::Result, stack);
     }
-    /// Snapshot for persistence without holding the guard across IO.
-    pub fn snapshot(&self) -> (u64, bool) {
+    /// Full-slot snapshot for persistence without holding the guard across IO.
+    pub fn snapshot(&self) -> ProcessSnapshot {
         let data = self.inner.read();
-        (data.generation, data.dirty)
+        ProcessSnapshot {
+            generation: data.generation,
+            dirty: data.dirty,
+            kind: data.kind,
+            slots: data
+                .roles
+                .iter()
+                .zip(data.slots.iter())
+                .map(|(role, slot)| (*role, slot.clone()))
+                .collect(),
+            burn_remaining: data.burn_remaining,
+            burn_max: data.burn_max,
+            cook_progress: data.cook_progress,
+            cook_total: data.cook_total,
+        }
     }
     /// Save acknowledgement: only clears dirty versions `<= generation` and
     /// only when nothing newer arrived (same contract as chunk writeback).
@@ -488,11 +649,11 @@ pub fn submit_craft(
                     if let Some(stack) = tx_to_item(new, registry) {
                         changed.push((index as u8, stack.clone()));
                         outbox
-                            .push(NetworkIntent::UpdateInventorySlot {
+                            .push(NetworkIntent::UpdateInventorySlot(UpdateInventorySlot {
                                 entity_id: actor_runtime_id,
                                 slot: index as u8,
                                 stack,
-                            })
+                            }))
                             .ok();
                     }
                 }
@@ -525,9 +686,9 @@ fn publish_outcome(
     // result; applied crafts already pushed per-slot updates above.
     if matches!(receipt, CraftReceipt::Rejected { .. }) {
         outbox
-            .push(NetworkIntent::ResyncInventory {
+            .push(NetworkIntent::ResyncInventory(ResyncInventory {
                 entity_id: actor_runtime_id,
-            })
+            }))
             .ok();
     }
 }
@@ -579,7 +740,6 @@ mod tests {
     use super::*;
     use sc_recipe::{CompileBudgets, SourceRecipe};
 
-    #[test]
     /// Returns -1: no second `ContainerOpen` while a workstation window is open.
     #[test]
     fn open_crafting_station_is_refused_while_a_window_is_already_open() {
@@ -638,7 +798,7 @@ mod tests {
     }
 
     fn registry_with(recipe_json: serde_json::Value) -> (ItemRegistry, RecipeRegistrySnapshot) {
-        let mut registry = ItemRegistry::new();
+        let registry = ItemRegistry::new();
         registry.upsert(sc_item::ItemDefinition::new(1, "minecraft:stone"));
         registry.upsert(sc_item::ItemDefinition::new(2, "minecraft:out"));
         let bytes = serde_json::to_vec(&recipe_json).unwrap();
@@ -901,19 +1061,96 @@ mod tests {
         assert!(matches!(outcome.receipt, CraftReceipt::Applied { .. }));
     }
 
+    fn furnace_roles() -> Vec<SlotRole> {
+        vec![SlotRole::Input, SlotRole::Fuel, SlotRole::Result]
+    }
+
     #[test]
-    fn processor_ticks_and_save_ack_contract() {
-        let state = BlockProcessState::new(StationKind::Furnace, 3);
+    fn processor_dual_clocks_advance_independently() {
+        use crate::furnace::TickOutcome;
+        // Burn decays on its own (no input, no output): the burn clock is
+        // independent of the cook clock.
+        let state = BlockProcessState::new(StationKind::Furnace, furnace_roles(), 200);
+        assert!(state.set_slot(SlotRole::Fuel, ItemStack::new(1, 1)));
+        state.set_slot(SlotRole::Input, ItemStack::new(4, 0));
+        // Empty input stack: nothing smeltable, fuel never ignites.
+        let outcome = state.advance(None, 1600, 64);
+        assert_eq!(outcome, TickOutcome::default());
+        assert!(!state.is_burning());
+        // Smeltable input + fuel: ignites, burn decays while cook advances.
+        assert!(state.set_slot(SlotRole::Input, ItemStack::new(4, 1)));
+        let out = ItemStack::new(5, 1);
+        let outcome = state.advance(Some(&out), 1600, 64);
+        assert!(outcome.consumed_fuel);
+        assert!(outcome.lit_changed);
+        assert!(state.is_burning());
+        assert_eq!(state.burn_remaining(), 1599);
+        assert_eq!(state.cook_progress(), 1);
+        // Cook stalls without smeltable input, burn keeps decaying.
+        let outcome = state.advance(None, 1600, 64);
+        assert!(!outcome.consumed_fuel && !outcome.completed);
+        assert_eq!(state.cook_progress(), 1);
+        assert_eq!(state.burn_remaining(), 1598);
+    }
+
+    #[test]
+    fn processor_completes_cook_and_resets_without_fuel() {
+        // Short duration: completion moves one output, consumes one input.
+        let state = BlockProcessState::new(StationKind::Smoker, furnace_roles(), 2);
+        assert!(state.insert_input(ItemStack::new(4, 2)));
+        assert!(
+            !state.insert_input(ItemStack::new(4, 1)),
+            "occupied rejects"
+        );
+        assert!(state.set_slot(SlotRole::Fuel, ItemStack::new(1, 1)));
+        let out = ItemStack::new(5, 1);
+        assert!(!state.advance(Some(&out), 100, 64).completed);
+        let outcome = state.advance(Some(&out), 100, 64);
+        assert!(outcome.completed);
+        assert_eq!(state.slot(SlotRole::Result), Some(ItemStack::new(5, 1)));
+        assert_eq!(
+            state.slot(SlotRole::Input).map(|stack| stack.count),
+            Some(1)
+        );
+        assert_eq!(state.cook_progress(), 0);
+        // Fuel exhaustion resets progress (furnace turn-off).
+        let poor = BlockProcessState::new(StationKind::Furnace, furnace_roles(), 200);
+        assert!(poor.insert_input(ItemStack::new(4, 1)));
+        assert!(poor.set_slot(SlotRole::Fuel, ItemStack::new(2, 1)));
+        for _ in 0..101 {
+            poor.advance(Some(&out), 100, 64);
+        }
+        assert!(!poor.is_burning());
+        assert_eq!(poor.cook_progress(), 0);
+        assert_eq!(poor.slot(SlotRole::Result), Some(ItemStack::empty()));
+    }
+
+    #[test]
+    fn processor_rejects_unknown_roles_and_keeps_save_contract() {
+        // Single-slot decl: fuel/result roles are absent, accessors fail closed.
+        let state = BlockProcessState::new(StationKind::Furnace, vec![SlotRole::Input], 3);
+        assert!(state.slot(SlotRole::Fuel).is_none());
+        assert!(!state.set_slot(SlotRole::Fuel, ItemStack::new(1, 1)));
+        assert!(state.take_slot(SlotRole::Result).is_none());
+        assert!(state.take_output().is_none());
         assert!(state.insert_input(ItemStack::new(1, 1)));
-        assert!(!state.tick());
-        assert!(!state.tick());
-        assert!(state.tick());
-        state.set_output(ItemStack::new(2, 1));
-        let (generation, dirty) = state.snapshot();
-        assert!(dirty);
-        state.acknowledge_save(generation);
+        // Save contract on the full-slot snapshot.
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.cook_total, 3);
+        assert_eq!(snapshot.slots.len(), 1);
+        assert!(snapshot.dirty);
+        state.acknowledge_save(snapshot.generation);
         assert!(!state.is_dirty());
-        assert!(state.take_output().is_some());
+        // Stale acknowledgements never clear newer dirt.
+        assert!(state.insert_input(ItemStack::new(1, 1)) == false);
+        let full = BlockProcessState::new(StationKind::Furnace, furnace_roles(), 3);
+        full.set_output(ItemStack::new(2, 1));
+        let dirtied = full.snapshot();
+        full.acknowledge_save(dirtied.generation.wrapping_sub(1));
+        assert!(full.is_dirty());
+        full.acknowledge_save(dirtied.generation);
+        assert!(!full.is_dirty());
+        assert_eq!(full.take_output(), Some(ItemStack::new(2, 1)));
     }
 }
 
@@ -926,7 +1163,7 @@ mod tests {
 /// Workstations derive from recipe declarations and nearby real blocks.
 #[derive(sc_ecs::event::Event, Clone, Debug)]
 pub struct CraftRequestEvent {
-    pub actions: Vec<crate::craft_inventory::InventoryAction>,
+    pub actions: Vec<crate::inventory::craft_inventory::InventoryAction>,
     pub entity: sc_ecs::entity::EntityId,
     pub recipe_network_id: u32,
     pub requested_count: u16,
@@ -984,13 +1221,15 @@ pub fn open_crafting_station(
         return false;
     };
     let pos = (position.x, position.y, position.z);
-    let Some(station) = station_block_kind(world, &world_id, pos) else {
+    let Some(decl) = workstation_decl_at(world, &world_id, pos) else {
         return false;
     };
-    if !matches!(
-        station,
-        StationKind::CraftingTable | StationKind::Stonecutter
-    ) {
+    let station = StationKind::from_tag(&decl.station);
+    let container_type = decl.container;
+    // Only windowed workstations open (brewing/smithing/campfire decls
+    // address but never open); unknown tags fail closed (load validation
+    // rejects such packs, this is the defense in depth).
+    if station == StationKind::Unknown || !decl.window {
         return false;
     }
     // Requires the OPEN_CONTAINERS ability.
@@ -1053,18 +1292,43 @@ pub fn open_crafting_station(
     log::debug!(
         "[craft] workstation opened {station:?} (block {pos:?}, window {window_id}, feet {feet:?}, dist2={distance:.1})"
     );
-    let mut faults = world.get_resource_mut::<crate::net_faults::PendingConnectionFaults>();
-    crate::net_backpressure::IntentPublisher::new(outbox)
+    let mut faults = world.get_resource_mut::<crate::net::PendingConnectionFaults>();
+    crate::net::IntentPublisher::new(outbox)
         .with_world(world)
         .maybe_with_faults(faults.as_deref_mut())
-        .publish(NetworkIntent::OpenCraftingStation {
+        .publish(OpenCraftingStation {
             entity_id: actor.0,
             station,
             window_id,
+            container_type,
             x: position.x,
             y: position.y,
             z: position.z,
         });
+    if crate::furnace::is_furnace_station(station) {
+        // Identity ensure (creation-only here; reads below go through the
+        // component). A refused ensure opens with empty slots, exactly like
+        // the old store-full path.
+        crate::block_entity::ensure_block_entity(
+            world,
+            world_id.as_ref().clone(),
+            pos,
+            crate::block_entity::BlockEntityKind::Furnace(station),
+        );
+        let slots = crate::block_entity::process_state_at(world, world_id.as_ref(), pos)
+            .map(|process| process.furnace_slots())
+            .unwrap_or_default();
+        crate::net::IntentPublisher::new(outbox)
+            .with_world(world)
+            .publish(crate::net::SyncFurnaceWindow {
+                entity_id: actor.0,
+                window_id,
+                station,
+                input: slots[0].clone(),
+                fuel: slots[1].clone(),
+                result: slots[2].clone(),
+            });
+    }
     true
 }
 
@@ -1128,28 +1392,6 @@ pub(crate) fn recipe_allowed(
             .is_some_and(|book| book.inner.read().is_unlocked(&recipe.identifier))
 }
 
-/// Workstation block identifier to [`StationKind`].
-///
-/// Explicit built-in workstation map; unknown blocks return `None`.
-pub fn station_kind_of_block(identifier: &str) -> Option<StationKind> {
-    match identifier {
-        "minecraft:crafting_table" => Some(StationKind::CraftingTable),
-        "minecraft:stonecutter_block" => Some(StationKind::Stonecutter),
-        "minecraft:furnace" | "minecraft:lit_furnace" => Some(StationKind::Furnace),
-        "minecraft:blast_furnace" | "minecraft:lit_blast_furnace" => {
-            Some(StationKind::BlastFurnace)
-        }
-        "minecraft:smoker" | "minecraft:lit_smoker" => Some(StationKind::Smoker),
-        "minecraft:campfire" | "minecraft:lit_campfire" => Some(StationKind::Campfire),
-        "minecraft:soul_campfire" | "minecraft:lit_soul_campfire" => {
-            Some(StationKind::SoulCampfire)
-        }
-        "minecraft:brewing_stand" => Some(StationKind::BrewingStand),
-        "minecraft:smithing_table" => Some(StationKind::SmithingTable),
-        _ => None,
-    }
-}
-
 /// World `recipesUnlock` rule: missing rules default to available.
 fn recipes_unlock_allowed(
     manager: &sc_world::manager::MinecraftWorldManager,
@@ -1175,6 +1417,19 @@ pub(crate) fn station_block_kind(
     world_id: &sc_world::manager::MinecraftWorldId,
     pos: (i32, i32, i32),
 ) -> Option<StationKind> {
+    let decl = workstation_decl_at(world, world_id, pos)?;
+    let station = StationKind::from_tag(&decl.station);
+    (station != StationKind::Unknown).then_some(station)
+}
+
+/// Workstation declaration for the block at a position (`None` when the
+/// chunk is unloaded, the cell is empty, or the block serves no station).
+/// Single chunk-read behind `station_block_kind` and container resolution.
+pub(crate) fn workstation_decl_at(
+    world: &sc_ecs::world::World,
+    world_id: &sc_world::manager::MinecraftWorldId,
+    pos: (i32, i32, i32),
+) -> Option<sc_block::workstation::WorkstationDecl> {
     use sc_block::position::BlockPosition;
     use sc_world::storage::ChunkKey;
     let manager = world.get_resource::<sc_world::manager::MinecraftWorldManager>()?;
@@ -1188,18 +1443,21 @@ pub(crate) fn station_block_kind(
     let chunk = column.read();
     let state = chunk.block_at(target.local_x(), target.y, target.local_z())?;
     let registry = world.get_resource::<sc_block::registry::BlockStateRegistry>()?;
-    if registry.is_air(state) {
-        return None;
-    }
-    let state_id = registry.by_runtime_id(state)?;
-    let entry = registry.state(state_id)?;
-    station_kind_of_block(entry.name.as_ref())
+    let snapshot = world
+        .get_resource::<sc_block::block_json::BlockJsonRegistry>()
+        .and_then(|registry| registry.get())?;
+    let dense = registry.by_runtime_id(state)?;
+    snapshot.workstation_of(dense.0).cloned()
 }
 
 /// Find a usable recipe workstation near the player.
 ///
 /// Scan nearby blocks for each declared station, returning the first hit.
 /// Unloaded chunks count as having no workstation (fail-closed).
+///
+/// Reserved for workstation-proximity validation once callers migrate off the
+/// open-window check (see `open_crafting_station`).
+#[allow(dead_code)]
 fn find_nearby_station(
     world: &sc_ecs::world::World,
     world_id: &sc_world::manager::MinecraftWorldId,
@@ -1276,7 +1534,7 @@ pub fn handle_craft_requests(
         for (world_id, epoch, request) in pending {
             let current = world.get_component::<sc_world::manager::MinecraftWorldId>(&entity);
             let valid = current.as_deref() == Some(&world_id)
-                && crate::interaction::mining_context_epoch(&world, &entity) == epoch;
+                && crate::block::mining_context_epoch(&world, &entity) == epoch;
             let success = valid && execute_request(&world, &request, &mut outbox);
             publish_response(&world, &request, success, &mut outbox);
         }
@@ -1294,23 +1552,46 @@ fn publish_response(
     outbox: &mut NetworkOutbox,
 ) {
     if let Some(actor) = world.get_component::<sc_entity::MinecraftEntityId>(&request.entity) {
-        let mut faults = world.get_resource_mut::<crate::net_faults::PendingConnectionFaults>();
-        crate::net_backpressure::IntentPublisher::new(outbox)
+        let mut faults = world.get_resource_mut::<crate::net::PendingConnectionFaults>();
+        crate::net::IntentPublisher::new(outbox)
             .with_world(&world)
             .maybe_with_faults(faults.as_deref_mut())
-            .publish(NetworkIntent::CraftResponse {
-                slots: crate::craft_inventory::updates(world, request.entity),
+            .publish(CraftResponse {
+                slots: crate::inventory::craft_inventory::updates(world, request.entity),
                 entity_id: actor.0,
                 request_id: request.operation_id as i32,
                 success,
             });
         let mut pending =
-            world.get_resource_mut::<crate::net_backpressure::PendingInventoryResync>();
+            world.get_resource_mut::<crate::net::PendingInventoryResync>();
         if !success {
-            crate::net_backpressure::IntentPublisher::new(outbox)
+            crate::net::IntentPublisher::new(outbox)
                 .with_world(&world)
                 .maybe_with_pending_resync(pending.as_deref_mut())
-                .publish(NetworkIntent::ResyncInventory { entity_id: actor.0 });
+                .publish(ResyncInventory { entity_id: actor.0 });
+        }
+        // Furnace viewers always get authoritative slots after a request
+        // (success applies the move, failure rolls the window back).
+        if let Some(open) = world.get_component::<ContainerOpen>(&request.entity) {
+            if let Some((station, world_id, pos)) = open
+                .workstation()
+                .filter(|(station, _, _)| crate::furnace::is_furnace_station(*station))
+            {
+                if let Some(slots) = crate::block_entity::process_state_at(world, &world_id, pos)
+                    .map(|process| process.furnace_slots())
+                {
+                    crate::net::IntentPublisher::new(outbox)
+                        .with_world(&world)
+                        .publish(crate::net::SyncFurnaceWindow {
+                            entity_id: actor.0,
+                            window_id: open.window_id,
+                            station,
+                            input: slots[0].clone(),
+                            fuel: slots[1].clone(),
+                            result: slots[2].clone(),
+                        });
+                }
+            }
         }
     }
 }
@@ -1321,7 +1602,7 @@ fn execute_request(
     outbox: &mut NetworkOutbox,
 ) -> bool {
     if !request.actions.is_empty() {
-        return crate::craft_inventory::execute(world, request);
+        return crate::inventory::craft_inventory::execute(world, request);
     }
     let entity = request.entity;
     let Some(inventory) = world.get_component::<PlayerInventory>(&entity) else {
@@ -1359,9 +1640,9 @@ fn execute_request(
     else {
         if let Some(runtime) = world.get_component::<sc_entity::MinecraftEntityId>(&entity) {
             outbox
-                .push(NetworkIntent::ResyncInventory {
+                .push(NetworkIntent::ResyncInventory(ResyncInventory {
                     entity_id: runtime.0,
-                })
+                }))
                 .ok();
         }
         return false;
@@ -1387,17 +1668,7 @@ fn execute_request(
         });
     // Workstation derives from declarations and nearby real blocks.
     // Recipes without station declarations need no workstation.
-    let fits_player_grid = match &recipe.body {
-        sc_recipe::RecipeBody::Shaped(body) => body.width <= 2 && body.height <= 2,
-        sc_recipe::RecipeBody::Shapeless(body) => {
-            body.ingredients
-                .iter()
-                .map(|spec| spec.count as usize)
-                .sum::<usize>()
-                <= 4
-        }
-        _ => false,
-    };
+    let fits_player_grid = sc_recipe::fits_inventory_grid(&recipe.body);
     let (station, station_pos) = if recipe.stations.is_empty()
         || (fits_player_grid && recipe.stations.contains(&StationKind::CraftingTable))
     {
@@ -1463,9 +1734,9 @@ fn execute_request(
     };
     let Some(plan) = sc_recipe::plan_consumption(&requirements, &live, &tags, 1024) else {
         outbox
-            .push(NetworkIntent::ResyncInventory {
+            .push(NetworkIntent::ResyncInventory(ResyncInventory {
                 entity_id: actor_runtime.0,
-            })
+            }))
             .ok();
         return false;
     };
@@ -1589,7 +1860,7 @@ mod e2e_tests {
     fn craft_request_event_executes_end_to_end() {
         let world = sc_ecs::world::World::new();
         world.insert_resource(sc_ecs::event::Events::<CraftRequestEvent>::new());
-        let mut registry = ItemRegistry::new();
+        let registry = ItemRegistry::new();
         registry.upsert(sc_item::ItemDefinition::new(1, "minecraft:stone"));
         registry.upsert(sc_item::ItemDefinition::new(2, "minecraft:e2e_out"));
         world.insert_resource(registry);
@@ -1650,11 +1921,8 @@ mod e2e_tests {
             .iter()
             .any(|intent| matches!(
                 intent,
-                NetworkIntent::CraftResponse {
-                    request_id: -1,
-                    success: true,
-                    ..
-                }
+                NetworkIntent::CraftResponse(p)
+                    if p.request_id == -1 && p.success
             )));
     }
 
@@ -1686,15 +1954,19 @@ mod e2e_tests {
     }
 
     #[test]
-    fn station_block_mapping_covers_workstations() {
+    fn workstation_bits_come_from_decls_not_code() {
+        // The identifier→station map used to live here as a hardcoded
+        // match; it now lives in `sc:workstation` decls, covered per-state
+        // against the live pack by the furnace parity gate. This test pins
+        // the decl-read path shape: unknown tags resolve to `Unknown`
+        // (fail-closed downstream, rejected at load).
         assert_eq!(
-            station_kind_of_block("minecraft:stonecutter_block"),
-            Some(StationKind::Stonecutter)
+            StationKind::from_tag("crafting_table"),
+            StationKind::CraftingTable
         );
         assert_eq!(
-            station_kind_of_block("minecraft:lit_furnace"),
-            Some(StationKind::Furnace)
+            StationKind::from_tag("stove_does_not_exist"),
+            StationKind::Unknown
         );
-        assert_eq!(station_kind_of_block("minecraft:dirt"), None);
     }
 }

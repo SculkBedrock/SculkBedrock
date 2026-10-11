@@ -11,7 +11,7 @@
 //! # Window ids
 //!
 //! `window_id` is server-assigned per player, sent with `ContainerOpen` and
-//! echoed back on close (see [`crate::crafting::ContainerWindowAllocator`]).
+//! echoed back on close (see [`crate::inventory::crafting::ContainerWindowAllocator`]).
 //! It is not a global allocator: two players may hold window 1 at once.
 //!
 //! The client's echoed `container_type` is untrusted, so close always uses
@@ -89,23 +89,6 @@ impl ContainerOpen {
         matches!(self.kind, ContainerKind::PlayerInventory)
     }
 
-    /// Protocol `ContainerType` byte for the registered container kind.
-    ///
-    /// Both open and close replies must use it, never the client-echoed
-    /// type byte: a wrong close type corrupts client window tracking and
-    /// later windows close instantly.
-    pub fn protocol_type(&self) -> i8 {
-        match self.kind {
-            ContainerKind::PlayerInventory => -1, // INVENTORY
-            ContainerKind::Workstation { station, .. } => match station {
-                StationKind::CraftingTable => 1, // WORKBENCH
-                StationKind::Stonecutter => 29,  // STONECUTTER
-                // Unmapped workstations fall back to CONTAINER(0), never panic.
-                _ => 0,
-            },
-        }
-    }
-
     /// Workstation details `(type, world, block position)`; `None` for inventory.
     ///
     /// Returned by value so callers can `remove_component` first and keep reading.
@@ -159,19 +142,12 @@ mod tests {
     }
 
     #[test]
-    fn protocol_type_uses_server_window_type_not_client_bytes() {
-        // Close replies echo the registered window type, never client bytes.
-        assert_eq!(ContainerOpen::player_inventory().protocol_type(), -1);
-        let world_id = MinecraftWorldId::random();
-        assert_eq!(
-            ContainerOpen::at_workstation(1, StationKind::CraftingTable, world_id.clone(), (0, 0, 0))
-                .protocol_type(),
-            1
-        );
-        assert_eq!(
-            ContainerOpen::at_workstation(2, StationKind::Stonecutter, world_id, (0, 0, 0))
-                .protocol_type(),
-            29
-        );
+    fn inventory_window_is_stationless() {
+        // The inventory window carries no workstation binding; close replies
+        // use the -1 type (container bytes for workstations come from decl
+        // tables, covered by the furnace parity gate).
+        let open = ContainerOpen::player_inventory();
+        assert!(open.is_player_inventory());
+        assert!(open.workstation().is_none());
     }
 }

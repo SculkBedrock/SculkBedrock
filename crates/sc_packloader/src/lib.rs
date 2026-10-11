@@ -33,6 +33,7 @@ pub mod pack_loader;
 pub mod recipe_source;
 #[cfg(test)]
 mod test;
+pub mod test_pack;
 pub mod types;
 pub mod version_control;
 
@@ -205,7 +206,10 @@ fn load_version(world: World) {
             )
         );
     } else {
-        info!("{}", t_log!("console.pack.recipe_files", count = recipe_file_count));
+        info!(
+            "{}",
+            t_log!("console.pack.recipe_files", count = recipe_file_count)
+        );
     }
 }
 
@@ -255,7 +259,10 @@ fn load_pack(world: World, mut runtime_manager: ResMut<MinecraftRuntimeManager>)
     );
 
     if let Err(error) = runtime_manager.generate_palette() {
-        error!("{}", t_log!("console.pack.runtime_palette_fail", error = error));
+        error!(
+            "{}",
+            t_log!("console.pack.runtime_palette_fail", error = error)
+        );
     }
     // entity_network_nbt was already loaded in load_version via load_entity_identifiers from
     // the entity_identifiers.dat file; no manual build needed here

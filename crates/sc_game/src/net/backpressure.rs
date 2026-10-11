@@ -24,8 +24,8 @@ use sc_world::chunk_view::ChunkView;
 use sc_world::manager::MinecraftWorldId;
 use sc_world::storage::ChunkKey;
 
-use crate::net::{IntentReliability, NetworkIntent, NetworkOutbox};
-use crate::net_faults::{escalate_fact_to_connection_fault, PendingConnectionFaults};
+use crate::net::faults::{escalate_fact_to_connection_fault, PendingConnectionFaults};
+use crate::net::{IntentPayload, IntentReliability, NetworkIntent, NetworkOutbox};
 
 /// Explicit handling when a reliable fact cannot enqueue.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -206,14 +206,27 @@ impl<'a> IntentPublisher<'a> {
         self.outbox.admits(reliability)
     }
 
-    /// Publish one intent, handling admission rejection by category.
-    pub fn publish(&mut self, intent: NetworkIntent) {
+    /// Publish one intent payload, handling admission rejection by category.
+    ///
+    /// Takes the bare payload (`publisher.publish(PlaySound { .. })`),
+    /// mirroring `PlayerConnection::send_packet(packet: impl MinecraftPacket)`:
+    /// the payload converts itself into [`NetworkIntent`] via
+    /// [`IntentPayload::into_intent`], so callers never write the enum
+    /// wrapper by hand.
+    pub fn publish(&mut self, payload: impl IntentPayload) {
+        let intent = payload.into_intent();
         // Judge budget with the same caps first; rejected intents stay owned
         // here for handling without extra clones.
         if self.outbox.admits_intent(&intent) {
             if let Err(error) = self.outbox.push(intent) {
                 // Concurrent queue mutation is the only mismatch source here.
-                log::error!("{}", t_log!("console.game.admission_mismatch", error = format!("{error:?}")));
+                log::error!(
+                    "{}",
+                    t_log!(
+                        "console.game.admission_mismatch",
+                        error = format!("{error:?}")
+                    )
+                );
             }
             return;
         }
@@ -221,36 +234,42 @@ impl<'a> IntentPublisher<'a> {
     }
 
     fn escalate(&mut self, intent: NetworkIntent) {
-        let outcome = match intent {
-            NetworkIntent::UpdateBlock {
-                ref world_id,
-                dimension,
-                x,
-                z,
-                ..
-            } => match self.world {
-                Some(world) => {
-                    escalate_block_fact(world, world_id, dimension, ChunkPosition::from_world(x, z))
-                }
+        let outcome = match &intent {
+            NetworkIntent::UpdateBlock(payload) => match self.world {
+                Some(world) => escalate_block_fact(
+                    world,
+                    &payload.world_id,
+                    payload.dimension,
+                    ChunkPosition::from_world(payload.x, payload.z),
+                ),
                 None => {
                     record_unrecoverable_fact("UpdateBlock");
                     FactBackpressure::Unrecoverable
                 }
             },
-            NetworkIntent::UpdateInventorySlot { entity_id, .. }
-            | NetworkIntent::ResyncInventory { entity_id } => {
-                escalate_inventory_fact(self.pending_resync.as_deref_mut(), entity_id)
+            NetworkIntent::UpdateInventorySlot(payload) => {
+                escalate_inventory_fact(self.pending_resync.as_deref_mut(), payload.entity_id)
             }
-            NetworkIntent::CorrectBlockPrediction {
-                ref world_id,
-                dimension,
-                x,
-                z,
-                ..
-            } => match self.world {
-                Some(world) => {
-                    escalate_block_fact(world, world_id, dimension, ChunkPosition::from_world(x, z))
-                }
+            NetworkIntent::SyncFurnaceWindow(payload) => {
+                escalate_inventory_fact(self.pending_resync.as_deref_mut(), payload.entity_id)
+            }
+            NetworkIntent::ResyncInventory(payload) => {
+                escalate_inventory_fact(self.pending_resync.as_deref_mut(), payload.entity_id)
+            }
+            // Furnace progress regenerates every tick: a pressured outbox
+            // drops it (debug only) and the next tick re-sends. Never a
+            // connection fault: staleness self-heals.
+            NetworkIntent::SyncFurnaceProgress(_) => {
+                log::debug!("[craft] furnace progress dropped under pressure");
+                FactBackpressure::Unrecoverable
+            }
+            NetworkIntent::CorrectBlockPrediction(payload) => match self.world {
+                Some(world) => escalate_block_fact(
+                    world,
+                    &payload.world_id,
+                    payload.dimension,
+                    ChunkPosition::from_world(payload.x, payload.z),
+                ),
                 None => {
                     record_unrecoverable_fact("CorrectBlockPrediction");
                     FactBackpressure::Unrecoverable
@@ -366,9 +385,11 @@ pub fn flush_pending_inventory_resync(world: World) {
         return;
     };
     for runtime_id in pending.take_all() {
-        match outbox.push(NetworkIntent::ResyncInventory {
-            entity_id: runtime_id,
-        }) {
+        match outbox.push(NetworkIntent::ResyncInventory(
+            crate::net::intent::ResyncInventory {
+                entity_id: runtime_id,
+            },
+        )) {
             Ok(()) => {}
             Err(error) => {
                 // Budget still unavailable: keep requests for next tick.
@@ -382,6 +403,10 @@ pub fn flush_pending_inventory_resync(world: World) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::net::intent::{
+        DespawnItemEntity, RemoveEntity, ResyncInventory, SetEntityMotion, UpdateBlock,
+        UpdateInventorySlot,
+    };
     use crate::net::{IntentReliability, NetworkOutbox, OutboxPushError};
     use sc_ecs::world::World;
     use sc_world::chunk_view::AdmittedChunkBaseline;
@@ -483,12 +508,12 @@ mod tests {
         // rejection instead of evicting the queued one.
         let mut outbox = NetworkOutbox::with_limits(1, 1, usize::MAX);
         assert!(outbox
-            .push(NetworkIntent::RemoveEntity { entity_id: 1 })
+            .push(NetworkIntent::RemoveEntity(RemoveEntity { entity_id: 1 }))
             .is_ok());
 
         IntentPublisher::new(&mut outbox)
             .with_world(&world)
-            .publish(NetworkIntent::UpdateBlock {
+            .publish(UpdateBlock {
                 world_id: world_id.clone(),
                 dimension: 0,
                 incarnation: 7,
@@ -513,20 +538,20 @@ mod tests {
     fn publisher_escalates_inventory_facts_to_a_bounded_resync_request() {
         let mut outbox = NetworkOutbox::with_limits(1, 1, usize::MAX);
         assert!(outbox
-            .push(NetworkIntent::RemoveEntity { entity_id: 1 })
+            .push(NetworkIntent::RemoveEntity(RemoveEntity { entity_id: 1 }))
             .is_ok());
         let mut pending = PendingInventoryResync::with_limits(2);
 
         IntentPublisher::new(&mut outbox)
             .with_pending_resync(&mut pending)
-            .publish(NetworkIntent::UpdateInventorySlot {
+            .publish(UpdateInventorySlot {
                 entity_id: 42,
                 slot: 3,
                 stack: sc_item::ItemStack::new(1, 2),
             });
         IntentPublisher::new(&mut outbox)
             .with_pending_resync(&mut pending)
-            .publish(NetworkIntent::ResyncInventory { entity_id: 42 });
+            .publish(ResyncInventory { entity_id: 42 });
 
         assert_eq!(pending.pending(), 1, "same entity folds into one request");
         assert_eq!(outbox.pending(), 1, "only the pre-existing fact remains");
@@ -536,12 +561,12 @@ mod tests {
     fn publisher_does_not_touch_the_queue_for_overwritable_state() {
         let mut outbox = NetworkOutbox::with_limits(1, 1, usize::MAX);
         assert!(outbox
-            .push(NetworkIntent::RemoveEntity { entity_id: 1 })
+            .push(NetworkIntent::RemoveEntity(RemoveEntity { entity_id: 1 }))
             .is_ok());
         let world = World::new();
         IntentPublisher::new(&mut outbox)
             .with_world(&world)
-            .publish(NetworkIntent::SetEntityMotion {
+            .publish(SetEntityMotion {
                 entity_id: 5,
                 x: 1.0,
                 y: 0.0,
@@ -581,7 +606,7 @@ mod tests {
         world
             .get_resource_mut::<NetworkOutbox>()
             .expect("outbox")
-            .push(NetworkIntent::RemoveEntity { entity_id: 1 })
+            .push(NetworkIntent::RemoveEntity(RemoveEntity { entity_id: 1 }))
             .expect("first fact");
         flush_pending_inventory_resync(world.clone());
         assert_eq!(
@@ -597,7 +622,7 @@ mod tests {
                 .expect("outbox")
                 .drain()
                 .first(),
-            Some(NetworkIntent::RemoveEntity { entity_id: 1 })
+            Some(NetworkIntent::RemoveEntity(_))
         ));
     }
 
@@ -605,13 +630,13 @@ mod tests {
     fn unrecoverable_entity_facts_isolate_the_affected_connection() {
         let mut outbox = NetworkOutbox::with_limits(1, 1, usize::MAX);
         assert!(outbox
-            .push(NetworkIntent::RemoveEntity { entity_id: 1 })
+            .push(NetworkIntent::RemoveEntity(RemoveEntity { entity_id: 1 }))
             .is_ok());
         let mut faults = PendingConnectionFaults::with_limits(4);
 
         IntentPublisher::new(&mut outbox)
             .with_faults(&mut faults)
-            .publish(NetworkIntent::DespawnItemEntity {
+            .publish(DespawnItemEntity {
                 world_id: MinecraftWorldId::random(),
                 runtime_id: 77,
             });
@@ -629,12 +654,12 @@ mod tests {
         let mut faults = PendingConnectionFaults::with_limits(4);
         let mut outbox = NetworkOutbox::with_limits(1, 1, usize::MAX);
         assert!(outbox
-            .push(NetworkIntent::RemoveEntity { entity_id: 1 })
+            .push(NetworkIntent::RemoveEntity(RemoveEntity { entity_id: 1 }))
             .is_ok());
         IntentPublisher::new(&mut outbox)
             .with_world(&World::new())
             .with_faults(&mut faults)
-            .publish(NetworkIntent::UpdateInventorySlot {
+            .publish(UpdateInventorySlot {
                 entity_id: 5,
                 slot: 0,
                 stack: sc_item::ItemStack::new(1, 1),
@@ -649,18 +674,18 @@ mod tests {
         assert!(outbox.admits(IntentReliability::OverwritableState));
         assert!(outbox.admits(IntentReliability::ReliableFact));
         assert_eq!(
-            outbox.push(NetworkIntent::RemoveEntity { entity_id: 1 }),
+            outbox.push(NetworkIntent::RemoveEntity(RemoveEntity { entity_id: 1 })),
             Ok(())
         );
         assert!(!outbox.admits(IntentReliability::OverwritableState));
         assert!(!outbox.admits(IntentReliability::ReliableFact));
         assert_eq!(
-            outbox.push(NetworkIntent::SetEntityMotion {
+            outbox.push(NetworkIntent::SetEntityMotion(SetEntityMotion {
                 entity_id: 2,
                 x: 0.0,
                 y: 0.0,
                 z: 0.0,
-            }),
+            })),
             Err(OutboxPushError::StateBudget)
         );
     }
@@ -675,26 +700,17 @@ mod tests {
 /// item actor is the collector's problem.
 pub fn intent_fault_runtime_id(intent: &NetworkIntent) -> Option<u64> {
     match intent {
-        NetworkIntent::CraftResponse { entity_id, .. } => Some(*entity_id),
-        NetworkIntent::CorrectBlockPrediction { entity_id, .. } => Some(*entity_id),
-        NetworkIntent::OpenCraftingStation { entity_id, .. } => Some(*entity_id),
-        NetworkIntent::RemoveEntity { entity_id }
-        | NetworkIntent::SpawnItemEntity {
-            runtime_id: entity_id,
-            ..
-        }
-        | NetworkIntent::DespawnItemEntity {
-            runtime_id: entity_id,
-            ..
-        }
-        | NetworkIntent::UpdateItemStackSize {
-            runtime_id: entity_id,
-            ..
-        }
-        | NetworkIntent::TakeItemEntity {
-            target_entity_id: entity_id,
-            ..
-        } => Some(*entity_id),
+        NetworkIntent::CraftResponse(payload) => Some(payload.entity_id),
+        NetworkIntent::CorrectBlockPrediction(payload) => Some(payload.entity_id),
+        NetworkIntent::OpenCraftingStation(payload) => Some(payload.entity_id),
+        NetworkIntent::SyncFurnaceWindow(payload) => Some(payload.entity_id),
+        NetworkIntent::RemoveEntity(payload) => Some(payload.entity_id),
+        NetworkIntent::SpawnItemEntity(payload) => Some(payload.runtime_id),
+        NetworkIntent::DespawnItemEntity(payload) => Some(payload.runtime_id),
+        NetworkIntent::UpdateItemStackSize(payload) => Some(payload.runtime_id),
+        NetworkIntent::TakeItemEntity(payload) => Some(payload.target_entity_id),
+        NetworkIntent::SyncHealth(payload) => Some(payload.entity_id),
+        NetworkIntent::HurtEntity(payload) => Some(payload.entity_id),
         _ => None,
     }
 }

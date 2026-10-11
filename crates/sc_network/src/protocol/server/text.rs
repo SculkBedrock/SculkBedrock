@@ -4,12 +4,16 @@ use sc_binary::interfaces::{Reader, Writer};
 use sc_binary::{ByteReader, ByteWriter};
 use sc_network_macros::MinecraftPacket;
 
+// Wire-protocol namespace mirrors official docs.
+#[allow(non_snake_case)]
 pub mod TextBodyType {
     pub const MESSAGE_ONLY: u8 = 0;
     pub const AUTHOR_AND_MESSAGE: u8 = 1;
     pub const MESSAGE_AND_PARAMS: u8 = 2;
 }
 
+// Wire-protocol namespace mirrors official docs.
+#[allow(non_snake_case)]
 pub mod TextMessageType {
     pub const RAW: u8 = 0;
     pub const CHAT: u8 = 1;

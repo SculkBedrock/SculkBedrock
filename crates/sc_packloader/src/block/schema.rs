@@ -21,7 +21,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
-use std::io::{Read, Seek};
+use std::io::Read;
 
 use sc_nbt::compound::CompoundNbt;
 use sc_nbt::NbtValue;
@@ -124,6 +124,8 @@ pub struct BlockBundleBudgets {
     pub max_fortune_rules_per_entry: usize,
     /// Max `requires.items` elements per entry.
     pub max_requires_items_per_entry: usize,
+    /// Max `sc:workstation.slots` entries per state.
+    pub max_workstation_slots_per_state: usize,
 }
 
 impl Default for BlockBundleBudgets {
@@ -147,12 +149,13 @@ impl Default for BlockBundleBudgets {
             max_count_options_per_entry: 16,
             max_fortune_rules_per_entry: 8,
             max_requires_items_per_entry: 64,
+            max_workstation_slots_per_state: 8,
         }
     }
 }
 
 /// Budget version (part of the fingerprint input; default changes alter the fingerprint).
-pub const BLOCK_BUDGETS_VERSION: u32 = 3;
+pub const BLOCK_BUDGETS_VERSION: u32 = 4;
 
 // ---------------------------------------------------------------------------
 // Manifest declaration
@@ -703,7 +706,7 @@ fn validate_components_map(
     budgets: &BlockBundleBudgets,
 ) -> Result<BTreeMap<String, Value>, BlockJsonError> {
     use crate::block::component::{
-        is_ignored_component, is_known_component, validate_block_component, Drops, Mining,
+        is_ignored_component, is_known_component, validate_block_component, Drops,
     };
     let obj = as_object(pack, file, field, v)?;
     let mut out = BTreeMap::new();
@@ -1790,7 +1793,7 @@ pub struct BlockJsonBundle {
 }
 
 fn read_capped<T: Read>(
-    mut file: T,
+    file: T,
     cap: usize,
     pack_id: &str,
     path: &str,
@@ -1815,8 +1818,8 @@ fn read_capped<T: Read>(
 /// - Without a manifest `block_data` declaration, return `Ok(None)` (legacy palette path);
 /// - Once declared: zero files, illegal paths, budget overruns, and JSON syntax/schema errors all return Err;
 ///   callers must not fall back to the legacy format.
-pub fn load_block_json_bundle<T: Read + Seek>(
-    zip: &mut zip::ZipArchive<T>,
+pub fn load_block_json_bundle(
+    pack: &mut crate::pack_loader::pack::zipped::PackSource,
     manifest: &BlockDataManifest,
     pack_id: &str,
     budgets: &BlockBundleBudgets,
@@ -1825,18 +1828,14 @@ pub fn load_block_json_bundle<T: Read + Seek>(
     let prefix = format!("{BLOCKS_DIRECTORY}/");
     // Collect candidate entries (case-sensitive prefix; the directory itself is skipped).
     let mut candidates: Vec<(String, u64)> = Vec::new();
-    for i in 0..zip.len() {
-        let file = zip.by_index(i).map_err(|e| {
-            BlockJsonError::new(pack_id, "<bundle>", "$", format!("zip 索引失败: {e}"))
-        })?;
-        let name = file.name().to_string();
-        if !file.is_file() {
-            continue;
-        }
+    for name in pack.file_names() {
         if !name.starts_with(&prefix) || !name.ends_with(".block.json") {
             continue;
         }
-        candidates.push((name, file.size()));
+        let size = pack.file_size(&name).ok_or_else(|| {
+            BlockJsonError::new(pack_id, "<bundle>", "$", "pack 索引失败".to_string())
+        })?;
+        candidates.push((name, size));
     }
     candidates.sort_by(|a, b| a.0.cmp(&b.0));
     if candidates.is_empty() {
@@ -1895,10 +1894,22 @@ pub fn load_block_json_bundle<T: Read + Seek>(
         }
         validate_block_path(name, budgets.max_identifier_len)
             .map_err(|m| BlockJsonError::new(pack_id, name, "$", format!("文件路径非法: {m}")))?;
-        let file = zip
-            .by_name(name)
-            .map_err(|e| BlockJsonError::new(pack_id, name, "$", format!("zip 读取失败: {e}")))?;
-        let bytes = read_capped(file, budgets.max_file_bytes, pack_id, name)?;
+        let bytes = pack
+            .read_file(name)
+            .ok_or_else(|| BlockJsonError::new(pack_id, name, "$", "pack 读取失败".to_string()))?;
+        if bytes.len() as u64 > budgets.max_file_bytes as u64 {
+            return Err(BlockJsonError::new(
+                pack_id,
+                name,
+                "$",
+                format!(
+                    "单文件 {} 字节超出预算 {}",
+                    bytes.len(),
+                    budgets.max_file_bytes
+                ),
+            ));
+        }
+        let bytes = read_capped(&bytes[..], budgets.max_file_bytes, pack_id, name)?;
         // JSON syntax + generic budget pre-check (depth/strings/containers), rejected before full allocation.
         serde_json::from_reader::<_, Value>(BudgetReader::new(&bytes[..])).map_err(|e| {
             BlockJsonError::new(pack_id, name, "$", format!("JSON 语法/预算失败: {e}"))
@@ -2822,15 +2833,15 @@ mod tests {
         }
     }
 
-    fn make_zip(entries: &[(&str, &[u8])]) -> zip::ZipArchive<Cursor<Vec<u8>>> {
+    fn make_source(entries: &[(&str, &[u8])]) -> crate::pack_loader::pack::zipped::PackSource {
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
         let options = zip::write::SimpleFileOptions::default();
         for (name, bytes) in entries {
             writer.start_file(*name, options).unwrap();
             writer.write_all(bytes).unwrap();
         }
-        let cursor = writer.finish().unwrap();
-        zip::ZipArchive::new(cursor).unwrap()
+        let bytes = writer.finish().unwrap().into_inner();
+        crate::pack_loader::pack::zipped::PackSource::from_bytes(bytes).unwrap()
     }
 
     fn test_manifest() -> BlockDataManifest {
@@ -2846,13 +2857,13 @@ mod tests {
         // Inserted in reverse on purpose: scan results must sort by canonical path.
         let air = air_json();
         let log = log_json();
-        let mut zip = make_zip(&[
+        let mut pack = make_source(&[
             (log_path(), &log),
             (air_path(), &air),
             ("other/notes.txt", b"ignore me"),
         ]);
         let bundle = load_block_json_bundle(
-            &mut zip,
+            &mut pack,
             &test_manifest(),
             PACK,
             &BlockBundleBudgets::default(),
@@ -2868,9 +2879,9 @@ mod tests {
     #[test]
     fn discovery_fails_loud_on_empty_badpath_and_broken() {
         // Zero files.
-        let mut zip = make_zip(&[("manifest.json", b"{}")]);
+        let mut pack = make_source(&[("manifest.json", b"{}")]);
         load_block_json_bundle(
-            &mut zip,
+            &mut pack,
             &test_manifest(),
             PACK,
             &BlockBundleBudgets::default(),
@@ -2878,9 +2889,9 @@ mod tests {
         .expect_err("零文件必须失败");
         // Illegal path (../).
         let air = air_json();
-        let mut zip = make_zip(&[("definitions/blocks/minecraft/../evil.block.json", &air)]);
+        let mut pack = make_source(&[("definitions/blocks/minecraft/../evil.block.json", &air)]);
         let e = load_block_json_bundle(
-            &mut zip,
+            &mut pack,
             &test_manifest(),
             PACK,
             &BlockBundleBudgets::default(),
@@ -2888,9 +2899,9 @@ mod tests {
         .expect_err("穿越路径必须失败");
         assert!(e.to_string().contains("非法"), "实际：{e}");
         // Broken JSON: never skipped, must fail with the file path.
-        let mut zip = make_zip(&[(air_path(), b"{oops")]);
+        let mut pack = make_source(&[(air_path(), b"{oops")]);
         let e = load_block_json_bundle(
-            &mut zip,
+            &mut pack,
             &test_manifest(),
             PACK,
             &BlockBundleBudgets::default(),
@@ -2901,9 +2912,9 @@ mod tests {
         let bad = String::from_utf8(air_json())
             .unwrap()
             .replace("\"sc:default_state\": {},", "");
-        let mut zip = make_zip(&[(air_path(), bad.as_bytes())]);
+        let mut pack = make_source(&[(air_path(), bad.as_bytes())]);
         load_block_json_bundle(
-            &mut zip,
+            &mut pack,
             &test_manifest(),
             PACK,
             &BlockBundleBudgets::default(),
@@ -2911,10 +2922,10 @@ mod tests {
         .expect_err("坏 schema 必须失败");
         // File-count budget.
         let air = air_json();
-        let mut zip = make_zip(&[(air_path(), &air)]);
+        let mut pack = make_source(&[(air_path(), &air)]);
         let mut tight = BlockBundleBudgets::default();
         tight.max_files = 0;
-        load_block_json_bundle(&mut zip, &test_manifest(), PACK, &tight).expect_err("文件数预算");
+        load_block_json_bundle(&mut pack, &test_manifest(), PACK, &tight).expect_err("文件数预算");
     }
 
     /// Split-to-reparse round-trip: multi-property cartesian product + protocol id alignment + default-state placement.
@@ -3041,19 +3052,14 @@ mod tests {
     /// Real version-pack stats: measured basis for budget defaults (single-state subset split + reparse).
     #[test]
     fn real_pack_stats_and_single_state_subset_round_trip() {
-        use std::fs;
-        let pack_path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../version_packs/[SC原版版本包] Vanilla-1.26.40.scver"
-        );
-        let bytes = fs::read(pack_path).expect("读取版本包失败");
-        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).expect("zip 打开失败");
+        let Some(mut source) = crate::test_pack::open_test_pack() else {
+            eprintln!("[skip] 版本包缺失，跳过测试");
+            return;
+        };
         let palette_bytes = {
-            let mut f = zip
-                .by_name("definitions/block_palette.nbt")
+            let buf = source
+                .read_file("definitions/block_palette.nbt")
                 .expect("palette 缺失");
-            let mut buf = Vec::new();
-            f.read_to_end(&mut buf).unwrap();
             buf
         };
         let entries = parse_legacy_palette_entries(&palette_bytes).expect("旧 palette 解析");

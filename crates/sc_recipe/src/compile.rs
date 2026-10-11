@@ -139,6 +139,24 @@ pub struct ShapelessBody {
     pub results: Vec<OutputSpec>,
 }
 
+/// Whether a grid recipe fits the 2x2 player inventory (vanilla rule:
+/// shaped width/height within 2, shapeless total units within 4).
+/// Used at compile time to tag inventory-craftable recipes and by the
+/// auto-craft path for the same decision; keep both on this helper.
+pub fn fits_inventory_grid(body: &RecipeBody) -> bool {
+    match body {
+        RecipeBody::Shaped(body) => body.width <= 2 && body.height <= 2,
+        RecipeBody::Shapeless(body) => {
+            body.ingredients
+                .iter()
+                .map(|spec| spec.count as usize)
+                .sum::<usize>()
+                <= 4
+        }
+        _ => false,
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct FurnaceBody {
     pub input: IngredientSpec,
@@ -233,6 +251,8 @@ pub struct CompileOutput {
     pub disabled: Vec<DisabledRecipe>,
 }
 
+// Compile-time helper reserved for parsing string fields from recipe JSON.
+#[allow(dead_code)]
 fn get_str<'a>(map: &'a serde_json::Map<String, serde_json::Value>, key: &str) -> Option<&'a str> {
     map.get(key).and_then(|v| v.as_str())
 }
@@ -428,7 +448,7 @@ fn compile_shaped(
         return Err("pattern is empty".to_string());
     }
     // Build full grid then trim outer empty rows/columns.
-    let height = rows.len();
+    let _height = rows.len();
     let mut grid: Vec<Vec<Option<IngredientSpec>>> = Vec::new();
     for row in &rows {
         let mut out_row = Vec::new();
@@ -867,6 +887,20 @@ pub fn compile_source(
         return Err(fail("empty 'description.identifier'".to_string()));
     }
     let (tags, stations) = parse_tags(body_obj.get("tags"));
+    // Mojang-removed recipes (newer pack layers overwrite with exactly
+    // `tags: ["deprecated"]`): excluded at compile with an explicit reason.
+    // Sending them on the wire would create phantom client recipes the
+    // server rejects (stations never match), so they stay out everywhere.
+    if tags == ["deprecated"] {
+        disabled_out.push(DisabledRecipe {
+            identifier: identifier.clone(),
+            kind: Some(kind),
+            pack_name: source.pack_name.clone(),
+            relative_path: source.relative_path.clone(),
+            reason: "removed by Mojang (tags [deprecated])".to_string(),
+        });
+        return Ok(None);
+    }
     let priority = body_obj
         .get("priority")
         .and_then(|v| v.as_i64())
@@ -913,6 +947,18 @@ pub fn compile_source(
         }
     }
     let _ = parse_priority(body_obj);
+    let mut stations = stations;
+    // Grid recipes that fit the 2x2 player inventory are also craftable
+    // there: tag them with the inventory station so matchers accept the
+    // inventory context without conflating it with the table block.
+    // Stonecutter (and other block stations) never gain it, even for
+    // 1-ingredient recipes.
+    if matches!(body, RecipeBody::Shaped(_) | RecipeBody::Shapeless(_))
+        && fits_inventory_grid(&body)
+        && stations.contains(&StationKind::CraftingTable)
+    {
+        stations.push(StationKind::InventoryCrafting);
+    }
     Ok(Some(CompiledRecipe {
         unlock_context: body_obj
             .get("unlock")
@@ -1088,6 +1134,49 @@ mod tests {
             }
             _ => panic!("wrong body"),
         }
+    }
+
+    fn compile_one(raw: serde_json::Value) -> CompiledRecipe {
+        let budgets = CompileBudgets::default();
+        let mut disabled = Vec::new();
+        compile_source(&src("p", 0, "r.json", raw), &budgets, false, &mut disabled)
+            .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn grid_recipes_fitting_2x2_gain_inventory_station() {
+        // Shaped 2x2 on the table: inventory-craftable.
+        let small = compile_one(shaped_json("minecraft:small"));
+        assert!(small.stations.contains(&StationKind::CraftingTable));
+        assert!(small.stations.contains(&StationKind::InventoryCrafting));
+        assert!(fits_inventory_grid(&small.body));
+        // Shaped 3x3: table only, never inventory.
+        let big = compile_one(serde_json::json!({
+            "format_version": "1.12",
+            "minecraft:recipe_shaped": {
+                "description": {"identifier": "minecraft:big"},
+                "tags": ["crafting_table"],
+                "pattern": ["XXX", "XXX", "XXX"],
+                "key": {"X": {"item": "minecraft:stone"}},
+                "result": {"item": "minecraft:out"}
+            }
+        }));
+        assert!(big.stations.contains(&StationKind::CraftingTable));
+        assert!(!big.stations.contains(&StationKind::InventoryCrafting));
+        assert!(!fits_inventory_grid(&big.body));
+        // 1-ingredient stonecutter: fits 2x2 but stays table-only.
+        let cut = compile_one(serde_json::json!({
+            "format_version": "1.12",
+            "minecraft:recipe_shapeless": {
+                "description": {"identifier": "minecraft:cut"},
+                "tags": ["stonecutter"],
+                "ingredients": [{"item": "minecraft:stone"}],
+                "result": {"item": "minecraft:out"}
+            }
+        }));
+        assert_eq!(cut.stations, vec![StationKind::Stonecutter]);
+        assert!(!cut.stations.contains(&StationKind::InventoryCrafting));
     }
 
     #[test]

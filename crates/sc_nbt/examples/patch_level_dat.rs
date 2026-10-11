@@ -4,10 +4,9 @@
 //!   cargo run -p sc_nbt --example patch_level_dat -- worlds/OverWorld/level.dat worlds/OverWorld/level.dat commandsEnabled 1
 
 use std::fs;
-use sc_binary::interfaces::Reader;
 use sc_binary::{ByteReader, ByteWriter};
 use sc_nbt::local::BedrockLocalNbt;
-use sc_nbt::reader::{NbtReadTrait, NbtReader};
+use sc_nbt::reader::NbtReader;
 use sc_nbt::writer::NbtWriteTrait;
 use sc_nbt::NbtValue;
 

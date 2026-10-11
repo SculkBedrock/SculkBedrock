@@ -5,8 +5,8 @@
 //! `MinecraftClient` stays as the network presentation layer after migrating to this module's `Position`.
 
 use parking_lot::RwLock;
-use std::sync::Arc;
 use sc_ecs::component::Component;
+use std::sync::Arc;
 
 /// Entity feet coordinates (world coords, f32; Bedrock network/save semantics use feet y).
 #[derive(Component, Clone, Copy, Debug, PartialEq, Default)]
@@ -77,6 +77,66 @@ impl Rotation {
 /// Grounded flag (maintained by the 0.01-below collision probe).
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct OnGround(pub bool);
+
+/// Fall tracking state (server-authoritative fall distance/peak tracking).
+///
+/// Interior-locked like `Transform`/`PlayerMovement`: ECS has no `&mut`
+/// component access, so mutation goes through the inner lock.
+/// - `highest_y` tracks the highest feet Y since the last landing/reset.
+/// - `was_on_ground` detects the air-to-ground transition that settles damage.
+/// - No client input is trusted; `on_ground` always comes from the server
+///   collision probe (`world_collides`).
+#[derive(Component, Clone, Debug, Default)]
+pub struct FallState {
+    pub inner: Arc<RwLock<FallStateData>>,
+}
+
+/// Copyable fall data held under the `FallState` lock.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct FallStateData {
+    pub highest_y: f32,
+    pub was_on_ground: bool,
+}
+
+impl FallState {
+    pub fn new(feet_y: f32, on_ground: bool) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(FallStateData {
+                highest_y: feet_y,
+                was_on_ground: on_ground,
+            })),
+        }
+    }
+
+    /// Reset after landing, teleport, or mode change.
+    pub fn reset(&self, feet_y: f32, on_ground: bool) {
+        let mut data = self.inner.write();
+        data.highest_y = feet_y;
+        data.was_on_ground = on_ground;
+    }
+
+    /// Observe one authoritative position. Returns the settled fall distance
+    /// (highest - current) exactly once on the air-to-ground transition.
+    pub fn observe(&self, feet_y: f32, on_ground: bool) -> Option<f32> {
+        let mut data = self.inner.write();
+        if feet_y.is_finite() && feet_y > data.highest_y {
+            data.highest_y = feet_y;
+        }
+        let was_air = !data.was_on_ground;
+        data.was_on_ground = on_ground;
+        if on_ground && was_air {
+            let distance = data.highest_y - feet_y;
+            if distance.is_finite() && distance > 0.0 {
+                return Some(distance);
+            }
+        }
+        // While continuously grounded, keep highest pinned to avoid drift.
+        if on_ground {
+            data.highest_y = feet_y;
+        }
+        None
+    }
+}
 
 /// Axis-aligned bounding box (world coords; feet-based, min_y == feet).
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -257,5 +317,33 @@ mod tests {
         assert_eq!(body.max_speed, 6.0);
         assert_eq!(body.base_offset, 1.62);
         assert_eq!(body.aabb.max_y, 1.8);
+    }
+
+    #[test]
+    fn fall_state_settles_exactly_once_on_landing() {
+        let fall = FallState::new(70.0, false);
+        // Rising updates the peak without settling.
+        assert!(fall.observe(74.0, false).is_none());
+        assert!(fall.observe(72.0, false).is_none());
+        // Air-to-ground transition settles highest - current exactly once.
+        assert_eq!(fall.observe(64.0, true), Some(10.0));
+        // Continuously grounded pins highest; no repeat settlement.
+        assert!(fall.observe(64.0, true).is_none());
+        assert!(fall.observe(64.0, true).is_none());
+    }
+
+    #[test]
+    fn fall_state_reset_breaks_the_chain() {
+        let fall = FallState::new(70.0, false);
+        fall.reset(64.0, true);
+        // Post-reset landing at the same height settles nothing.
+        assert!(fall.observe(64.0, true).is_none());
+    }
+
+    #[test]
+    fn fall_state_ignores_non_finite_peaks() {
+        let fall = FallState::new(70.0, false);
+        assert!(fall.observe(f32::NAN, false).is_none());
+        assert_eq!(fall.observe(64.0, true), Some(6.0));
     }
 }

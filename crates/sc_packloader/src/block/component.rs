@@ -274,6 +274,115 @@ impl BlockComponentSchema for Unbreakable {
     }
 }
 
+/// Workstation slot role (server container addressing). `extra` is
+/// reserved for 4+-slot processes (campfire); no shipped decl uses it yet.
+#[derive(Clone, Deserialize, Debug, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkstationSlotRole {
+    Input,
+    Fuel,
+    Result,
+    Extra,
+}
+
+/// One workstation slot: gameplay role plus Bedrock container enum byte
+/// (the values the client uses in Take/Place, e.g. furnace 25/24/26).
+#[derive(Clone, Component, Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct WorkstationSlot {
+    pub role: WorkstationSlotRole,
+    pub container: u8,
+}
+
+/// Workstation window declaration: which recipe station a block serves,
+/// which container window opens, and how slots address on the wire.
+/// `grid` is the NxN crafting grid size when present (workbench 3).
+/// `window` marks the five player-openable stations (table, cutter, three
+/// furnaces); brewing/smithing/campfire decls exist for addressing but do
+/// not open (the open gate reads this bit, never a station enum).
+#[derive(Clone, Component, Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct Workstation {
+    pub station: String,
+    pub container: i8,
+    #[serde(default)]
+    pub window: bool,
+    #[serde(default)]
+    pub grid: Option<u8>,
+    #[serde(default)]
+    pub slots: Vec<WorkstationSlot>,
+}
+
+impl BlockComponentSchema for Workstation {
+    const NAME: &'static str = "sc:workstation";
+
+    fn validate(&self) -> Result<(), String> {
+        if self.station.is_empty() {
+            return Err("sc:workstation.station 为空".to_string());
+        }
+        // Station membership (recipe tags) resolves at snapshot compile;
+        // shape here only requires a non-empty tag.
+        if let Some(grid) = self.grid {
+            if !(2..=3).contains(&grid) {
+                return Err(format!("sc:workstation.grid 必须为 2 或 3（实际 {grid}）"));
+            }
+        }
+        {
+            use std::collections::HashSet;
+            let mut seen = HashSet::new();
+            for slot in self.slots.iter() {
+                if !seen.insert(slot.role.clone()) {
+                    return Err(format!(
+                        "sc:workstation.slots 角色 {:?} 重复",
+                        slot.role
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Duration-process kind (furnace family shares one kind with params).
+#[derive(Clone, Deserialize, Debug, PartialEq, Eq)]
+pub enum ProcessKind {
+    #[serde(rename = "burn_cook")]
+    BurnCook,
+}
+
+/// Duration-process declaration: burn/cook process attached to a block.
+/// `lit_variant` names the swap target block (facing preserved); absent
+/// means no lit swap. `lit` marks the lit member of a lit pair, so the
+/// tick only swaps toward the burn state (unlit+burning→lit,
+/// lit+!burning→unlit) instead of following pointers blindly.
+#[derive(Clone, Component, Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct Process {
+    pub kind: ProcessKind,
+    pub cook_ticks: u16,
+    #[serde(default)]
+    pub fuel: bool,
+    #[serde(default)]
+    pub lit: bool,
+    #[serde(default)]
+    pub lit_variant: Option<String>,
+}
+
+impl BlockComponentSchema for Process {
+    const NAME: &'static str = "sc:process";
+
+    fn validate(&self) -> Result<(), String> {
+        if self.cook_ticks == 0 {
+            return Err("sc:process.cook_ticks 必须为正数".to_string());
+        }
+        if let Some(target) = self.lit_variant.as_ref() {
+            check_identifier_shape(target)
+                .map_err(|m| format!("sc:process.lit_variant 形状非法：{m}"))?;
+        }
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // sc:mining / sc:drops (mining, drop, and enchantment extensions; formula_version=1 exact formula)
 // ---------------------------------------------------------------------------
@@ -778,6 +887,8 @@ pub const ALL_BLOCK_COMPONENTS: &[&str] = &[
     "sc:unbreakable",
     "sc:mining",
     "sc:drops",
+    "sc:workstation",
+    "sc:process",
 ];
 
 /// Client-side/future ignore list: legal vanilla file content the server currently does not consume.
@@ -836,6 +947,8 @@ pub fn validate_block_component(
         Unbreakable::NAME => check::<Unbreakable>(pack, file, field, value),
         Mining::NAME => check::<Mining>(pack, file, field, value),
         Drops::NAME => check::<Drops>(pack, file, field, value),
+        Workstation::NAME => check::<Workstation>(pack, file, field, value),
+        Process::NAME => check::<Process>(pack, file, field, value),
         other => Err(BlockJsonError::new(
             pack,
             file,
@@ -885,9 +998,11 @@ mod tests {
                 "sc:liquid",
                 "sc:mining",
                 "sc:needs_support",
+                "sc:process",
                 "sc:random_tick",
                 "sc:replaceable",
                 "sc:unbreakable",
+                "sc:workstation",
             ]
         );
         for name in ALL_BLOCK_COMPONENTS {
@@ -1178,5 +1293,99 @@ mod tests {
         assert_eq!(light.map(|l| l.0), Some(3));
         let missing: Option<DestructibleByMining> = get_block_component(&map);
         assert!(missing.is_none());
+    }
+
+    fn workstation_value() -> serde_json::Value {
+        json!({
+            "station": "furnace",
+            "container": 2,
+            "window": true,
+            "slots": [
+                {"role": "input", "container": 25},
+                {"role": "fuel", "container": 24},
+                {"role": "result", "container": 26}
+            ]
+        })
+    }
+
+    #[test]
+    fn workstation_accepts_furnace_shape() {
+        validate_block_component("p", "f", "c", Workstation::NAME, &workstation_value())
+            .expect("furnace workstation 应合法");
+        let typed: Option<Workstation> =
+            get_block_component(&std::collections::BTreeMap::from([(
+                Workstation::NAME.to_string(),
+                workstation_value(),
+            )]));
+        let decl = typed.expect("应读出");
+        assert_eq!(decl.station, "furnace");
+        assert!(decl.window);
+        assert_eq!(decl.slots.len(), 3);
+        // `window` defaults to closed (brewing-style decls omit it).
+        let mut closed = workstation_value();
+        closed.as_object_mut().expect("对象").remove("window");
+        let typed: Option<Workstation> =
+            get_block_component(&std::collections::BTreeMap::from([(
+                Workstation::NAME.to_string(),
+                closed.clone(),
+            )]));
+        assert!(!typed.expect("应读出").window);
+        validate_block_component("p", "f", "c", Workstation::NAME, &closed)
+            .expect("省略 window 应合法");
+    }
+
+    #[test]
+    fn workstation_rejects_empty_station_dup_roles_and_bad_grid() {
+        let mut bad_station = workstation_value();
+        bad_station["station"] = json!("");
+        assert!(validate_block_component("p", "f", "c", Workstation::NAME, &bad_station).is_err());
+        let mut dup = workstation_value();
+        dup["slots"] = json!([
+            {"role": "input", "container": 25},
+            {"role": "input", "container": 24}
+        ]);
+        assert!(validate_block_component("p", "f", "c", Workstation::NAME, &dup).is_err());
+        let mut grid = workstation_value();
+        grid["grid"] = json!(9);
+        assert!(validate_block_component("p", "f", "c", Workstation::NAME, &grid).is_err());
+        let mut role = workstation_value();
+        role["slots"] = json!([{"role": "output", "container": 26}]);
+        assert!(validate_block_component("p", "f", "c", Workstation::NAME, &role).is_err());
+    }
+
+    #[test]
+    fn process_accepts_burn_cook_and_rejects_bad_fields() {
+        let good = json!({
+            "kind": "burn_cook",
+            "cook_ticks": 200,
+            "fuel": true,
+            "lit": false,
+            "lit_variant": "minecraft:lit_furnace"
+        });
+        validate_block_component("p", "f", "c", Process::NAME, &good).expect("burn_cook 应合法");
+        let typed: Option<Process> = get_block_component(&std::collections::BTreeMap::from([(
+            Process::NAME.to_string(),
+            good.clone(),
+        )]));
+        let decl = typed.expect("应读出");
+        assert!(!decl.lit);
+        assert_eq!(decl.lit_variant.as_deref(), Some("minecraft:lit_furnace"));
+        // `lit` defaults to unlit.
+        let mut unlit = good.clone();
+        unlit.as_object_mut().expect("对象").remove("lit");
+        let typed: Option<Process> = get_block_component(&std::collections::BTreeMap::from([(
+            Process::NAME.to_string(),
+            unlit.clone(),
+        )]));
+        assert!(!typed.expect("应读出").lit);
+        let mut zero = good.clone();
+        zero["cook_ticks"] = json!(0);
+        assert!(validate_block_component("p", "f", "c", Process::NAME, &zero).is_err());
+        let mut kind = good.clone();
+        kind["kind"] = json!("brew");
+        assert!(validate_block_component("p", "f", "c", Process::NAME, &kind).is_err());
+        let mut lit = good.clone();
+        lit["lit_variant"] = json!("no-colon-here");
+        assert!(validate_block_component("p", "f", "c", Process::NAME, &lit).is_err());
     }
 }

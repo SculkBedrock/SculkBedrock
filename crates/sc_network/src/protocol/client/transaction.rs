@@ -27,6 +27,8 @@ fn configured_shield_item_runtime() -> u16 {
     SHIELD_ITEM_RUNTIME_ID.load(Ordering::Relaxed)
 }
 
+// Wire-protocol namespace mirrors official docs.
+#[allow(non_snake_case)]
 pub mod TransactionType {
     pub const NORMAL: u32 = 0;
     pub const MISMATCH: u32 = 1;
@@ -35,6 +37,8 @@ pub mod TransactionType {
     pub const ITEM_RELEASE: u32 = 4;
 }
 
+// Wire-protocol namespace mirrors official docs.
+#[allow(non_snake_case)]
 pub mod ItemUseAction {
     pub const CLICK_BLOCK: i32 = 0;
     pub const CLICK_AIR: i32 = 1;
@@ -42,16 +46,22 @@ pub mod ItemUseAction {
 }
 
 /// Hand used for an item interaction (protocol 2225 and later).
+// Wire-protocol namespace mirrors official docs.
+#[allow(non_snake_case)]
 pub mod TransactionHand {
     pub const MAINHAND: u8 = 0;
     pub const OFFHAND: u8 = 1;
 }
 
+// Wire-protocol namespace mirrors official docs.
+#[allow(non_snake_case)]
 pub mod ItemUseOnActorAction {
     pub const INTERACT: i32 = 0;
     pub const ATTACK: i32 = 1;
 }
 
+// Wire-protocol namespace mirrors official docs.
+#[allow(non_snake_case)]
 pub mod ItemReleaseAction {
     pub const RELEASE: i32 = 0;
     pub const CONSUME: i32 = 1;
@@ -589,12 +599,11 @@ mod tests {
         assert_eq!(decoded.count, 3);
     }
 
-    #[test]
     /// Empty slots are the `ItemData.AIR` literal: runtime 0 / count 0 /
     /// damage 0 / usingNetId=false / block 0 / default userData, 18 bytes
     /// total, with no netIdVariant prefix.
     #[test]
-    fn empty_descriptor_matches_pnx_item_data_air() {
+    fn empty_descriptor_matches_item_data_air() {
         let item = ItemData::default();
         let mut writer = ByteWriter::new();
         write_item_data(&mut writer, &item).unwrap();

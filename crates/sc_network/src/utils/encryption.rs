@@ -148,6 +148,8 @@ impl GcmCtrStream {
         for byte in data.iter_mut() {
             if self.pos == 16 {
                 self.counter_block[12..].copy_from_slice(&self.counter.to_be_bytes());
+                // GenericArray re-exported from aes::cipher is old generic-array 0.14; upgrade requires aes/cipher major version.
+                #[allow(deprecated)]
                 let mut block = aes::cipher::generic_array::GenericArray::from(self.counter_block);
                 self.aes.encrypt_block(&mut block);
                 self.keystream = block.into();
@@ -181,6 +183,8 @@ impl Cfb8Stream {
     }
 
     fn encrypt_in_place(&mut self, data: &mut [u8]) {
+        // GenericArray re-exported from aes::cipher is old generic-array 0.14; upgrade requires aes/cipher major version.
+        #[allow(deprecated)]
         let mut block = aes::cipher::generic_array::GenericArray::from(self.shift);
         for byte in data.iter_mut() {
             self.aes.encrypt_block(&mut block);
@@ -193,6 +197,8 @@ impl Cfb8Stream {
     }
 
     fn decrypt_in_place(&mut self, data: &mut [u8]) {
+        // GenericArray re-exported from aes::cipher is old generic-array 0.14; upgrade requires aes/cipher major version.
+        #[allow(deprecated)]
         let mut block = aes::cipher::generic_array::GenericArray::from(self.shift);
         for byte in data.iter_mut() {
             self.aes.encrypt_block(&mut block);

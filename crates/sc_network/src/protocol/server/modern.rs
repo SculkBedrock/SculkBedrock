@@ -483,12 +483,18 @@ fn write_optional_string(buf: &mut ByteWriter, value: Option<&str>) -> Result<()
     Ok(())
 }
 
+// Retained NBT helper; reserved for future wire encoders.
+#[allow(dead_code)]
 fn write_nbt_string(buf: &mut ByteWriter, value: &str) -> Result<(), Error> {
     buf.write_var_u32(value.len() as u32)?;
     buf.write(value.as_bytes())
 }
 
 /// Furnace type for SetPlayerFurnaceOptions (uint8).
+// Wire-protocol namespace mirrors official docs.
+#[allow(non_snake_case)]
+// Retained wire-protocol constants; not all variants are read yet.
+#[allow(dead_code)]
 pub mod FurnaceType {
     pub const NONE: u8 = 0;
     pub const FURNACE: u8 = 1;
@@ -497,6 +503,10 @@ pub mod FurnaceType {
 }
 
 /// Left recipe tab index for furnace options (varint).
+// Wire-protocol namespace mirrors official docs.
+#[allow(non_snake_case)]
+// Retained wire-protocol constants; not all variants are read yet.
+#[allow(dead_code)]
 pub mod FurnaceLeftTab {
     pub const NONE: i32 = 0;
     pub const RECIPE_FOOD: i32 = 1;
@@ -507,6 +517,10 @@ pub mod FurnaceLeftTab {
 }
 
 /// Furnace layout for furnace options (varint).
+// Wire-protocol namespace mirrors official docs.
+#[allow(non_snake_case)]
+// Retained wire-protocol constants; not all variants are read yet.
+#[allow(dead_code)]
 pub mod FurnaceLayout {
     pub const NONE: i32 = 0;
     pub const INVENTORY_ONLY: i32 = 1;
@@ -614,6 +628,10 @@ impl Writer for ClientboundStonecutterSetRecipe {
 }
 
 /// Matchmaking state values (uint8).
+// Wire-protocol namespace mirrors official docs.
+#[allow(non_snake_case)]
+// Retained wire-protocol constants; not all variants are read yet.
+#[allow(dead_code)]
 pub mod MatchmakingState {
     pub const IDLE: u8 = 0;
 }
@@ -723,6 +741,10 @@ impl Writer for ClientboundPlayAudioContent {
 }
 
 /// Block passenger emote values (uint8).
+// Wire-protocol namespace mirrors official docs.
+#[allow(non_snake_case)]
+// Retained wire-protocol constants; not all variants are read yet.
+#[allow(dead_code)]
 pub mod PassengerEmote {
     pub const STANDING: u8 = 0;
     pub const RIDING: u8 = 1;

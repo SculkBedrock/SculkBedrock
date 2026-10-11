@@ -25,6 +25,8 @@ use sc_network_macros::MinecraftPacket;
 
 pub const ITEM_STACK_REQUEST_PACKET_ID: u16 = 147;
 
+// Wire-protocol namespace mirrors official docs.
+#[allow(non_snake_case)]
 pub mod ItemStackRequestActionType {
     pub const TAKE: u8 = 0;
     pub const PLACE: u8 = 1;
@@ -119,6 +121,14 @@ pub enum ItemStackRequestAction {
         recipe_network_id: u32,
         times: u8,
     },
+    /// Creative-mode take (action type 12): `creative_id` is the 1-based
+    /// entry id from this server's CreativeContent listing. The trailing
+    /// payload byte is opaque (not the taken count: full-stack takes still
+    /// carry 1); it is consumed for stream alignment only, and the granted
+    /// amount always comes from the request's own Output-consuming Moves.
+    CraftCreative {
+        creative_id: u32,
+    },
     /// Any other action type. The payload shape is not implemented, so the
     /// request cannot be aligned safely and the packet is rejected.
     Unknown {
@@ -163,6 +173,7 @@ impl ItemStackRequest {
                     | ItemStackRequestAction::Consume { .. }
                     | ItemStackRequestAction::Create { .. }
                     | ItemStackRequestAction::CraftResults { .. }
+                    | ItemStackRequestAction::CraftCreative { .. }
                     | ItemStackRequestAction::Unknown { .. } => {}
                 }
             }
@@ -249,9 +260,9 @@ fn read_action(buf: &mut ByteReader) -> Result<ItemStackRequestAction, Error> {
             Ok(ItemStackRequestAction::Unknown { action_type })
         }
         ItemStackRequestActionType::CRAFT_CREATIVE => {
-            buf.read_var_u32()?;
-            buf.read_u8()?;
-            Ok(ItemStackRequestAction::Unknown { action_type })
+            let creative_id = buf.read_var_u32()?;
+            buf.read_u8()?; // opaque trailing byte, alignment only (see variant docs)
+            Ok(ItemStackRequestAction::CraftCreative { creative_id })
         }
         ItemStackRequestActionType::CRAFT_RECIPE_OPTIONAL => {
             if crate::protocol::version::protocol_at_least(
@@ -494,6 +505,11 @@ impl Writer for ItemStackRequest {
                         }
                         write_action_type(buf, 16)?;
                     }
+                    ItemStackRequestAction::CraftCreative { creative_id } => {
+                        write_action_type(buf, ItemStackRequestActionType::CRAFT_CREATIVE)?;
+                        buf.write_var_u32(*creative_id)?;
+                        buf.write_u8(0)?;
+                    }
                 }
             }
             buf.write_var_u32(0)?; // stringsToFilter
@@ -685,5 +701,43 @@ mod tests {
         assert_eq!(decoded, packet);
         assert!(decoded.has_craft());
         assert_eq!(decoded.craft_actions(), vec![(7, 12, 1)]);
+    }
+
+    #[test]
+    fn live_creative_take_bytes_decode_to_grant_flow() {
+        // Golden bytes from a real creative-mode take (oak planks x64):
+        // [CraftCreative(id=1) + CraftResults + Move{64, Output(60/slot50)
+        // -> Hotbar(28/slot0)}]. Previously decoded as Unknown and the
+        // whole request was rejected, so creative takes never landed.
+        let bytes: [u8; 75] = [
+            0x01, 0x05, 0x03, 0x0c, 0x0e, 0x01, 0x01, 0x11, 0x13, 0x01, 0x01, 0x01, 0x14, 0x6d,
+            0x69, 0x6e, 0x65, 0x63, 0x72, 0x61, 0x66, 0x74, 0x3a, 0x6f, 0x61, 0x6b, 0x5f, 0x70,
+            0x6c, 0x61, 0x6e, 0x6b, 0x73, 0x00, 0x01, 0x00, 0xb6, 0xb5, 0xac, 0x94, 0x07, 0x0a,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x01, 0x40,
+            0x3c, 0x00, 0x32, 0xfd, 0xff, 0xff, 0xff, 0x1c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0xff, 0xff, 0xff, 0xff,
+        ];
+        let mut reader = ByteReader::from(&bytes[..]);
+        let request = ItemStackRequest::read(&mut reader).unwrap();
+        assert!(reader.as_slice().is_empty());
+        assert_eq!(request.requests.len(), 1);
+        assert_eq!(request.requests[0].request_id, -3);
+        assert!(matches!(
+            &request.requests[0].actions[..],
+            [
+                ItemStackRequestAction::CraftCreative { creative_id: 1 },
+                ItemStackRequestAction::CraftResults { times: 1 },
+                ItemStackRequestAction::Move {
+                    action_type: 1,
+                    amount: Some(64),
+                    source,
+                    destination,
+                }
+            ] if source.container_enum == 60
+                && source.slot == 50
+                && destination.container_enum == 28
+                && destination.slot == 0
+        ));
+        assert!(!request.has_craft());
     }
 }

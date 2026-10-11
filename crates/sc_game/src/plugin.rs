@@ -20,24 +20,21 @@ use sc_world::manager::{MinecraftWorldId, MinecraftWorldManager};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::block::BlockPlacementReservations;
 use crate::block::{block_changed_to_outbox, DropReceipts};
-use crate::bus::{
-    AnnouncementBus, CrossWorldPing, PingBus, PingMailbox, RegionPingBus, TeleportBus,
-    TeleportRequest, WorldAnnouncement,
-};
-use crate::interaction::BlockPlacementReservations;
-use crate::item_drop::{item_drop_tick, item_pickup_tick, ItemDropStore};
+use crate::item::{item_drop_tick, item_pickup_tick, ItemDropStore};
 use crate::movement::{movement_broadcast, movement_input_drain, movement_physics, PlayerMovement};
 use crate::net::{
-    IntentReliability, IntentSendHooks, NetworkIntent, NetworkOutbox, PlayerMoveMode,
+    flush_pending_inventory_resync, IntentPublisher, IntentReliability, IntentSendHooks,
+    MovePlayer, NetworkOutbox, PendingConnectionFaults, PendingInventoryResync, PlayerMoveMode,
 };
-use crate::net_backpressure::{
-    flush_pending_inventory_resync, IntentPublisher, PendingInventoryResync,
-};
-use crate::net_faults::PendingConnectionFaults;
 use crate::region::{
     region_tick, EntityRegion, RegionCommands, RegionDriver, RegionGrid, RegionHub, RegionId,
     RegionPhysicsCommand,
+};
+use crate::world::{
+    AnnouncementBus, CrossWorldPing, PingBus, PingMailbox, RegionPingBus, TeleportBus,
+    TeleportRequest, WorldAnnouncement,
 };
 use crate::world::{
     GameWorldEntry, GameWorldId, GameWorldMap, PlayerGameWorld, TickCounter, WorldHub,
@@ -66,6 +63,8 @@ impl Plugin for SCGamePlugin {
             .insert_resource(PendingConnectionFaults::default())
             .insert_resource(BlockPlacementReservations::default())
             .insert_resource(ItemDropStore::default())
+            // Block-entity identities ((world, pos) -> process entity).
+            .insert_resource(crate::block_entity::BlockEntityIndex::default())
             // Break drop idempotency receipts.
             .insert_resource(DropReceipts::default())
             .insert_resource(IntentSendHooks::default())
@@ -73,8 +72,8 @@ impl Plugin for SCGamePlugin {
             // Item registry (item to block mapping; filled after version packs load).
             .insert_resource(ItemRegistry::default())
             // Recipe snapshot (compiled from behavior packs; empty when missing).
-            .insert_resource(crate::crafting::SharedRecipeRegistry::default())
-            .insert_resource(crate::crafting::SharedItemTags::default())
+            .insert_resource(crate::inventory::crafting::SharedRecipeRegistry::default())
+            .insert_resource(crate::inventory::crafting::SharedItemTags::default())
             // Demo systems default off, overridden from server properties.
             .insert_resource(DemoSystems(false))
             .add_systems(
@@ -97,38 +96,37 @@ impl Plugin for SCGamePlugin {
             .add_systems(sc_ecs::schedule::Update, item_drop_tick)
             // Pick up settled drops by player AABB.
             .add_systems(sc_ecs::schedule::Update, item_pickup_tick)
+            // Furnace burn/cook tick (slot facts + coalesced progress).
+            .add_systems(sc_ecs::schedule::Update, crate::furnace::process_tick)
             .add_systems(sc_ecs::schedule::Update, demo_cross_world_transfer)
             .add_systems(sc_ecs::schedule::Update, update_player_region)
             // Authoritative break timing from block data; the server lands
             // breaks itself when time expires.
-            .add_systems(
-                sc_ecs::schedule::Update,
-                crate::interaction::advance_block_break,
-            )
+            .add_systems(sc_ecs::schedule::Update, crate::block::advance_block_break)
             .add_systems(sc_utils::schedule::SCMovementBroadcast, movement_broadcast)
             .add_systems(sc_ecs::schedule::PostUpdate, block_changed_to_outbox)
             // Player place/break boundary events.
-            .add_event::<crate::interaction::BreakBlockRequest>()
-            .add_event::<crate::interaction::PlaceBlockRequest>()
-            .add_event::<crate::interaction::HeldSlotChanged>()
-            .add_event::<crate::interaction::StartBreakRequest>()
-            .add_event::<crate::interaction::AbortBreakRequest>()
-            .add_event::<crate::interaction::OpenInventoryRequest>()
-            .add_event::<crate::interaction::CloseInventoryRequest>()
-            .add_event::<crate::crafting::CraftRequestEvent>()
+            .add_event::<crate::block::BreakBlockRequest>()
+            .add_event::<crate::block::PlaceBlockRequest>()
+            .add_event::<crate::block::HeldSlotChanged>()
+            .add_event::<crate::block::StartBreakRequest>()
+            .add_event::<crate::block::AbortBreakRequest>()
+            .add_event::<crate::block::OpenInventoryRequest>()
+            .add_event::<crate::block::CloseInventoryRequest>()
+            .add_event::<crate::inventory::crafting::CraftRequestEvent>()
             .add_systems(
                 sc_utils::schedule::SCEventUpdate,
                 (
-                    crate::interaction::drain_mining_actions,
-                    crate::interaction::handle_start_break,
-                    crate::interaction::handle_abort_break,
-                    crate::interaction::handle_break_block,
-                    crate::interaction::handle_place_block,
-                    crate::interaction::handle_held_slot_changed,
-                    crate::interaction::resolve_block_placement_reservations,
-                    crate::interaction::handle_open_inventory,
-                    crate::interaction::handle_close_inventory,
-                    crate::crafting::handle_craft_requests,
+                    crate::block::drain_mining_actions,
+                    crate::block::handle_start_break,
+                    crate::block::handle_abort_break,
+                    crate::block::handle_break_block,
+                    crate::block::handle_place_block,
+                    crate::block::handle_held_slot_changed,
+                    crate::block::resolve_block_placement_reservations,
+                    crate::block::handle_open_inventory,
+                    crate::block::handle_close_inventory,
+                    crate::inventory::crafting::handle_craft_requests,
                 ),
             )
             // Shutdown: stop region threads on SCExit (e.g. stop command).
@@ -177,7 +175,7 @@ fn on_exit_shutdown_regions(
         driver.shutdown();
         log::info!("{}", t_log!("console.game.regions_stopped"));
         log::info!("{}", t_log!("console.game.exit_done"));
-            // Flush order: the last log line enters the sink before the log thread closes.
+        // Flush order: the last log line enters the sink before the log thread closes.
         sc_log::file::shutdown();
         if sc_utils::host_mode::is_hosted() {
             // Hosted mode (GUI/mobile embedding): only set the stopped flag;
@@ -220,7 +218,7 @@ fn spawn_demo_regions(
 
     // Region registry and event bus live on the main world.
     child.insert_resource(RegionHub::<RegionId>::default());
-    child.insert_resource(crate::bus::RegionPingBus::default());
+    child.insert_resource(crate::world::RegionPingBus::default());
     // Shared world manager: region threads read chunk data through it.
     if let Some(manager) = world.get_resource::<sc_world::manager::MinecraftWorldManager>() {
         child.insert_resource((*manager).clone());
@@ -274,11 +272,7 @@ fn spawn_demo_regions(
 
 /// Demo: every 300 ticks migrate the main world's first demo entity to
 /// the nether world instance. Runs only with demo_systems=true.
-fn demo_cross_world_transfer(
-    mut hub: ResMut<WorldHub>,
-    mut tick: Local<u32>,
-    demo: Res<DemoSystems>,
-) {
+fn demo_cross_world_transfer(hub: ResMut<WorldHub>, mut tick: Local<u32>, demo: Res<DemoSystems>) {
     if !demo.0 {
         return;
     }
@@ -301,7 +295,10 @@ fn demo_cross_world_transfer(
     if let Some(new_entity) = source.transfer_entity(&target, &entity) {
         log::info!(
             "{}",
-            t_log!("console.game.demo_transfer", entity = format!("{new_entity:?}"))
+            t_log!(
+                "console.game.demo_transfer",
+                entity = format!("{new_entity:?}")
+            )
         );
     }
 }
@@ -470,10 +467,7 @@ fn spawn_dimensions(world: World, mut hub: ResMut<WorldHub>, mut map: ResMut<Gam
             },
         );
     }
-    log::info!(
-        "{}",
-        t_log!("console.game.dimensions", count = hub.count())
-    );
+    log::info!("{}", t_log!("console.game.dimensions", count = hub.count()));
 }
 
 /// Consume cross-world teleport requests (TeleportBus) and apply them:
@@ -486,7 +480,10 @@ fn process_teleports(world: World, map: Res<GameWorldMap>, mut bus: ResMut<Telep
     for event in requests {
         let request = event.payload;
         let Some(entry) = map.get(&request.to) else {
-            log::debug!("teleport target world {} not mounted, dropping", request.to.0);
+            log::debug!(
+                "teleport target world {} not mounted, dropping",
+                request.to.0
+            );
             continue;
         };
         // Target entity (currently a root-world player).
@@ -528,6 +525,11 @@ fn process_teleports(world: World, map: Res<GameWorldMap>, mut bus: ResMut<Telep
             tf.position = target;
             tf.velocity = sc_entity::motion::Velocity::default();
         }
+        // 2.5) Fall chain reset (teleport must not settle damage on arrival).
+        if let Some(fall) = world.get_component::<sc_entity::motion::FallState>(&request.entity) {
+            fall.reset(request.y, true);
+        }
+        world.remove_component::<crate::damage::Dead>(&request.entity);
         // 3) Full chunk subscription reset for immediate reorder in the
         //    new world; stale old-world rows would otherwise block it.
         if let Some(view) = world.get_component::<ChunkView>(&request.entity) {
@@ -558,7 +560,7 @@ fn process_teleports(world: World, map: Res<GameWorldMap>, mut bus: ResMut<Telep
 }
 
 /// Cross-world announcement consumption (placeholder: logs for now).
-fn process_announcements(world: World, mut bus: ResMut<AnnouncementBus>) {
+fn process_announcements(_world: World, mut bus: ResMut<AnnouncementBus>) {
     let announcements = bus.drain_outbox();
     for event in announcements {
         log::info!(
@@ -655,13 +657,16 @@ fn complete_teleports(world: World, mut outbox: ResMut<NetworkOutbox>) {
             tf.rotation = rotation;
             tf.velocity = sc_entity::motion::Velocity::default();
         }
-        world.remove_component::<crate::interaction::BreakingState>(&entity);
+        if let Some(fall) = world.get_component::<sc_entity::motion::FallState>(&entity) {
+            fall.reset(target.y, false);
+        }
+        world.remove_component::<crate::block::BreakingState>(&entity);
         let base_offset = world
             .get_component::<PhysicsBody>(&entity)
             .map(|physics| physics.base_offset)
             .unwrap_or(1.62);
         // Notify the client (MovePlayer TELEPORT outbound intent).
-        publisher.publish(NetworkIntent::MovePlayer {
+        publisher.publish(MovePlayer {
             entity_id: mc_id.0,
             x: target.x,
             y: target.y + base_offset,

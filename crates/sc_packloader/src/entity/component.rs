@@ -46,12 +46,20 @@ pub struct AmbientSoundIntervalEventNames {
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct AmbientSoundInterval {
+    // 数据包 schema/数据模型字段，为兼容性保留
+    #[allow(dead_code)]
     #[serde_inline_default("ambient".to_string())]
     event_name: String,
+    // 数据包 schema/数据模型字段，为兼容性保留
+    #[allow(dead_code)]
     #[serde(default)]
     event_names: Vec<AmbientSoundIntervalEventNames>,
+    // 数据包 schema/数据模型字段，为兼容性保留
+    #[allow(dead_code)]
     #[serde_inline_default(16.0)]
     range: f64,
+    // 数据包 schema/数据模型字段，为兼容性保留
+    #[allow(dead_code)]
     #[serde_inline_default(8.0)]
     value: f64,
 }
@@ -190,7 +198,11 @@ pub struct BlockClimber {}
 
 #[derive(Clone, Deserialize, Debug, Default)]
 pub struct BlockSensorOnBreak {
+    // 数据包 schema/数据模型字段，为兼容性保留
+    #[allow(dead_code)]
     block_list: Vec<String>,
+    // 数据包 schema/数据模型字段，为兼容性保留
+    #[allow(dead_code)]
     on_block_broken: String,
 }
 
@@ -259,8 +271,10 @@ pub struct Breathable {
     pub breathes_water: bool,
     #[serde_inline_default(true)]
     pub generates_bubbles: bool,
-    #[serde_inline_default(0)]
-    pub inhale_time: i32,
+    // Vanilla ships float seconds here (player.json: 3.75); plain ints
+    // still deserialize into f64, so this stays compatible both ways.
+    #[serde_inline_default(0.0)]
+    pub inhale_time: f64,
     #[serde(default)]
     pub non_breathe_blocks: Vec<String>,
     #[serde_inline_default(-20)]
@@ -283,10 +297,16 @@ pub struct BreedableBreedsWith {
 
 #[derive(Clone, Deserialize, Debug, Default)]
 pub struct BreedableDenyParentsVariant {
+    // 数据包 schema/数据模型字段，为兼容性保留
+    #[allow(dead_code)]
     #[serde(default)]
     chance: f64,
+    // 数据包 schema/数据模型字段，为兼容性保留
+    #[allow(dead_code)]
     #[serde(default)]
     max_variant: i32,
+    // 数据包 schema/数据模型字段，为兼容性保留
+    #[allow(dead_code)]
     #[serde(default)]
     min_variant: i32,
 }
@@ -678,8 +698,27 @@ pub struct EnvironmentSensorTrigger {
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct EnvironmentSensor {
-    #[serde(default)]
+    // Vanilla ships both shapes: a single trigger map (llama/pillager)
+    // and a trigger sequence. Accept both; gameplay reads the vec.
+    #[serde(default, deserialize_with = "single_or_vec_trigger")]
     pub triggers: Vec<EnvironmentSensorTrigger>,
+}
+
+/// `Vec<T>` that also accepts a single bare value (vanilla JSON duality).
+fn single_or_vec_trigger<'de, D>(deserializer: D) -> Result<Vec<EnvironmentSensorTrigger>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(EnvironmentSensorTrigger),
+        Many(Vec<EnvironmentSensorTrigger>),
+    }
+    match OneOrMany::deserialize(deserializer)? {
+        OneOrMany::One(trigger) => Ok(vec![trigger]),
+        OneOrMany::Many(triggers) => Ok(triggers),
+    }
 }
 
 #[derive(Clone, Component, Deserialize, Debug)]
@@ -2511,3 +2550,46 @@ pub struct CannotBeAttacked {}
 
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct IgnoreCannotBeAttacked {}
+
+#[cfg(test)]
+mod component_regression_tests {
+    use super::{Breathable, EnvironmentSensor};
+
+    #[test]
+    fn breathable_accepts_float_inhale_time() {
+        // Verbatim player.json shape (float seconds).
+        let component: Breathable = serde_json::from_str(
+            r#"{"breathes_lava": false, "generates_bubbles": false,
+                "inhale_time": 3.75, "suffocate_time": -1, "total_supply": 15}"#,
+        )
+        .expect("float inhale_time parses");
+        assert_eq!(component.inhale_time, 3.75);
+        assert_eq!(component.suffocate_time, -1);
+        // Plain ints keep working.
+        let component: Breathable =
+            serde_json::from_str(r#"{"inhale_time": 0}"#).expect("int inhale_time parses");
+        assert_eq!(component.inhale_time, 0.0);
+    }
+
+    #[test]
+    fn environment_sensor_accepts_single_map_and_sequence() {
+        // Verbatim pillager.json shape (single trigger map).
+        let single: EnvironmentSensor = serde_json::from_str(
+            r#"{"triggers": {"event": "minecraft:ranged_mode",
+                "filters": {"operator": "==", "test": "in_water",
+                            "subject": "self", "value": false}}}"#,
+        )
+        .expect("single trigger map parses");
+        assert_eq!(single.triggers.len(), 1);
+        assert_eq!(single.triggers[0].event, "minecraft:ranged_mode");
+        // Sequence shape keeps working.
+        let many: EnvironmentSensor = serde_json::from_str(
+            r#"{"triggers": [{"event": "a"}, {"event": "b", "target": "self"}]}"#,
+        )
+        .expect("trigger sequence parses");
+        assert_eq!(many.triggers.len(), 2);
+        // Missing triggers default to empty.
+        let empty: EnvironmentSensor = serde_json::from_str("{}").expect("missing triggers parses");
+        assert!(empty.triggers.is_empty());
+    }
+}

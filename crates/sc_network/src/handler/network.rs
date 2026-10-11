@@ -80,6 +80,7 @@ impl Plugin for SCNetworkHandlerPlugin {
             sc_utils::schedule::SCEventUpdate,
             (
                 crate::handler::command::gamemode_command,
+                crate::handler::command::give_command,
                 crate::handler::command::command_feedback,
             ),
         );
@@ -406,6 +407,15 @@ pub(crate) fn client_to_server_handshake(
 
                 let _ = connection.send_packet(PlayStatus { status }, true).await;
                 if status != PlayStatus::LOGIN_SUCCESS {
+                    log::warn!(
+                        "{}",
+                        t_log!(
+                            "console.login.version_mismatch",
+                            client = protocol_version,
+                            min = min_version,
+                            max = max_version
+                        )
+                    );
                     let _ = connection.disconnect(disconnect_reason, false).await;
                     return;
                 }

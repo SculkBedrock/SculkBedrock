@@ -583,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn nukkit_random_mt_distinct_streams() {
+    fn mt_random_distinct_streams() {
         let mut a = MtRandom::new(1);
         let mut b = MtRandom::new(2);
         let va: Vec<i32> = (0..8).map(|_| a.next_int()).collect();
@@ -603,15 +603,21 @@ mod tests {
     }
 
     #[test]
-    fn nukkit_random_bounded_int_range() {
+    fn mt_random_bounded_int_range() {
         let mut r = MtRandom::new(20260823);
         for _ in 0..200 {
             let v = r.next_bounded_int(6);
-            assert!((0..=6).contains(&v), "nextBoundedInt(6) out of range: {v}");
+            assert!(
+                (0..=6).contains(&v),
+                "next_bounded_int(6) out of range: {v}"
+            );
         }
         for _ in 0..200 {
             let v = r.next_int_range(-3, 5);
-            assert!((-3..=5).contains(&v), "nextInt(-3,5) out of range: {v}");
+            assert!(
+                (-3..=5).contains(&v),
+                "next_int_range(-3,5) out of range: {v}"
+            );
         }
     }
 }

@@ -16,6 +16,9 @@ use sc_world::block_dictionary::{air_runtime_id, BlockStateDictionary, BlockStat
 use sc_world::chunk::{BlockRuntimeId, Chunk, ChunkPosition, OVERWORLD_MAX_Y, OVERWORLD_MIN_Y};
 
 /// Full-height section count (fixed 3D biome count in the payload).
+/// Diagnostic test reserve: kept for payload geometry checks.
+// Defined against the fixed overworld height; not referenced by every validator yet.
+#[allow(dead_code)]
 const OVERWORLD_SECTIONS: usize = 24;
 
 fn register_test_network_ids(ids: &[u32]) {
@@ -143,29 +146,28 @@ fn parse_payload(payload: &[u8], section_count: u32, biome_count: usize) -> Pars
     }
 }
 
-/// Load definitions/block_palette.nbt from the repo version pack.
-fn seed_palette_from_version_pack() {
-    use std::io::Read;
+/// Load definitions/block_palette.nbt from the auto-selected version pack.
+/// Returns false when no pack is available (callers skip).
+fn seed_palette_from_version_pack() -> bool {
+    use std::sync::atomic::{AtomicBool, Ordering};
     static SEEDED: std::sync::Once = std::sync::Once::new();
+    static AVAILABLE: AtomicBool = AtomicBool::new(false);
     SEEDED.call_once(|| {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../version_packs/[SC原版版本包] Vanilla-1.26.40.scver"
-        );
-        let file = std::fs::File::open(path).expect("version pack file must exist");
-        let mut archive = zip::ZipArchive::new(file).expect("version pack must be a valid zip");
-        let mut entry = archive
-            .by_name("definitions/block_palette.nbt")
-            .expect("version pack must contain block_palette.nbt");
-        let mut bytes = Vec::new();
-        entry.read_to_end(&mut bytes).expect("read palette bytes");
+        let Some(bytes) =
+            sc_packloader::test_pack::read_test_pack_file("definitions/block_palette.nbt")
+        else {
+            eprintln!("[validator] [skip] 版本包缺失，跳过 palette");
+            return;
+        };
         let registry = sc_block::registry::BlockStateRegistry::new();
         let count = registry
             .load_palette_from_bytes(&bytes)
             .expect("parse palette");
         eprintln!("[validator] palette registered {count} states");
         assert!(count > 6000, "unexpected palette size: {count}");
+        AVAILABLE.store(true, Ordering::Release);
     });
+    AVAILABLE.load(Ordering::Acquire)
 }
 
 /// Diff one source-chunk column (layer 0) against the decoded result.
@@ -274,7 +276,10 @@ fn payload_roundtrip_synthetic_chunk() {
 fn payload_roundtrip_generated_chunk() {
     // Register the real palette from the version pack so the generator
     // resolves real block hashes.
-    seed_palette_from_version_pack();
+    if !seed_palette_from_version_pack() {
+        eprintln!("[skip] 版本包缺失，跳过测试");
+        return;
+    }
 
     // Generate chunks with the real generator and diff fully.
     // The flat-world generator was replaced by the normal generator.

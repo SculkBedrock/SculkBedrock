@@ -1,5 +1,4 @@
 use crate::{MinecraftJson, MinecraftJsonDeserializer};
-use sc_nbt::writer::NbtCustomWrite;
 use std::io::Read;
 #[test]
 #[ignore = "手动调试用：依赖本机 Desktop 下的 taiga.biome.json，cargo test -- --ignored 手动运行"]

@@ -93,6 +93,8 @@ impl ChunkPayloadSendBudget {
         }
     }
 
+    // Retained for debugging/observability; not yet read in this build.
+    #[allow(dead_code)]
     pub fn active_bytes(&self) -> usize {
         self.active_bytes.load(Ordering::Acquire)
     }

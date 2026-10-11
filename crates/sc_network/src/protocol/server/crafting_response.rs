@@ -56,6 +56,9 @@ impl Writer for ItemStackResponse {
                 CraftContainer::Grid => 13,
                 CraftContainer::Cursor => 59,
                 CraftContainer::Output => 60,
+                // Furnace slots sync via SyncFurnaceWindow, never through
+                // ItemStackResponse updates (see `updates()`).
+                CraftContainer::Furnace => continue,
             };
             containers.entry(kind).or_default().push(slot);
         }

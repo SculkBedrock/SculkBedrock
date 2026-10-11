@@ -22,9 +22,11 @@ use sc_entity::motion::{Aabb, Position, Velocity};
 use sc_item::{ItemRegistry, ItemStack, PlayerInventory};
 use sc_world::manager::{MinecraftWorldId, MinecraftWorldManager};
 
-use crate::net::{NetworkIntent, NetworkOutbox};
-use crate::net_backpressure::{IntentPublisher, PendingInventoryResync};
-use crate::net_faults::PendingConnectionFaults;
+use crate::net::{
+    DespawnItemEntity, IntentPublisher, MoveItemEntity, NetworkOutbox,
+    PendingConnectionFaults, PendingInventoryResync, SpawnItemEntity, TakeItemEntity,
+    UpdateInventorySlot, UpdateItemStackSize,
+};
 
 const CELL_SIZE: f32 = 2.0;
 const GRAVITY: f32 = 0.04;
@@ -242,11 +244,11 @@ impl RegionItemDropStore {
                 survivor.stack.count = new_count;
             }
             // Close first (RemoveEntity), then broadcast the new count.
-            publisher.publish(NetworkIntent::DespawnItemEntity {
+            publisher.publish(DespawnItemEntity {
                 world_id: world_id.clone(),
                 runtime_id: absorbed.runtime_id,
             });
-            publisher.publish(NetworkIntent::UpdateItemStackSize {
+            publisher.publish(UpdateItemStackSize {
                 world_id: world_id.clone(),
                 runtime_id,
                 count: new_count,
@@ -385,7 +387,7 @@ impl ItemDropStore {
                 position,
                 velocity,
             );
-            publisher.publish(NetworkIntent::SpawnItemEntity {
+            publisher.publish(SpawnItemEntity {
                 world_id: world_id.clone(),
                 runtime_id: drop.runtime_id,
                 x: drop.position.x,
@@ -427,7 +429,7 @@ impl ItemDropStore {
                 let (runtime_id, position, velocity, age, pickup_delay, sleeping) = snapshot;
                 if age >= LIFETIME_TICKS {
                     store.remove(handle);
-                    publisher.publish(NetworkIntent::DespawnItemEntity {
+                    publisher.publish(DespawnItemEntity {
                         world_id: world_id.clone(),
                         runtime_id,
                     });
@@ -441,26 +443,120 @@ impl ItemDropStore {
                 let mut next_sleeping = sleeping;
                 let mut on_ground = sleeping;
 
-                if !sleeping {
-                    next_velocity.y = (next_velocity.y - GRAVITY).max(-TERMINAL_VELOCITY);
-                    next_velocity.x *= DRAG;
-                    next_velocity.y *= DRAG;
-                    next_velocity.z *= DRAG;
-                    next_position.x += next_velocity.x;
-                    next_position.y += next_velocity.y;
-                    next_position.z += next_velocity.z;
-
-                    if is_solid_below(
+                if sleeping {
+                    // Sleeping drops re-validate every tick: wake when the
+                    // support is gone, eject when entombed. Otherwise a
+                    // broken floor leaves floating drops behind forever.
+                    if cell_is_solid(
+                        manager,
+                        &world_id,
+                        position.x.floor() as i32,
+                        position.y.floor() as i32,
+                        position.z.floor() as i32,
+                    ) {
+                        if let Some(freed) =
+                            eject_up_to_air(manager, &world_id, position)
+                        {
+                            next_position = freed;
+                            next_velocity = Velocity::default();
+                            next_sleeping = false;
+                            on_ground = false;
+                        }
+                    } else if support_top_below(
                         manager,
                         &world_id,
                         next_position.x,
                         next_position.y,
                         next_position.z,
+                    )
+                    .is_none()
+                    {
+                        next_sleeping = false;
+                        next_velocity = Velocity::default();
+                        on_ground = false;
+                    }
+                }
+
+                if !next_sleeping {
+                    next_velocity.y = (next_velocity.y - GRAVITY).max(-TERMINAL_VELOCITY);
+                    next_velocity.x *= DRAG;
+                    next_velocity.y *= DRAG;
+                    next_velocity.z *= DRAG;
+
+                    // Eject first when starting inside a solid (break cell
+                    // neighbors, re-logged or replaced blocks).
+                    if cell_is_solid(
+                        manager,
+                        &world_id,
+                        next_position.x.floor() as i32,
+                        next_position.y.floor() as i32,
+                        next_position.z.floor() as i32,
                     ) {
-                        next_position.y = next_position.y.floor() + 1.25;
+                        if let Some(freed) =
+                            eject_up_to_air(manager, &world_id, next_position)
+                        {
+                            next_position = freed;
+                            next_velocity = Velocity::default();
+                        }
+                    }
+
+                    // Per-axis horizontal collision: never drift into solids.
+                    let probe_x = next_position.x + next_velocity.x;
+                    if cell_is_solid(
+                        manager,
+                        &world_id,
+                        probe_x.floor() as i32,
+                        next_position.y.floor() as i32,
+                        next_position.z.floor() as i32,
+                    ) {
+                        next_velocity.x = 0.0;
+                    } else {
+                        next_position.x = probe_x;
+                    }
+                    let probe_z = next_position.z + next_velocity.z;
+                    if cell_is_solid(
+                        manager,
+                        &world_id,
+                        next_position.x.floor() as i32,
+                        next_position.y.floor() as i32,
+                        probe_z.floor() as i32,
+                    ) {
+                        next_velocity.z = 0.0;
+                    } else {
+                        next_position.z = probe_z;
+                    }
+
+                    // Vertical move with landing on the support top.
+                    let probe_y = next_position.y + next_velocity.y;
+                    if next_velocity.y <= 0.0
+                        && cell_is_solid(
+                            manager,
+                            &world_id,
+                            next_position.x.floor() as i32,
+                            probe_y.floor() as i32,
+                            next_position.z.floor() as i32,
+                        )
+                    {
+                        next_position.y = probe_y.floor() + 1.0 + ITEM_REST_OFFSET;
                         next_velocity = Velocity::default();
                         next_sleeping = true;
                         on_ground = true;
+                    } else {
+                        next_position.y = probe_y;
+                        if cell_is_solid(
+                            manager,
+                            &world_id,
+                            next_position.x.floor() as i32,
+                            next_position.y.floor() as i32,
+                            next_position.z.floor() as i32,
+                        ) {
+                            // Moving up through a ceiling (or still wedged):
+                            // bonk in place rather than phasing through.
+                            next_position.y = position.y;
+                            next_velocity.y = 0.0;
+                        } else {
+                            on_ground = false;
+                        }
                     }
                 }
 
@@ -473,8 +569,13 @@ impl ItemDropStore {
                     drop.on_ground = on_ground;
                 }
 
-                if position.distance_squared(&next_position) > 0.0001 && !next_sleeping {
-                    publisher.publish(NetworkIntent::MoveItemEntity {
+                // Publish moves, including the landing transition itself:
+                // without it the client keeps the last in-air position and
+                // the item visually floats above its rest spot.
+                if position.distance_squared(&next_position) > 0.0001
+                    && !(sleeping && next_sleeping)
+                {
+                    publisher.publish(MoveItemEntity {
                         world_id: world_id.clone(),
                         runtime_id,
                         x: next_position.x,
@@ -536,21 +637,21 @@ impl ItemDropStore {
             let (_leftover, changed_slots) = inventory.insert_tracked(stack, registry);
             // Order: take packet, bag insert, close. The client plays
             // the absorb animation on TakeItemEntity; close needs no delay.
-            publisher.publish(NetworkIntent::TakeItemEntity {
+            publisher.publish(TakeItemEntity {
                 world_id: world_id.clone(),
                 runtime_id,
                 target_entity_id: collector_runtime_id,
             });
             for slot in changed_slots {
                 if let Some(current) = inventory.get(slot) {
-                    publisher.publish(NetworkIntent::UpdateInventorySlot {
+                    publisher.publish(UpdateInventorySlot {
                         entity_id: collector_runtime_id,
                         slot: slot as u8,
                         stack: current,
                     });
                 }
             }
-            publisher.publish(NetworkIntent::DespawnItemEntity {
+            publisher.publish(DespawnItemEntity {
                 world_id: world_id.clone(),
                 runtime_id,
             });
@@ -602,12 +703,17 @@ impl RegionItemDropStore {
     }
 }
 
-fn is_solid_below(
+/// Rest height above a supporting block top (item-actor center).
+const ITEM_REST_OFFSET: f32 = 0.15;
+/// Upward eject scan height when a drop starts inside a solid.
+const EJECT_SCAN_HEIGHT: i32 = 3;
+
+fn cell_is_solid(
     manager: Option<&MinecraftWorldManager>,
     world_id: &MinecraftWorldId,
-    x: f32,
-    y: f32,
-    z: f32,
+    bx: i32,
+    by: i32,
+    bz: i32,
 ) -> bool {
     let Some(manager) = manager else {
         return false;
@@ -615,24 +721,67 @@ fn is_solid_below(
     let Some(world) = manager.get_world(world_id) else {
         return false;
     };
-    let block_position = sc_block::position::BlockPosition::from_float(x, y, z);
     let key = sc_world::storage::ChunkKey::new(
         world.world_data.get_dimension(),
-        block_position.chunk_position(),
+        sc_world::chunk::ChunkPosition::from_world(bx, bz),
     );
     let Some(column) = world.chunk_provider.cached_chunk(key) else {
         return false;
     };
-    let is_solid = column
-        .read()
-        .block_at(
-            block_position.local_x(),
-            block_position.y,
-            block_position.local_z(),
-        )
+    let chunk = column.read();
+    let lx = bx.rem_euclid(16) as u8;
+    let lz = bz.rem_euclid(16) as u8;
+    chunk
+        .block_at(lx, by, lz)
         .map(|runtime_id| runtime_id.0 != sc_world::block_dictionary::air_runtime_id())
-        .unwrap_or(false);
-    is_solid
+        .unwrap_or(false)
+}
+
+/// Highest supporting block top at or below the position (up to 2 cells
+/// down). `None` means free fall (or unloaded columns, which count as air).
+fn support_top_below(
+    manager: Option<&MinecraftWorldManager>,
+    world_id: &MinecraftWorldId,
+    x: f32,
+    y: f32,
+    z: f32,
+) -> Option<f32> {
+    let base_y = (y - 0.2).floor() as i32;
+    for offset in 0..3 {
+        let by = base_y - offset;
+        if cell_is_solid(
+            manager,
+            world_id,
+            x.floor() as i32,
+            by,
+            z.floor() as i32,
+        ) {
+            return Some(by as f32 + 1.0);
+        }
+    }
+    None
+}
+
+/// Pop a drop out of a solid cell to the first air cell above (up to
+/// [`EJECT_SCAN_HEIGHT`]), keeping x/z and centering on the freed cell.
+fn eject_up_to_air(
+    manager: Option<&MinecraftWorldManager>,
+    world_id: &MinecraftWorldId,
+    position: Position,
+) -> Option<Position> {
+    let bx = position.x.floor() as i32;
+    let by = position.y.floor() as i32;
+    let bz = position.z.floor() as i32;
+    for dy in 1..=EJECT_SCAN_HEIGHT {
+        if !cell_is_solid(manager, world_id, bx, by + dy, bz) {
+            return Some(Position::new(
+                position.x,
+                (by + dy) as f32 + 0.5,
+                position.z,
+            ));
+        }
+    }
+    None
 }
 
 /// Update all ordinary drops. The store, not an async task per item, owns the
@@ -719,7 +868,7 @@ pub fn item_pickup_tick(
             &mut publisher,
         );
         if inventory.snapshot() != before {
-            crate::crafting::bump_inventory_revision(&world, &entity);
+            crate::inventory::crafting::bump_inventory_revision(&world, &entity);
         }
     }
 }
@@ -727,6 +876,7 @@ pub fn item_pickup_tick(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::net::NetworkIntent;
     use sc_item::ItemDefinition;
 
     fn registry(max_stack: u16) -> ItemRegistry {
@@ -804,15 +954,11 @@ mod tests {
         let intents = outbox.drain();
         assert!(matches!(
             intents[0],
-            NetworkIntent::DespawnItemEntity { runtime_id: 11, .. }
+            NetworkIntent::DespawnItemEntity(ref p) if p.runtime_id == 11
         ));
         assert!(matches!(
             intents[1],
-            NetworkIntent::UpdateItemStackSize {
-                runtime_id: 10,
-                count: 3,
-                ..
-            }
+            NetworkIntent::UpdateItemStackSize(ref p) if p.runtime_id == 10 && p.count == 3
         ));
     }
 
@@ -916,7 +1062,7 @@ mod tests {
         let spawn_intents = outbox
             .drain()
             .into_iter()
-            .filter(|intent| matches!(intent, NetworkIntent::SpawnItemEntity { .. }))
+            .filter(|intent| matches!(intent, NetworkIntent::SpawnItemEntity(_)))
             .count();
         assert_eq!(spawn_intents, 3);
     }
@@ -970,32 +1116,22 @@ mod tests {
         let intents = outbox.drain();
         assert!(matches!(
             intents[0],
-            NetworkIntent::TakeItemEntity {
-                target_entity_id: 7,
-                ..
-            }
+            NetworkIntent::TakeItemEntity(ref p) if p.target_entity_id == 7
         ));
         // Slot sync after bag insert (slot 0 emits an intent).
         assert!(matches!(
             intents[1],
-            NetworkIntent::UpdateInventorySlot {
-                entity_id: 7,
-                slot: 0,
-                ..
-            }
+            NetworkIntent::UpdateInventorySlot(ref p) if p.entity_id == 7 && p.slot == 0
         ));
         // Close syncs after pickup: TakeItem, sendSlot, RemoveEntity.
         assert!(matches!(
             intents[2],
-            NetworkIntent::DespawnItemEntity {
-                world_id: _,
-                runtime_id: 1_000_001,
-            }
+            NetworkIntent::DespawnItemEntity(ref p) if p.runtime_id == 1_000_001
         ));
         assert_eq!(intents.len(), 3);
         // Removed right after pickup: gone from queries, nothing to pick.
         assert!(!drops.contains(&world_id, 1_000_001));
-        let mut second_inventory = PlayerInventory::new(36);
+        let second_inventory = PlayerInventory::new(36);
         drops.try_pickup(
             &world_id,
             7,
@@ -1083,4 +1219,151 @@ mod tests {
         );
         assert_eq!(drops.active_count(), 0);
     }
+
+    /// One-column test world: floor at y=64 plus caller-supplied solids,
+    /// returning the store world id, the manager-backed tick inputs and the
+    /// shared chunk column for block edits between ticks.
+    fn physics_world(
+        solids: &[(i32, i32, i32)],
+    ) -> (
+        MinecraftWorldId,
+        MinecraftWorldManager,
+        std::sync::Arc<sc_world::storage::ChunkColumn>,
+        ItemRegistry,
+    ) {
+        use sc_world::chunk::{BlockRuntimeId, ChunkPosition};
+        use sc_world::storage::{ChunkKey, EmptyWorldStorage, WorldChunkProvider};
+        let provider = WorldChunkProvider::new(std::sync::Arc::new(EmptyWorldStorage));
+        let column = provider
+            .insert_empty_chunk(ChunkKey::new(0, ChunkPosition::new(0, 0)), -64, 319)
+            .unwrap();
+        {
+            let mut chunk = column.write();
+            for x in -1..3 {
+                chunk.set_block_at(0, x as u8, 64, 0, BlockRuntimeId(32000));
+            }
+            for (x, y, z) in solids {
+                chunk.set_block_at(0, *x as u8, *y, *z as u8, BlockRuntimeId(32000));
+            }
+        }
+        let mut manager = MinecraftWorldManager::new();
+        let world_id = manager.push_world(
+            sc_utils::world::r#type::WorldType::Overworld,
+            sc_world::world::MinecraftWorld::new(
+                MinecraftWorldId::random(),
+                "test".into(),
+                std::path::PathBuf::new(),
+                sc_utils::world::data::MinecraftWorldData {
+                    world_type: Some(sc_utils::world::r#type::WorldType::Overworld),
+                    ..Default::default()
+                },
+                provider,
+            ),
+        );
+        (world_id, manager, column, registry(64))
+    }
+
+    fn tick_once(
+        drops: &mut ItemDropStore,
+        manager: &MinecraftWorldManager,
+        registry: &ItemRegistry,
+        outbox: &mut NetworkOutbox,
+    ) {
+        drops.tick(
+            Some(manager),
+            registry,
+            &mut IntentPublisher::new(outbox),
+        );
+    }
+
+    fn drop_state(
+        drops: &ItemDropStore,
+        world_id: &MinecraftWorldId,
+    ) -> (Position, Velocity, bool) {
+        let store = drops.worlds.get(world_id).unwrap();
+        let handle = store.active_handles()[0];
+        let drop = store.get(handle).unwrap();
+        (drop.position, drop.velocity, drop.sleeping)
+    }
+
+    #[test]
+    fn drop_stops_at_wall_instead_of_phasing() {
+        let (world_id, manager, _column, registry) = physics_world(&[(1, 65, 0)]);
+        let mut drops = ItemDropStore::default();
+        let mut outbox = NetworkOutbox::default();
+        drops.spawn(
+            world_id.clone(),
+            ItemStack::new(1, 1),
+            Position::new(0.5, 65.15, 0.5),
+            Velocity::new(0.5, 0.0, 0.0),
+            &registry,
+            &mut IntentPublisher::new(&mut outbox),
+        );
+        for _ in 0..3 {
+            tick_once(&mut drops, &manager, &registry, &mut outbox);
+        }
+        let (pos, vel, _) = drop_state(&drops, &world_id);
+        // Never entered the wall cell (x=1); horizontal motion died there.
+        // (Landing on the floor and sleeping is fine.)
+        assert!(pos.x < 1.0, "phased into wall: {pos:?}");
+        assert_eq!(vel.x, 0.0);
+    }
+
+    #[test]
+    fn drop_ejects_when_starting_inside_solid() {
+        let (world_id, manager, _column, registry) =
+            physics_world(&[(0, 65, 0), (0, 66, 0)]);
+        let mut drops = ItemDropStore::default();
+        let mut outbox = NetworkOutbox::default();
+        drops.spawn(
+            world_id.clone(),
+            ItemStack::new(1, 1),
+            Position::new(0.5, 65.2, 0.5),
+            Velocity::default(),
+            &registry,
+            &mut IntentPublisher::new(&mut outbox),
+        );
+        tick_once(&mut drops, &manager, &registry, &mut outbox);
+        let (pos, _, sleeping) = drop_state(&drops, &world_id);
+        // Popped above the 2-high solid column, awake and falling.
+        assert!(pos.y > 67.0, "still entombed: {pos:?}");
+        assert!(!sleeping);
+    }
+
+    #[test]
+    fn sleeping_drop_wakes_when_support_is_broken() {
+        use sc_world::chunk::BlockRuntimeId;
+        let (world_id, manager, column, registry) = physics_world(&[]);
+        let mut drops = ItemDropStore::default();
+        let mut outbox = NetworkOutbox::default();
+        drops.spawn(
+            world_id.clone(),
+            ItemStack::new(1, 1),
+            Position::new(0.5, 66.0, 0.5),
+            Velocity::default(),
+            &registry,
+            &mut IntentPublisher::new(&mut outbox),
+        );
+        for _ in 0..30 {
+            tick_once(&mut drops, &manager, &registry, &mut outbox);
+        }
+        let (landed, _, sleeping) = drop_state(&drops, &world_id);
+        assert!(sleeping, "never landed");
+        assert!(
+            (landed.y - 65.15).abs() < 1e-4,
+            "rest height off support top: {landed:?}"
+        );
+        // Break the floor: the drop must wake instead of floating.
+        column.write().set_block_at(
+            0,
+            0,
+            64,
+            0,
+            BlockRuntimeId(sc_world::block_dictionary::air_runtime_id()),
+        );
+        tick_once(&mut drops, &manager, &registry, &mut outbox);
+        let (_, _, sleeping) = drop_state(&drops, &world_id);
+        assert!(!sleeping, "sleeps floating over broken support");
+    }
+
 }

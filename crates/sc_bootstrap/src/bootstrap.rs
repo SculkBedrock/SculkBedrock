@@ -62,7 +62,7 @@ const REQUIRED_DIRS: [&str; 5] = [
 /// 同步改这里（`default_config_parses` 回归锁定）。
 const DEFAULT_SERVER_PROPERTIES: &str = r#"[server]
 enable_snappy = false
-xbox_auth = false
+xbox_auth = true
 validate_encryption = true
 force_gamemode = false
 enable_version_pack_plugins = true
@@ -71,7 +71,7 @@ enable_hitokoto = false
 
 [game]
 name = "SculkBedrock"
-motd = "SculkBedrock Server"
+motd = "Powered by SculkBedrock"
 max_player = 20
 gamemode = "survival"
 ipv4_port = 19132
@@ -107,10 +107,9 @@ flush_interval_ms = 200
 log_level = "info"
 
 [debug]
-# The blocked protocol packet currently contains errors.
+# Outbound-blocked packet ids for live-disconnect bisection (decimal or TOML
+# hex like 0x34 both accepted). Empty in production.
 blocked_packets = [
-  #0x3f, # PlayerList
-  #0x7a, # BiomeDefinitionList
 ]
 "#;
 
@@ -220,7 +219,7 @@ fn init_log() {
 /// set the atomic flag (handlers only store, async-signal-safe).
 fn register_shutdown_signal_handlers() {
     unsafe {
-        let handler = handle_shutdown_signal as libc::sighandler_t;
+        let handler = handle_shutdown_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
         libc::signal(libc::SIGINT, handler);
         libc::signal(libc::SIGTERM, handler);
         #[cfg(unix)]
@@ -493,6 +492,13 @@ fn load_block_bundle(
         Ok((snapshot, warnings)) => {
             for w in warnings.iter() {
                 log::warn!("{}", t_log!("console.block.bundle_warning", warning = w));
+            }
+            // Workstation/process declarations resolve against live game
+            // knowledge here (unknown station tags, dangling lit variants);
+            // failure skips publish exactly like a compile failure below.
+            if let Err(e) = sc_game::furnace::validate_workstations(&snapshot) {
+                error!("{}", t_log!("console.block.bundle_compile_fail", error = e));
+                return;
             }
             let state_count = snapshot.states.len();
             let type_count = snapshot.types.len();
@@ -896,6 +902,12 @@ fn startup(world: World) {
             _ => LevelFilter::Debug,
         })
         .unwrap_or(LevelFilter::Debug);
+    // The global-logger race may already be lost: GUI console installs its
+    // own logger at plugin-build time (before the config loads), so the
+    // `try_init` below can silently skip. Drive both gates from the config
+    // unconditionally so `log_level` works in every console mode.
+    log::set_max_level(level_filter);
+    sc_console::set_console_max_level(level_filter);
     let _ = pretty_env_logger::formatted_timed_builder()
         .filter_level(level_filter)
         // Custom format: keeps the pretty_env_logger default layout (timestamp plus colored level), while
@@ -981,7 +993,6 @@ pub fn finish_startup(mut ms: ResMut<StartupTimestamp>) {
 mod tests {
     use super::filter_recipe_groups_by_registry;
     use std::collections::{HashMap, HashSet};
-    use std::io::Cursor;
 
     #[test]
     fn recipe_group_filter_drops_unknown_members_and_empty_groups_but_keeps_order() {
@@ -1023,7 +1034,7 @@ mod tests {
         assert_eq!(properties.ipv4_port, 19132);
         assert_eq!(properties.overworld_name, "OverWorld");
         assert!(properties.debug_blocked_packets.is_empty());
-        assert_eq!(properties.log_level, "debug");
+        assert_eq!(properties.log_level, "info");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1039,7 +1050,7 @@ mod tests {
         let missing = dir.join("missing.toml");
         std::fs::write(
             &missing,
-            super::DEFAULT_SERVER_PROPERTIES.replace("log_level = \"debug\"\n", ""),
+            super::DEFAULT_SERVER_PROPERTIES.replace("log_level = \"info\"\n", ""),
         )
         .expect("测试配置写入失败");
         let properties =
@@ -1049,7 +1060,7 @@ mod tests {
         let bad = dir.join("bad.toml");
         std::fs::write(
             &bad,
-            super::DEFAULT_SERVER_PROPERTIES.replace("log_level = \"debug\"", "log_level = \"verbose\""),
+            super::DEFAULT_SERVER_PROPERTIES.replace("log_level = \"info\"", "log_level = \"verbose\""),
         )
         .expect("测试配置写入失败");
         assert!(
@@ -1064,14 +1075,12 @@ mod tests {
     /// new file lacks the group. The data source matches production (same pack, compile, and registry).
     #[test]
     fn recipe_groups_file_covers_snapshot_ingredients() {
-        let pack_path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../version_packs/[SC原版版本包] Vanilla-1.26.40.scver"
-        );
-        let bytes = std::fs::read(pack_path).expect("读取版本包失败");
-        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).expect("zip 打开失败");
+        let Some(mut source) = sc_packloader::test_pack::open_test_pack() else {
+            eprintln!("[skip] 版本包缺失，跳过测试");
+            return;
+        };
         let mut pack =
-            sc_packloader::version_control::loader::ZippedVersionPack::get_version(&mut zip)
+            sc_packloader::version_control::loader::ZippedVersionPack::get_version(&mut source)
                 .expect("版本包解析失败");
 
         // Recipe sources use the same read path as SCPackLoaderPlugin.load_version
@@ -1110,14 +1119,13 @@ mod tests {
         .expect("配方编译失败");
 
         // Registry names share the load_item_registry source (runtime entries, skipping air).
+        let Some(mut source) = sc_packloader::test_pack::open_test_pack() else {
+            eprintln!("[skip] 版本包缺失，跳过测试");
+            return;
+        };
         let mut runtime_pack =
-            sc_packloader::version_control::loader::ZippedVersionPack::get_version(
-                &mut zip::ZipArchive::new(Cursor::new(
-                    std::fs::read(pack_path).expect("读取版本包失败"),
-                ))
-                .expect("zip 打开失败"),
-            )
-            .expect("版本包解析失败");
+            sc_packloader::version_control::loader::ZippedVersionPack::get_version(&mut source)
+                .expect("版本包解析失败");
         let manager = sc_packloader::version_control::runtime::MinecraftRuntimeManager::new(
             runtime_pack.take_runtime_id(),
         );

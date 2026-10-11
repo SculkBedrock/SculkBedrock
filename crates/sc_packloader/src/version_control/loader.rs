@@ -1,9 +1,6 @@
 use crate::block::{load_block_json_bundle, BlockBundleBudgets};
 use crate::definitions::attribute::EntityAttribute;
-use crate::pack_loader::pack::zipped::{
-    for_each_dir_file, get_dir_files_bytes, get_file_by_name, MAX_BINARY_ENTRY_BYTES,
-    MAX_JSON_ENTRY_BYTES,
-};
+use crate::pack_loader::pack::zipped::{PackSource, MAX_BINARY_ENTRY_BYTES, MAX_JSON_ENTRY_BYTES};
 use crate::pack_loader::zipped_loader::get_extension;
 use crate::version_control::json_budget::BudgetReader;
 use crate::version_control::runtime::MinecraftRuntimeJson;
@@ -15,13 +12,8 @@ use json_comments::StripComments;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
-use std::fs::File;
-use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
-use zip::ZipArchive;
 
-#[cfg(test)]
-use sc_binary::ByteReader;
 use sc_log::t_log;
 
 fn json_entry_is_allowed(size: u64) -> bool {
@@ -70,7 +62,11 @@ impl VersionPackLoader {
             Err(error) => {
                 log::warn!(
                     "{}",
-                    t_log!("console.pack.dir_unreadable", dir = self.dir_path.display(), error = error)
+                    t_log!(
+                        "console.pack.dir_unreadable",
+                        dir = self.dir_path.display(),
+                        error = error
+                    )
                 );
                 return versions;
             }
@@ -81,7 +77,11 @@ impl VersionPackLoader {
                 Err(error) => {
                     log::warn!(
                         "{}",
-                        t_log!("console.pack.dir_entry", dir = self.dir_path.display(), error = error)
+                        t_log!(
+                            "console.pack.dir_entry",
+                            dir = self.dir_path.display(),
+                            error = error
+                        )
                     );
                     continue;
                 }
@@ -92,12 +92,38 @@ impl VersionPackLoader {
                 Err(error) => {
                     log::warn!(
                         "{}",
-                        t_log!("console.pack.entry_meta", path = path.display(), error = error)
+                        t_log!(
+                            "console.pack.entry_meta",
+                            path = path.display(),
+                            error = error
+                        )
                     );
                     continue;
                 }
             };
             let extension = get_extension(&path);
+            // Directory packs (extracted layout, must hold manifest.json);
+            // dot-dirs (`.scdb` cache) are never packs.
+            if metadata.is_dir() {
+                if path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with('.'))
+                {
+                    continue;
+                }
+                if !path.join("manifest.json").is_file() {
+                    continue;
+                }
+                let mut pack = PackSource::from_dir(path.clone());
+                match ZippedVersionPack::get_version(&mut pack) {
+                    Ok(version) => versions.push(version),
+                    Err(error) => {
+                        log::warn!("skipping invalid version pack {}: {error}", path.display())
+                    }
+                }
+                continue;
+            }
             if !metadata.is_file() || (extension != "zip" && extension != "scver") {
                 continue;
             }
@@ -106,29 +132,40 @@ impl VersionPackLoader {
                 Err(error) => {
                     log::warn!(
                         "{}",
-                        t_log!("console.pack.unreadable", path = path.display(), error = error)
+                        t_log!(
+                            "console.pack.unreadable",
+                            path = path.display(),
+                            error = error
+                        )
                     );
                     continue;
                 }
             };
-            let file = match File::open(&compiled_path) {
-                Ok(file) => file,
+            let bytes = match fs::read(&compiled_path) {
+                Ok(bytes) => bytes,
                 Err(error) => {
                     log::warn!(
                         "{}",
-                        t_log!("console.pack.compiled_open_fail", path = compiled_path.display(), error = error)
+                        t_log!(
+                            "console.pack.compiled_open_fail",
+                            path = compiled_path.display(),
+                            error = error
+                        )
                     );
                     continue;
                 }
             };
-            let mut zip = match ZipArchive::new(file) {
-                Ok(zip) => zip,
+            let mut pack = match PackSource::from_bytes(bytes) {
+                Ok(pack) => pack,
                 Err(error) => {
-                    log::warn!("{}", t_log!("console.pack.invalid", path = path.display(), error = error));
+                    log::warn!(
+                        "{}",
+                        t_log!("console.pack.invalid", path = path.display(), error = error)
+                    );
                     continue;
                 }
             };
-            match ZippedVersionPack::get_version(&mut zip) {
+            match ZippedVersionPack::get_version(&mut pack) {
                 Ok(version) => versions.push(version),
                 Err(error) => {
                     log::warn!("skipping invalid version pack {}: {error}", path.display())
@@ -142,57 +179,91 @@ impl VersionPackLoader {
 pub struct ZippedVersionPack;
 
 impl ZippedVersionPack {
-    fn get_manifest<T: Read + Seek>(
-        zip: &mut ZipArchive<T>,
+    fn get_manifest(
+        pack: &mut PackSource,
     ) -> Result<SCVersionPackManifest, VersionPackLoaderError> {
-        let mut version = get_file_by_name(zip, "manifest.json")
-            .map_err(|e| VersionPackLoaderError::ZipError("manifest.json".to_string(), e))?;
-        if version.is_file() {
-            if !json_entry_is_allowed(version.size()) {
-                return Err(VersionPackLoaderError::DeserializationError(
-                    "manifest.json exceeds JSON budget".to_string(),
-                ));
-            }
-            serde_json::from_reader(BudgetReader::new(&mut version))
-                .map_err(|e| VersionPackLoaderError::JsonError("manifest.json".to_string(), e))
-        } else {
-            Err(VersionPackLoaderError::FileNotFound("manifest.json"))
+        let Some(size) = pack.file_size("manifest.json") else {
+            return Err(VersionPackLoaderError::FileNotFound("manifest.json"));
+        };
+        if !json_entry_is_allowed(size) {
+            return Err(VersionPackLoaderError::DeserializationError(
+                "manifest.json exceeds JSON budget".to_string(),
+            ));
         }
+        let Some(bytes) = pack.read_file("manifest.json") else {
+            return Err(VersionPackLoaderError::FileNotFound("manifest.json"));
+        };
+        serde_json::from_reader(BudgetReader::new(bytes.as_slice()))
+            .map_err(|e| VersionPackLoaderError::JsonError("manifest.json".to_string(), e))
     }
 
-    fn get_runtime_id<T: Read + Seek>(
-        zip: &mut ZipArchive<T>,
+    fn get_runtime_id(
+        pack: &mut PackSource,
     ) -> Result<Vec<MinecraftRuntimeJson>, VersionPackLoaderError> {
-        let mut runtime = get_file_by_name(zip, "definitions/runtime.json").map_err(|e| {
-            VersionPackLoaderError::ZipError("definitions/runtime.json".to_string(), e)
-        })?;
-        if runtime.is_file() {
-            if !json_entry_is_allowed(runtime.size()) {
-                return Err(VersionPackLoaderError::DeserializationError(
-                    "definitions/runtime.json exceeds JSON budget".to_string(),
-                ));
-            }
-            serde_json::from_reader(BudgetReader::new(&mut runtime)).map_err(|e| {
-                VersionPackLoaderError::JsonError("definitions/runtime.json".to_string(), e)
-            })
-        } else {
-            Err(VersionPackLoaderError::FileNotFound(
+        let Some(size) = pack.file_size("definitions/runtime.json") else {
+            return Err(VersionPackLoaderError::FileNotFound(
                 "definitions/attributes.json",
-            ))
+            ));
+        };
+        if !json_entry_is_allowed(size) {
+            return Err(VersionPackLoaderError::DeserializationError(
+                "definitions/runtime.json exceeds JSON budget".to_string(),
+            ));
         }
+        let Some(bytes) = pack.read_file("definitions/runtime.json") else {
+            return Err(VersionPackLoaderError::FileNotFound(
+                "definitions/attributes.json",
+            ));
+        };
+        serde_json::from_reader(BudgetReader::new(bytes.as_slice())).map_err(|e| {
+            VersionPackLoaderError::JsonError("definitions/runtime.json".to_string(), e)
+        })
     }
 
-    fn get_behavior_packs<T: Read + Seek>(zip: &mut ZipArchive<T>) -> Vec<Vec<u8>> {
-        let files = get_dir_files_bytes(zip, "behavior_packs");
-        files.into_iter().map(|(_, bytes)| bytes).collect()
+    fn get_behavior_packs(pack: &mut PackSource) -> Vec<PackSource> {
+        // Directory wins on a file/dir name collision (active edit).
+        let mut out = Vec::new();
+        let mut dir_stems = std::collections::HashSet::new();
+        if let PackSource::Dir(root) = pack {
+            for sub in
+                PackSource::from_dir(root.clone()).subdirs_with("behavior_packs", "manifest.json")
+            {
+                if let Some(stem) = sub.rsplit('/').next() {
+                    dir_stems.insert(stem.to_ascii_lowercase());
+                }
+                out.push(PackSource::from_dir(root.join(&sub)));
+            }
+        }
+        for (name, bytes) in pack.dir_files_bytes("behavior_packs") {
+            let lower = name.to_ascii_lowercase();
+            if !(lower.ends_with(".zip") || lower.ends_with(".mcpack")) {
+                continue;
+            }
+            let stem = name
+                .rsplit('/')
+                .next()
+                .unwrap_or(&name)
+                .rsplit_once('.')
+                .map(|(stem, _)| stem.to_ascii_lowercase())
+                .unwrap_or_default();
+            if dir_stems.contains(&stem) {
+                log::debug!("version pack dir wins over file for {name}");
+                continue;
+            }
+            match PackSource::from_bytes(bytes) {
+                Ok(source) => out.push(source),
+                Err(error) => log::warn!("behavior pack 打包无法打开 {name}: {error}"),
+            }
+        }
+        out
     }
 
-    fn get_biomes<T: Read + Seek>(
-        zip: &mut ZipArchive<T>,
+    fn get_biomes(
+        pack: &mut PackSource,
     ) -> Result<Vec<crate::definitions::biome::MinecraftBiomeSpawner>, VersionPackLoaderError> {
         let mut biomes = Vec::new();
         let mut first_error = None;
-        for_each_dir_file(zip, "definitions/biomes", |name, json| {
+        pack.for_each_json_file("definitions/biomes", &mut |name, json| {
             if first_error.is_some() {
                 return;
             }
@@ -211,92 +282,93 @@ impl ZippedVersionPack {
         }
     }
 
-    fn get_biome_ids<T: Read + Seek>(zip: &mut ZipArchive<T>) -> HashMap<String, i16> {
-        let Ok(mut file) = get_file_by_name(zip, "definitions/biome_ids.json") else {
+    fn get_biome_ids(pack: &mut PackSource) -> HashMap<String, i16> {
+        let Some(size) = pack.file_size("definitions/biome_ids.json") else {
             return HashMap::new();
         };
-        if !file.is_file() {
+        if !json_entry_is_allowed(size) {
             return HashMap::new();
         }
-        if !json_entry_is_allowed(file.size()) {
+        let Some(bytes) = pack.read_file("definitions/biome_ids.json") else {
             return HashMap::new();
-        }
-        serde_json::from_reader(BudgetReader::new(&mut file)).unwrap_or_default()
+        };
+        serde_json::from_reader(BudgetReader::new(bytes.as_slice())).unwrap_or_default()
     }
 
     /// Read definitions/block_tags.json (optional block tag table).
     /// Missing, over-budget, or unparsable files fall back to an empty table.
-    fn get_block_tags<T: Read + Seek>(zip: &mut ZipArchive<T>) -> HashMap<String, Vec<String>> {
-        let Ok(mut file) = get_file_by_name(zip, "definitions/block_tags.json") else {
+    fn get_block_tags(pack: &mut PackSource) -> HashMap<String, Vec<String>> {
+        let Some(size) = pack.file_size("definitions/block_tags.json") else {
             return HashMap::new();
         };
-        if !file.is_file() {
+        if !json_entry_is_allowed(size) {
             return HashMap::new();
         }
-        if !json_entry_is_allowed(file.size()) {
+        let Some(bytes) = pack.read_file("definitions/block_tags.json") else {
             return HashMap::new();
-        }
-        serde_json::from_reader(BudgetReader::new(&mut file)).unwrap_or_default()
+        };
+        serde_json::from_reader(BudgetReader::new(bytes.as_slice())).unwrap_or_default()
     }
 
     /// Read definitions/recipe_groups.json (optional ingredient group table).
     ///
     /// Missing, over-budget, or unparsable files fall back to an empty table (callers are fail-closed: exact
     /// matches are unaffected, tag/pseudo-name queries have no members). Reuses the block_tags budget and style.
-    fn get_recipe_groups<T: Read + Seek>(zip: &mut ZipArchive<T>) -> HashMap<String, Vec<String>> {
-        let Ok(mut file) = get_file_by_name(zip, "definitions/recipe_groups.json") else {
+    fn get_recipe_groups(pack: &mut PackSource) -> HashMap<String, Vec<String>> {
+        let Some(size) = pack.file_size("definitions/recipe_groups.json") else {
             return HashMap::new();
         };
-        if !file.is_file() {
+        if !json_entry_is_allowed(size) {
             return HashMap::new();
         }
-        if !json_entry_is_allowed(file.size()) {
+        let Some(bytes) = pack.read_file("definitions/recipe_groups.json") else {
             return HashMap::new();
-        }
-        serde_json::from_reader(BudgetReader::new(&mut file)).unwrap_or_default()
+        };
+        serde_json::from_reader(BudgetReader::new(bytes.as_slice())).unwrap_or_default()
     }
 
     /// Read definitions/biome_features.json (optional worldgen feature-scheduling data).
     /// Returns default when absent; scheduling semantics live in world generation.
-    fn get_biome_features<T: Read + Seek>(
-        zip: &mut ZipArchive<T>,
+    fn get_biome_features(
+        pack: &mut PackSource,
     ) -> crate::version_control::biome_features::BiomeFeaturesData {
-        let Ok(mut file) = get_file_by_name(zip, "definitions/biome_features.json") else {
+        let Some(size) = pack.file_size("definitions/biome_features.json") else {
             return Default::default();
         };
-        if !file.is_file() {
+        if !json_entry_is_allowed(size) {
             return Default::default();
         }
-        if !json_entry_is_allowed(file.size()) {
+        let Some(bytes) = pack.read_file("definitions/biome_features.json") else {
             return Default::default();
-        }
-        serde_json::from_reader(BudgetReader::new(&mut file)).unwrap_or_default()
+        };
+        serde_json::from_reader(BudgetReader::new(bytes.as_slice())).unwrap_or_default()
     }
 
-    fn get_attributes<T: Read + Seek>(
-        zip: &mut ZipArchive<T>,
+    fn get_attributes(
+        pack: &mut PackSource,
     ) -> Result<HashMap<String, EntityAttribute>, VersionPackLoaderError> {
-        let mut attributes = get_file_by_name(zip, "definitions/attributes.json").map_err(|e| {
-            VersionPackLoaderError::ZipError("definitions/attributes.json".to_string(), e)
-        })?;
-        if attributes.is_file() {
-            if !json_entry_is_allowed(attributes.size()) {
-                return Err(VersionPackLoaderError::DeserializationError(
-                    "definitions/attributes.json exceeds JSON budget".to_string(),
-                ));
-            }
-            serde_json::from_reader(BudgetReader::new(&mut attributes)).map_err(|e| {
-                VersionPackLoaderError::JsonError("definitions/attributes.json".to_string(), e)
-            })
-        } else {
-            Err(VersionPackLoaderError::FileNotFound(
+        let Some(size) = pack.file_size("definitions/attributes.json") else {
+            return Err(VersionPackLoaderError::FileNotFound(
                 "definitions/runtime.json",
-            ))
+            ));
+        };
+        if !json_entry_is_allowed(size) {
+            return Err(VersionPackLoaderError::DeserializationError(
+                "definitions/attributes.json exceeds JSON budget".to_string(),
+            ));
         }
+        let Some(bytes) = pack.read_file("definitions/attributes.json") else {
+            return Err(VersionPackLoaderError::FileNotFound(
+                "definitions/runtime.json",
+            ));
+        };
+        serde_json::from_reader(BudgetReader::new(bytes.as_slice())).map_err(|e| {
+            VersionPackLoaderError::JsonError("definitions/attributes.json".to_string(), e)
+        })
     }
 
-    fn get_plugins<T: Read + Seek>(zip: &mut ZipArchive<T>) -> Vec<Vec<u8>> {
-        get_dir_files_bytes(zip, "plugins")
+    fn get_plugins(pack: &mut PackSource) -> Vec<Vec<u8>> {
+        pack.dir_files_bytes("plugins")
             .into_iter()
             .map(|(_, bytes)| bytes)
             .collect()
@@ -304,77 +376,60 @@ impl ZippedVersionPack {
 
     /// Read definitions/entity_identifiers.nbt (required vanilla entity-identifier NBT).
     /// Returns FileNotFound when absent or unreadable.
-    fn get_entity_identifiers<T: Read + Seek>(
-        zip: &mut ZipArchive<T>,
-    ) -> Result<Vec<u8>, VersionPackLoaderError> {
-        let mut file =
-            get_file_by_name(zip, "definitions/entity_identifiers.nbt").map_err(|e| {
-                VersionPackLoaderError::ZipError(
-                    "definitions/entity_identifiers.nbt".to_string(),
-                    e,
-                )
-            })?;
-        if file.is_file() && binary_entry_is_allowed(file.size()) {
-            let mut bytes = Vec::new();
-            file.read_to_end(&mut bytes).map_err(|e| {
-                VersionPackLoaderError::IoError("definitions/entity_identifiers.nbt".to_string(), e)
-            })?;
-            Ok(bytes)
-        } else {
-            Err(VersionPackLoaderError::FileNotFound(
+    fn get_entity_identifiers(pack: &mut PackSource) -> Result<Vec<u8>, VersionPackLoaderError> {
+        let Some(size) = pack.file_size("definitions/entity_identifiers.nbt") else {
+            return Err(VersionPackLoaderError::FileNotFound(
                 "definitions/entity_identifiers.nbt",
-            ))
+            ));
+        };
+        if !binary_entry_is_allowed(size) {
+            return Err(VersionPackLoaderError::FileNotFound(
+                "definitions/entity_identifiers.nbt",
+            ));
         }
+        pack.read_file("definitions/entity_identifiers.nbt").ok_or(
+            VersionPackLoaderError::FileNotFound("definitions/entity_identifiers.nbt"),
+        )
     }
 
     /// Read definitions/block_palette.nbt (optional block palette bytes).
     /// Returns None when absent or over budget.
-    fn get_block_palette<T: Read + Seek>(zip: &mut ZipArchive<T>) -> Option<Vec<u8>> {
-        let mut file = get_file_by_name(zip, "definitions/block_palette.nbt").ok()?;
-        if !file.is_file() {
+    fn get_block_palette(pack: &mut PackSource) -> Option<Vec<u8>> {
+        let size = pack.file_size("definitions/block_palette.nbt")?;
+        if !binary_entry_is_allowed(size) {
             return None;
         }
-        if !binary_entry_is_allowed(file.size()) {
-            return None;
-        }
-        let mut bytes = Vec::with_capacity(file.size().min(usize::MAX as u64) as usize);
-        file.read_to_end(&mut bytes).ok()?;
-        Some(bytes)
+        pack.read_file("definitions/block_palette.nbt")
     }
 
     /// Read definitions/creative_items.json (optional creative-item table).
     /// Returns None when absent or over budget.
-    fn get_creative_items<T: Read + Seek>(zip: &mut ZipArchive<T>) -> Option<Vec<u8>> {
-        let mut file = get_file_by_name(zip, "definitions/creative_items.json").ok()?;
-        if !file.is_file() {
+    fn get_creative_items(pack: &mut PackSource) -> Option<Vec<u8>> {
+        let size = pack.file_size("definitions/creative_items.json")?;
+        if !json_entry_is_allowed(size) {
             return None;
         }
-        if !json_entry_is_allowed(file.size()) {
-            return None;
-        }
-        let mut bytes = Vec::with_capacity(file.size().min(usize::MAX as u64) as usize);
-        file.read_to_end(&mut bytes).ok()?;
-        Some(bytes)
+        pack.read_file("definitions/creative_items.json")
     }
 
     /// Read definitions/worldgen/ density_function + noise JSON into a bundle.
-    fn get_worldgen<T: Read + Seek>(zip: &mut ZipArchive<T>) -> WorldgenDataBundle {
+    fn get_worldgen(pack: &mut PackSource) -> WorldgenDataBundle {
         let mut bundle = WorldgenDataBundle::default();
-        for (path, bytes) in get_dir_files_bytes(zip, "definitions/worldgen/density_function") {
+        for (path, bytes) in pack.dir_files_bytes("definitions/worldgen/density_function") {
             let rel = path
                 .strip_prefix("definitions/worldgen/density_function/")
                 .unwrap_or(&path);
             let key = rel.trim_end_matches(".json").to_string();
             bundle.density_functions.insert(key, bytes);
         }
-        for (path, bytes) in get_dir_files_bytes(zip, "definitions/worldgen/noise") {
+        for (path, bytes) in pack.dir_files_bytes("definitions/worldgen/noise") {
             let rel = path
                 .strip_prefix("definitions/worldgen/noise/")
                 .unwrap_or(&path);
             let key = rel.trim_end_matches(".json").to_string();
             bundle.noises.insert(key, bytes);
         }
-        for (path, bytes) in get_dir_files_bytes(zip, "definitions/worldgen/noise_settings") {
+        for (path, bytes) in pack.dir_files_bytes("definitions/worldgen/noise_settings") {
             let rel = path
                 .strip_prefix("definitions/worldgen/noise_settings/")
                 .unwrap_or(&path);
@@ -384,23 +439,21 @@ impl ZippedVersionPack {
         bundle
     }
 
-    pub fn get_version<T: Read + Seek>(
-        zip: &mut ZipArchive<T>,
-    ) -> Result<SCVersionPack, VersionPackLoaderError> {
-        let manifest = Self::get_manifest(zip)?;
-        let behavior_packs = Self::get_behavior_packs(zip);
-        let runtime_id = Self::get_runtime_id(zip)?;
-        let biomes = Self::get_biomes(zip)?;
-        let biome_ids = Self::get_biome_ids(zip);
-        let block_tags = Self::get_block_tags(zip);
-        let recipe_groups = Self::get_recipe_groups(zip);
-        let biome_features = Self::get_biome_features(zip);
-        let attributes = Self::get_attributes(zip)?;
-        let plugins = Self::get_plugins(zip);
-        let entity_identifiers = Self::get_entity_identifiers(zip)?;
-        let block_palette = Self::get_block_palette(zip);
-        let creative_items = Self::get_creative_items(zip);
-        let worldgen = Self::get_worldgen(zip);
+    pub fn get_version(pack: &mut PackSource) -> Result<SCVersionPack, VersionPackLoaderError> {
+        let manifest = Self::get_manifest(pack)?;
+        let behavior_packs = Self::get_behavior_packs(pack);
+        let runtime_id = Self::get_runtime_id(pack)?;
+        let biomes = Self::get_biomes(pack)?;
+        let biome_ids = Self::get_biome_ids(pack);
+        let block_tags = Self::get_block_tags(pack);
+        let recipe_groups = Self::get_recipe_groups(pack);
+        let biome_features = Self::get_biome_features(pack);
+        let attributes = Self::get_attributes(pack)?;
+        let plugins = Self::get_plugins(pack);
+        let entity_identifiers = Self::get_entity_identifiers(pack)?;
+        let block_palette = Self::get_block_palette(pack);
+        let creative_items = Self::get_creative_items(pack);
+        let worldgen = Self::get_worldgen(pack);
         // New block bundle: only loaded when the manifest declares `block_data`; any failure after declaration
         // returns Err directly (the whole pack is skipped; no fallback to the legacy format).
         let pack_id = manifest.name.clone();
@@ -408,7 +461,7 @@ impl ZippedVersionPack {
             None => (None, false),
             Some(decl) => {
                 let bundle =
-                    load_block_json_bundle(zip, decl, &pack_id, &BlockBundleBudgets::default())
+                    load_block_json_bundle(pack, decl, &pack_id, &BlockBundleBudgets::default())
                         .map_err(|e| {
                             VersionPackLoaderError::DeserializationError(format!("block_data: {e}"))
                         })?;
@@ -440,6 +493,103 @@ impl ZippedVersionPack {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// Build a minimal synthetic version pack directory (same layout as
+    /// the zip form). Returns the dir path; callers remove it when done.
+    fn make_mini_pack_dir(tag: &str, with_inner_pack: bool) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("sc_pack_dir_test_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let manifest = serde_json::json!({
+            "name": "MiniDirTest",
+            "description": "test",
+            "authors": [],
+            "minecraft_version": "1.26.40",
+            "protocol_version": 2168
+        });
+        std::fs::create_dir_all(dir.join("definitions")).unwrap();
+        std::fs::write(
+            dir.join("manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(dir.join("definitions/runtime.json"), b"[]").unwrap();
+        std::fs::write(dir.join("definitions/attributes.json"), b"{}").unwrap();
+        std::fs::write(dir.join("definitions/entity_identifiers.nbt"), b"\x00").unwrap();
+        if with_inner_pack {
+            let inner = dir.join("behavior_packs/bp1");
+            std::fs::create_dir_all(inner.join("recipes")).unwrap();
+            std::fs::create_dir_all(inner.join("items")).unwrap();
+            std::fs::write(
+                inner.join("manifest.json"),
+                r#"{"format_version":2,"header":{"name":"bp1","uuid":"00000000-0000-0000-0000-000000000001","version":[1,0,0]}}"#,
+            )
+            .unwrap();
+            std::fs::write(
+                inner.join("recipes/r.json"),
+                r#"{"format_version":"1.12","minecraft:recipe_shapeless":{"description":{"identifier":"minecraft:dir_test"},"tags":["crafting_table"],"ingredients":[{"item":"minecraft:stone"}],"result":{"item":"minecraft:out"}}}"#,
+            )
+            .unwrap();
+            std::fs::write(
+                inner.join("items/coal.json"),
+                r#"{"format_version":"1.10","minecraft:item":{"description":{"identifier":"minecraft:coal"},"components":{}}}"#,
+            )
+            .unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn dir_pack_loads_like_zip_with_inner_pack_dir() {
+        let dir = make_mini_pack_dir("basic", true);
+        let mut source = PackSource::from_dir(dir.clone());
+        // Unified helper sees the same layout as the zip form.
+        assert!(source.file_size("manifest.json").unwrap_or(0) > 0);
+        assert!(source.read_file("missing.json").is_none());
+        let mut pack = ZippedVersionPack::get_version(&mut source).expect("目录包应可加载");
+        assert_eq!(pack.manifest.name, "MiniDirTest");
+        let mut behavior = pack.take_behavior_packs();
+        assert_eq!(behavior.len(), 1, "inner pack dir loads");
+        let (_, resource) = behavior.pop().unwrap();
+        assert!(resource.items.contains_key("minecraft:coal"));
+        let budgets = crate::recipe_source::RecipeSourceBudgets::default();
+        let (files, errors) =
+            crate::recipe_source::read_recipes_from_resource_pack(&resource, 0, &budgets);
+        assert!(errors.is_empty(), "errors: {errors:?}");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].relative_path, "recipes/r.json");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn dir_pack_without_manifest_is_skipped() {
+        let dir = std::env::temp_dir().join(format!(
+            "sc_pack_dir_test_nomanifest_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut source = PackSource::from_dir(dir.clone());
+        assert!(ZippedVersionPack::get_version(&mut source).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn version_scan_discovers_pack_dirs_beside_zips() {
+        let root = std::env::temp_dir().join(format!("sc_pack_scan_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        // A directory pack (moved into place), a junk dir, and a dot-dir.
+        let pack_dir = make_mini_pack_dir("scan", false);
+        std::fs::rename(&pack_dir, root.join("mypack")).unwrap();
+        std::fs::create_dir_all(root.join("junk")).unwrap();
+        std::fs::create_dir_all(root.join(".scdb")).unwrap();
+        let loader = VersionPackLoader::new(&root);
+        let versions = loader.get_versions();
+        assert_eq!(versions.len(), 1, "exactly the manifest dir loads");
+        assert_eq!(versions[0].manifest.name, "MiniDirTest");
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     /// Build a minimal synthetic version pack (manifest + required definitions + optional blocks dir).
     fn make_mini_pack(block_files: &[(&str, &str)], declare: bool) -> Vec<u8> {
@@ -498,8 +648,8 @@ mod tests {
     #[test]
     fn legacy_pack_without_declaration_has_no_bundle() {
         let bytes = make_mini_pack(&[], false);
-        let mut zip = ZipArchive::new(ByteReader::from(bytes)).expect("zip 打开失败");
-        let mut pack = ZippedVersionPack::get_version(&mut zip).expect("旧包应可加载");
+        let mut source = PackSource::from_bytes(bytes).expect("pack source 打开失败");
+        let mut pack = ZippedVersionPack::get_version(&mut source).expect("旧包应可加载");
         assert!(!pack.has_declared_block_json());
         assert!(pack.take_block_json_bundle().is_none());
     }
@@ -511,8 +661,8 @@ mod tests {
             &[("definitions/blocks/minecraft/air.block.json", MINI_AIR)],
             true,
         );
-        let mut zip = ZipArchive::new(ByteReader::from(bytes)).expect("zip 打开失败");
-        let mut pack = ZippedVersionPack::get_version(&mut zip).expect("声明包应可加载");
+        let mut source = PackSource::from_bytes(bytes).expect("pack source 打开失败");
+        let mut pack = ZippedVersionPack::get_version(&mut source).expect("声明包应可加载");
         assert!(pack.has_declared_block_json());
         let bundle = pack.take_block_json_bundle().expect("bundle 应存在");
         assert_eq!(bundle.files.len(), 1);
@@ -521,16 +671,16 @@ mod tests {
 
         // Declared but zero files: fail the whole pack.
         let bytes = make_mini_pack(&[], true);
-        let mut zip = ZipArchive::new(ByteReader::from(bytes)).expect("zip 打开失败");
-        ZippedVersionPack::get_version(&mut zip).expect_err("零文件必须整包失败");
+        let mut source = PackSource::from_bytes(bytes).expect("pack source 打开失败");
+        ZippedVersionPack::get_version(&mut source).expect_err("零文件必须整包失败");
 
         // Declared but broken file: fail the whole pack (path-attributed error, no legacy fallback).
         let bytes = make_mini_pack(
             &[("definitions/blocks/minecraft/air.block.json", "{oops")],
             true,
         );
-        let mut zip = ZipArchive::new(ByteReader::from(bytes)).expect("zip 打开失败");
-        let e = ZippedVersionPack::get_version(&mut zip).expect_err("坏文件必须整包失败");
+        let mut source = PackSource::from_bytes(bytes).expect("pack source 打开失败");
+        let e = ZippedVersionPack::get_version(&mut source).expect_err("坏文件必须整包失败");
         assert!(e.to_string().contains("air.block.json"), "实际：{e}");
     }
 
@@ -538,16 +688,11 @@ mod tests {
     /// Tag table from upstream gamedata (tag to block-identifier list, 39 tags).
     #[test]
     fn load_block_tags_from_real_version_pack() {
-        let pack_path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../version_packs/[SC原版版本包] Vanilla-1.26.40.scver"
-        );
-        let bytes = match fs::read(pack_path) {
-            Ok(bytes) => bytes,
-            Err(e) => panic!("failed to read version pack {pack_path}: {e}"),
+        let Some(mut source) = crate::test_pack::open_test_pack() else {
+            eprintln!("[skip] 版本包缺失，跳过测试");
+            return;
         };
-        let mut zip = ZipArchive::new(ByteReader::from(bytes)).expect("版本包 zip 打开失败");
-        let mut pack = ZippedVersionPack::get_version(&mut zip).expect("版本包解析失败");
+        let mut pack = ZippedVersionPack::get_version(&mut source).expect("版本包解析失败");
 
         assert!(pack.has_block_tags(), "block_tags 应存在且非空");
         let tags = pack.take_block_tags();
@@ -584,16 +729,11 @@ mod tests {
     /// in legacy data order), generated offline and checked in.
     #[test]
     fn load_recipe_groups_from_real_version_pack() {
-        let pack_path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../version_packs/[SC原版版本包] Vanilla-1.26.40.scver"
-        );
-        let bytes = match fs::read(pack_path) {
-            Ok(bytes) => bytes,
-            Err(e) => panic!("failed to read version pack {pack_path}: {e}"),
+        let Some(mut source) = crate::test_pack::open_test_pack() else {
+            eprintln!("[skip] 版本包缺失，跳过测试");
+            return;
         };
-        let mut zip = ZipArchive::new(ByteReader::from(bytes)).expect("版本包 zip 打开失败");
-        let mut pack = ZippedVersionPack::get_version(&mut zip).expect("版本包解析失败");
+        let mut pack = ZippedVersionPack::get_version(&mut source).expect("版本包解析失败");
 
         assert!(pack.has_recipe_groups(), "recipe_groups 应存在且非空");
         let groups = pack.take_recipe_groups();
@@ -619,26 +759,21 @@ mod tests {
     /// biome_ids.json mappings (exported from the worldgen biome_id constant table).
     #[test]
     fn load_official_biomes_and_ids_from_real_version_pack() {
-        let pack_path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../version_packs/[SC原版版本包] Vanilla-1.26.40.scver"
-        );
-        let bytes = match fs::read(pack_path) {
-            Ok(bytes) => bytes,
-            Err(e) => panic!("failed to read version pack {pack_path}: {e}"),
+        let Some(mut source) = crate::test_pack::open_test_pack() else {
+            eprintln!("[skip] 版本包缺失，跳过测试");
+            return;
         };
-        let mut zip = ZipArchive::new(ByteReader::from(bytes)).expect("版本包 zip 打开失败");
 
         // Biome json count is 88 (full official 1.26.40.05 set).
         let mut biome_count = 0;
-        for name in zip.file_names() {
+        for name in source.file_names() {
             if name.starts_with("definitions/biomes/") && name.ends_with(".biome.json") {
                 biome_count += 1;
             }
         }
         assert_eq!(biome_count, 88, "官方 1.26.40.05 biome json 应为 88 个");
 
-        let mut pack = ZippedVersionPack::get_version(&mut zip).expect("版本包解析失败");
+        let mut pack = ZippedVersionPack::get_version(&mut source).expect("版本包解析失败");
         let biome_ids = pack.take_biome_ids();
         assert_eq!(biome_ids.len(), 88, "biome_ids.json 应含 88 条映射");
 
@@ -675,16 +810,11 @@ mod tests {
     /// (forest_surface_trees_feature matches ForestTreeFeature.NAME).
     #[test]
     fn load_biome_features_from_real_version_pack() {
-        let pack_path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../version_packs/[SC原版版本包] Vanilla-1.26.40.scver"
-        );
-        let bytes = match fs::read(pack_path) {
-            Ok(bytes) => bytes,
-            Err(e) => panic!("failed to read version pack {pack_path}: {e}"),
+        let Some(mut source) = crate::test_pack::open_test_pack() else {
+            eprintln!("[skip] 版本包缺失，跳过测试");
+            return;
         };
-        let mut zip = ZipArchive::new(ByteReader::from(bytes)).expect("版本包 zip 打开失败");
-        let mut pack = ZippedVersionPack::get_version(&mut zip).expect("版本包解析失败");
+        let mut pack = ZippedVersionPack::get_version(&mut source).expect("版本包解析失败");
 
         assert!(pack.has_biome_features(), "biome_features 应存在且非空");
         let data = pack.take_biome_features();

@@ -11,6 +11,8 @@ use sc_binary::interfaces::{Reader, Writer};
 use sc_binary::{ByteReader, ByteWriter};
 use sc_network_macros::MinecraftPacket;
 
+// Wire-protocol namespace mirrors official docs.
+#[allow(non_snake_case)]
 pub mod InteractAction {
     pub const VEHICLE_EXIT: u8 = 3;
     pub const MOUSEOVER: u8 = 4;

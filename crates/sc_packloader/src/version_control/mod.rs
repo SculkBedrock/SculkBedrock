@@ -2,6 +2,7 @@ use crate::block::{BlockDataManifest, BlockJsonBundle};
 use crate::definitions::attribute::EntityAttribute;
 use crate::definitions::biome::MinecraftBiomeSpawner;
 use crate::pack::ResourcePack;
+use crate::pack_loader::pack::zipped::PackSource;
 use crate::pack_loader::pack::zipped::ZippedResourcePack;
 use crate::version_control::loader::VersionPackLoaderError;
 use crate::version_control::runtime::MinecraftRuntimeJson;
@@ -9,9 +10,6 @@ use sc_ecs::resource::Resource;
 use sc_utils::game::structs::minecraft_version::MinecraftVersion;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::io::Cursor;
-use std::sync::Arc;
-use zip::ZipArchive;
 
 pub mod biome_features;
 pub mod identifier;
@@ -65,7 +63,7 @@ pub struct WorldgenDataBundle {
 #[derive(Resource, Debug, Clone)]
 pub struct SCVersionPack {
     pub manifest: SCVersionPackManifest,
-    behavior_packs: Vec<Vec<u8>>,
+    behavior_packs: Vec<PackSource>,
     biomes: Vec<MinecraftBiomeSpawner>,
     attributes: HashMap<String, EntityAttribute>,
     plugins: Vec<Vec<u8>>,
@@ -206,15 +204,9 @@ impl SCVersionPack {
     }
     pub fn take_behavior_packs(&mut self) -> Vec<(MinecraftVersion, ResourcePack)> {
         let mut behavior_packs: Vec<(MinecraftVersion, ResourcePack)> = Vec::new();
-        for bytes in std::mem::take(&mut self.behavior_packs) {
-            let shared_bytes = Arc::new(bytes);
-            if let Ok(mut zip) = ZipArchive::new(Cursor::new(shared_bytes.as_slice())) {
-                if let Some(pack) = ZippedResourcePack::get_resource_pack_shared(
-                    &mut zip,
-                    Arc::clone(&shared_bytes),
-                ) {
-                    behavior_packs.push((pack.manifest.version, pack));
-                }
+        for mut source in std::mem::take(&mut self.behavior_packs) {
+            if let Some(pack) = ZippedResourcePack::get_resource_pack_shared(&mut source, false) {
+                behavior_packs.push((pack.manifest.version, pack));
             }
         }
         behavior_packs

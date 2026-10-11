@@ -2,6 +2,7 @@
 //! - `command_request`: CommandRequest packet -> RawCommandInput event in sc_command;
 //! - `command_feedback`: CommandFeedback event from sc_command -> CommandOutput packet;
 //! - `gamemode_command`: /gamemode execution (player game-mode switch).
+//! - `give_command`: /give execution (testing grant + slot sync).
 //!
 //! Command parsing and permission gates live in sc_command; /gamemode state changes
 //! and protocol sync live in the network layer, since sc_command must not depend on
@@ -236,4 +237,216 @@ fn find_player_by_name(world: &World, name: &str) -> Option<sc_ecs::entity::Enti
         }
     }
     None
+}
+
+/// Runs /give: testing grant of version-pack items with authoritative slot sync.
+///
+/// Players: `/give <item> [count]` targets self; console: `give <player>
+/// <item> [count]` targets by display name (case-insensitive). Bare names
+/// default to the minecraft namespace. Count clamps to 1..=64.
+///
+/// Lives here (not in a version-pack plugin) for two reasons: the grant
+/// touches entity components, which do not cross the cdylib boundary
+/// (`Any` downcast fails plugin-side), and plugin schedule systems only
+/// started running after the label-identity fix. Permission stays `Any`
+/// until the player permission component lands; tighten to Host/Admin then.
+pub(crate) fn give_command(world: World, mut reader: EventReader<CommandInvocation>) {
+    use sc_command::events::CommandOrigin;
+    for invocation in reader.read() {
+        if invocation.command != "give" {
+            continue;
+        }
+        // Players give to themselves; console names a target player.
+        let (target, item_index) = match invocation.origin {
+            CommandOrigin::Player(entity) => (Some(entity), 0),
+            CommandOrigin::Console => match invocation.args.as_slice() {
+                [_, _, ..] => {
+                    let name = &invocation.args[0];
+                    match find_player_by_name(&world, name) {
+                        Some(entity) => (Some(entity), 1),
+                        None => {
+                            world.send_event(CommandFeedback::error_from(
+                                invocation,
+                                format!("no online player named {name}"),
+                            ));
+                            continue;
+                        }
+                    }
+                }
+                _ => {
+                    world.send_event(CommandFeedback::error_from(
+                        invocation,
+                        "Usage: /give <player> <item> [count]",
+                    ));
+                    continue;
+                }
+            },
+        };
+        let (Some(target), Some(name)) = (target, invocation.args.get(item_index)) else {
+            world.send_event(CommandFeedback::error_from(
+                invocation,
+                "Usage: /give <item> [count]",
+            ));
+            continue;
+        };
+        let count: u16 = invocation
+            .args
+            .get(item_index + 1)
+            .and_then(|raw| raw.parse().ok())
+            .unwrap_or(1)
+            .clamp(1, 64);
+        give_to(&world, invocation, target, name, count);
+    }
+}
+
+fn give_to(
+    world: &World,
+    invocation: &CommandInvocation,
+    target: sc_ecs::entity::EntityId,
+    name: &str,
+    count: u16,
+) {
+    // Bare names default to the minecraft namespace (`coal` ==
+    // `minecraft:coal`), matching vanilla command UX.
+    let identifier = if name.contains(':') {
+        name.to_string()
+    } else {
+        format!("minecraft:{name}")
+    };
+    let (Some(inventory), Some(items)) = (
+        world.get_component::<sc_item::PlayerInventory>(&target),
+        world.get_resource::<sc_item::ItemRegistry>(),
+    ) else {
+        world.send_event(CommandFeedback::error_from(
+            invocation,
+            "give failed: inventory or item registry missing",
+        ));
+        return;
+    };
+    let Some(runtime_id) = items.runtime_id_by_name(&identifier) else {
+        world.send_event(CommandFeedback::error_from(
+            invocation,
+            format!("unknown item: {identifier}"),
+        ));
+        return;
+    };
+    let stack = sc_item::ItemStack::new(runtime_id, count);
+    let (leftover, changed) = inventory.insert_tracked(stack, &items);
+    // Authoritative slot sync (same intent the pickup path uses, so the
+    // client sees new items without reopening the inventory).
+    let runtime = world
+        .get_component::<sc_entity::MinecraftEntityId>(&target)
+        .map(|actor| actor.0);
+    if let (Some(runtime), Some(mut outbox)) = (
+        runtime,
+        world.get_resource_mut::<sc_game::net::NetworkOutbox>(),
+    ) {
+        let mut publisher = sc_game::net::IntentPublisher::new(&mut outbox).with_world(world);
+        for slot in changed {
+            if let Some(current) = inventory.get(slot) {
+                publisher.publish(sc_game::net::UpdateInventorySlot {
+                    entity_id: runtime,
+                    slot: slot as u8,
+                    stack: current,
+                });
+            }
+        }
+    }
+    if leftover > 0 {
+        world.send_event(CommandFeedback::error_from(
+            invocation,
+            format!("inventory full, {leftover} x {identifier} left"),
+        ));
+    } else {
+        log::info!("[Server] gave {count} x {identifier}");
+        world.send_event(CommandFeedback::success_from(
+            invocation,
+            format!("gave {count} x {identifier}"),
+        ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sc_ecs::app::App;
+
+    /// The live /give failure: dispatch ran but no feedback and no items ever
+    /// appeared. Drives the real host chain (dispatch on SCConnectionUpdate ->
+    /// give on SCEventUpdate) and requires player feedback plus inventory.
+    #[test]
+    fn give_flows_from_raw_input_to_feedback_and_inventory() {
+        use sc_command::events::RawCommandInput;
+        use sc_ecs::event::reader::ManualEventReader;
+        use sc_ecs::event::Events;
+
+        let app = App::new();
+        app.add_plugins(sc_utils::schedule::SCSchedulePlugin);
+        app.add_plugins(sc_command::SCCommandPlugin);
+        app.add_systems(sc_utils::schedule::SCEventUpdate, give_command);
+
+        let items = sc_item::ItemRegistry::new();
+        items.upsert(sc_item::ItemDefinition::new(5, "minecraft:potato"));
+        app.world().insert_resource(items);
+        app.world()
+            .insert_resource(sc_game::net::NetworkOutbox::with_limits(64, 64, usize::MAX));
+
+        let entity = app.world().spawn(sc_item::PlayerInventory::new(36));
+        app.world()
+            .add_component(&entity, sc_entity::MinecraftEntityId(7));
+
+        // Build queued plugins (registers schedules/events), like the
+        // production runner does before the tick loop. The first update
+        // runs startup schedules only, and each tick swaps event buffers,
+        // so the input must be sent after a warmup tick: otherwise it is
+        // dropped before the main schedules ever see it.
+        app.finish();
+        app.cleanup();
+        app.update();
+        app.world().send_event(RawCommandInput {
+            origin: sc_command::events::CommandOrigin::Player(entity),
+            raw: "/give potato 2".to_string(),
+            request: None,
+        });
+        app.update();
+        app.update();
+
+        let invocations = app
+            .world()
+            .get_resource::<Events<sc_command::events::CommandInvocation>>()
+            .expect("invocation events");
+        let mut ireader = ManualEventReader::default();
+        let seen: Vec<String> = ireader
+            .read(&invocations)
+            .map(|event| event.command.clone())
+            .collect();
+        assert!(
+            seen.iter().any(|command| command == "give"),
+            "dispatch must produce a give invocation, saw {seen:?}",
+        );
+
+        let feedback = app
+            .world()
+            .get_resource::<Events<CommandFeedback>>()
+            .expect("feedback events");
+        let mut reader = ManualEventReader::default();
+        let messages: Vec<String> = reader
+            .read(&feedback)
+            .flat_map(|event| event.messages.clone())
+            .collect();
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("gave 2 x minecraft:potato")),
+            "player must see give feedback, got {messages:?}",
+        );
+
+        let inventory = app
+            .world()
+            .get_component::<sc_item::PlayerInventory>(&entity)
+            .expect("inventory");
+        let stack = inventory.get(0).expect("given slot");
+        assert_eq!(stack.runtime_id, 5);
+        assert_eq!(stack.count, 2);
+    }
 }

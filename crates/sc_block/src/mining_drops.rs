@@ -901,7 +901,7 @@ mod tests {
     }
 
     #[test]
-    fn efficiency_bonus_follows_pnx_quadratic() {
+    fn efficiency_bonus_follows_quadratic() {
         let max5 = EfficiencyCompiled { max_level: 5 };
         assert_eq!(efficiency_bonus(None, 5, true), 0.0);
         assert_eq!(efficiency_bonus(Some(&max5), 0, true), 0.0);

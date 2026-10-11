@@ -1,7 +1,6 @@
 use sc_binary::ByteWriter;
 use sc_nbt::compound::CompoundNbt;
 use sc_nbt::local::BedrockLocalNbt;
-use sc_nbt::writer::NbtWriteTrait;
 use sc_nbt::writer::NbtWriter;
 use sc_nbt::NbtValue;
 fn main() {

@@ -9,11 +9,11 @@
 //! root key at compile time (`sc_recipe`), never from the file name.
 
 use std::collections::HashMap;
-use std::io::{Cursor, Read};
+use std::sync::Arc;
 
-use crate::pack::ResourcePack;
+use crate::pack::{PackData, ResourcePack};
 use crate::pack_loader::pack::zipped::{
-    MAX_BINARY_ENTRY_BYTES, MAX_JSON_DIRECTORY_BYTES, MAX_JSON_ENTRY_BYTES,
+    PackSource, MAX_BINARY_ENTRY_BYTES, MAX_JSON_DIRECTORY_BYTES, MAX_JSON_ENTRY_BYTES,
 };
 use crate::version_control::json_budget::BudgetReader;
 use sc_ecs::resource::Resource;
@@ -126,42 +126,24 @@ fn relative_recipe_path(name: &str) -> String {
 /// `pack_bytes` is the nested behavior-pack zip (`ResourcePack.pack_data`).
 /// Returns the files plus per-file errors (a single bad file never aborts
 /// the whole pack; directory/file budgets are still enforced).
-pub fn read_recipes_from_pack_bytes(
+pub fn read_recipes_from_pack_source(
     pack_name: &str,
     pack_order: usize,
-    pack_bytes: &[u8],
+    pack: &mut PackSource,
     budgets: &RecipeSourceBudgets,
 ) -> (Vec<RecipeSourceFile>, Vec<RecipeSourceError>) {
     let mut files = Vec::new();
     let mut errors = Vec::new();
-    let mut archive = match zip::ZipArchive::new(Cursor::new(pack_bytes)) {
-        Ok(archive) => archive,
-        Err(error) => {
-            errors.push(RecipeSourceError {
-                pack_name: pack_name.to_string(),
-                relative_path: String::new(),
-                reason: format!("behavior pack zip could not be opened: {error}"),
-            });
-            return (files, errors);
-        }
-    };
-    let mut total_bytes: u64 = 0;
-    // Collect candidate names first so the borrow of `archive` ends before
-    // per-file reads (avoids holding the zip borrow across parsing).
+    // Candidate names from the unified source (archive order for
+    // zips, sorted for directories), then per-file reads.
     let mut names: Vec<String> = Vec::new();
-    for i in 0..archive.len() {
-        let Ok(entry) = archive.by_index(i) else {
-            continue;
-        };
-        if !entry.is_file() {
-            continue;
-        }
-        let name = entry.name().to_string();
+    for name in pack.file_names() {
         if is_recipe_json_path(&name) {
             names.push(name);
         }
     }
     names.sort();
+    let mut total_bytes: u64 = 0;
     for name in names {
         if files.len() >= budgets.max_files_per_pack {
             errors.push(RecipeSourceError {
@@ -171,18 +153,15 @@ pub fn read_recipes_from_pack_bytes(
             });
             break;
         }
-        let mut entry = match archive.by_name(&name) {
-            Ok(entry) => entry,
-            Err(error) => {
-                errors.push(RecipeSourceError {
-                    pack_name: pack_name.to_string(),
-                    relative_path: relative_recipe_path(&name),
-                    reason: format!("zip entry could not be opened: {error}"),
-                });
-                continue;
-            }
+        let Some(size) = pack.file_size(&name) else {
+            errors.push(RecipeSourceError {
+                pack_name: pack_name.to_string(),
+                relative_path: relative_recipe_path(&name),
+                reason: "recipe entry could not be opened".to_string(),
+            });
+            continue;
         };
-        if entry.size() > budgets.max_file_bytes.min(MAX_BINARY_ENTRY_BYTES) {
+        if size > budgets.max_file_bytes.min(MAX_BINARY_ENTRY_BYTES) {
             errors.push(RecipeSourceError {
                 pack_name: pack_name.to_string(),
                 relative_path: relative_recipe_path(&name),
@@ -190,9 +169,7 @@ pub fn read_recipes_from_pack_bytes(
             });
             continue;
         }
-        if total_bytes.saturating_add(entry.size())
-            > budgets.max_dir_bytes.min(MAX_JSON_DIRECTORY_BYTES)
-        {
+        if total_bytes.saturating_add(size) > budgets.max_dir_bytes.min(MAX_JSON_DIRECTORY_BYTES) {
             errors.push(RecipeSourceError {
                 pack_name: pack_name.to_string(),
                 relative_path: relative_recipe_path(&name),
@@ -200,15 +177,19 @@ pub fn read_recipes_from_pack_bytes(
             });
             break;
         }
-        let mut bytes = Vec::with_capacity(entry.size().min(usize::MAX as u64) as usize);
-        if let Err(error) = entry
-            .take(budgets.max_file_bytes + 1)
-            .read_to_end(&mut bytes)
-        {
+        let Some(bytes) = pack.read_file(&name) else {
             errors.push(RecipeSourceError {
                 pack_name: pack_name.to_string(),
                 relative_path: relative_recipe_path(&name),
-                reason: format!("recipe file could not be read: {error}"),
+                reason: "recipe file could not be read".to_string(),
+            });
+            continue;
+        };
+        if bytes.len() as u64 > budgets.max_file_bytes + 1 {
+            errors.push(RecipeSourceError {
+                pack_name: pack_name.to_string(),
+                relative_path: relative_recipe_path(&name),
+                reason: format!("recipe file exceeds {} bytes", budgets.max_file_bytes),
             });
             continue;
         }
@@ -272,7 +253,23 @@ pub fn read_recipes_from_resource_pack(
     pack_order: usize,
     budgets: &RecipeSourceBudgets,
 ) -> (Vec<RecipeSourceFile>, Vec<RecipeSourceError>) {
-    read_recipes_from_pack_bytes(&pack.manifest.name, pack_order, &pack.pack_data, budgets)
+    let mut source = match &pack.source {
+        PackData::Zip(bytes) => match PackSource::from_shared(Arc::clone(bytes)) {
+            Ok(source) => source,
+            Err(error) => {
+                return (
+                    Vec::new(),
+                    vec![RecipeSourceError {
+                        pack_name: pack.manifest.name.clone(),
+                        relative_path: String::new(),
+                        reason: format!("behavior pack zip could not be opened: {error}"),
+                    }],
+                );
+            }
+        },
+        PackData::Dir(dir) => PackSource::from_dir(dir.clone()),
+    };
+    read_recipes_from_pack_source(&pack.manifest.name, pack_order, &mut source, budgets)
 }
 
 /// Merge ordered packs low-version → high-version: concatenates per-pack
@@ -344,7 +341,6 @@ impl ItemTagTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use std::io::Cursor;
 
     fn test_budgets() -> RecipeSourceBudgets {
@@ -377,7 +373,12 @@ mod tests {
             ("__brarchive/recipes.brarchive", "not json"),
             ("recipes/notes.txt", "ignored"),
         ]);
-        let (files, errors) = read_recipes_from_pack_bytes("test", 0, &bytes, &test_budgets());
+        let (files, errors) = read_recipes_from_pack_source(
+            "test",
+            0,
+            &mut PackSource::from_bytes(bytes.to_vec()).unwrap(),
+            &test_budgets(),
+        );
         assert!(errors.is_empty(), "errors: {errors:?}");
         assert_eq!(files.len(), 2);
         assert!(files.iter().any(|f| f.relative_path == "recipes/a.json"));
@@ -397,7 +398,12 @@ mod tests {
             ),
             ("recipes/bad.json", "{oops"),
         ]);
-        let (files, errors) = read_recipes_from_pack_bytes("test", 3, &bytes, &test_budgets());
+        let (files, errors) = read_recipes_from_pack_source(
+            "test",
+            3,
+            &mut PackSource::from_bytes(bytes.to_vec()).unwrap(),
+            &test_budgets(),
+        );
         assert_eq!(files.len(), 1);
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].relative_path, "recipes/bad.json");
@@ -424,44 +430,29 @@ mod tests {
             max_files_per_pack: 2,
             ..test_budgets()
         };
-        let (files, errors) = read_recipes_from_pack_bytes("test", 0, &bytes, &budgets);
+        let (files, errors) = read_recipes_from_pack_source(
+            "test",
+            0,
+            &mut PackSource::from_bytes(bytes.to_vec()).unwrap(),
+            &budgets,
+        );
         assert_eq!(files.len(), 2);
         assert!(!errors.is_empty());
     }
 
     #[test]
     fn real_pack_stonecutter_recipes_all_load() {
-        let pack_path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../version_packs/[SC原版版本包] Vanilla-1.26.40.scver"
-        );
-        let bytes = match fs::read(pack_path) {
-            Ok(bytes) => bytes,
-            Err(_) => return,
+        let Some(mut source) = crate::test_pack::open_test_pack() else {
+            return;
         };
-        let mut outer = match zip::ZipArchive::new(Cursor::new(bytes)) {
-            Ok(z) => z,
-            Err(_) => return,
-        };
-        // Find the 1.18 stonecutter pack (24 recipes) inside the version pack.
-        let mut target: Option<Vec<u8>> = None;
-        for i in 0..outer.len() {
-            let mut entry = outer.by_index(i).unwrap();
-            if !entry.is_file() {
-                continue;
-            }
-            let name = entry.name().to_string();
-            if name.ends_with("vanilla_1.18.0.zip") {
-                let mut data = Vec::new();
-                use std::io::Read;
-                entry.read_to_end(&mut data).unwrap();
-                target = Some(data);
-                break;
-            }
+        // Nested 1.18 stonecutter pack (24 recipes), zip or dir form.
+        let mut nested = source.sub_source("behavior_packs/vanilla_1.18.0.zip");
+        if nested.is_none() {
+            nested = source.sub_source("behavior_packs/vanilla_1.18.0");
         }
-        let Some(nested) = target else { return };
+        let Some(mut nested) = nested else { return };
         let (files, errors) =
-            read_recipes_from_pack_bytes("vanilla_1.18.0", 1, &nested, &test_budgets());
+            read_recipes_from_pack_source("vanilla_1.18.0", 1, &mut nested, &test_budgets());
         assert!(errors.is_empty(), "errors: {errors:?}");
         assert_eq!(files.len(), 24, "expected 24 stonecutter recipes");
         for file in &files {
@@ -477,35 +468,16 @@ mod tests {
 
     #[test]
     fn real_pack_vanilla_recipes_load_without_brarchive() {
-        let pack_path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../version_packs/[SC原版版本包] Vanilla-1.26.40.scver"
-        );
-        let bytes = match fs::read(pack_path) {
-            Ok(bytes) => bytes,
-            Err(_) => return,
+        let Some(mut source) = crate::test_pack::open_test_pack() else {
+            return;
         };
-        let mut outer = match zip::ZipArchive::new(Cursor::new(bytes)) {
-            Ok(z) => z,
-            Err(_) => return,
-        };
-        let mut nested: Option<Vec<u8>> = None;
-        for i in 0..outer.len() {
-            let mut entry = outer.by_index(i).unwrap();
-            if !entry.is_file() {
-                continue;
-            }
-            let name = entry.name().to_string();
-            if name.ends_with("behavior_packs/vanilla.zip") {
-                let mut data = Vec::new();
-                use std::io::Read;
-                entry.read_to_end(&mut data).unwrap();
-                nested = Some(data);
-                break;
-            }
+        let mut nested = source.sub_source("behavior_packs/vanilla.zip");
+        if nested.is_none() {
+            nested = source.sub_source("behavior_packs/vanilla");
         }
-        let Some(nested) = nested else { return };
-        let (files, errors) = read_recipes_from_pack_bytes("vanilla", 0, &nested, &test_budgets());
+        let Some(mut nested) = nested else { return };
+        let (files, errors) =
+            read_recipes_from_pack_source("vanilla", 0, &mut nested, &test_budgets());
         // Chemistry packs have malformed JSON; vanilla must be clean.
         assert!(errors.is_empty(), "errors: {errors:?}");
         assert!(

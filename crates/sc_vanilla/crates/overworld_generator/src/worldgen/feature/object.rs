@@ -361,6 +361,7 @@ pub enum Axis {
 }
 
 impl Axis {
+    #[allow(dead_code)]
     fn state_value(self) -> &'static str {
         match self {
             Axis::X => "x",
@@ -991,6 +992,7 @@ mod tests {
 
     #[test]
     fn gridded_geometry_matches_java() {
+        #[allow(dead_code)]
         struct Dummy;
         // split=2 gives splitLength=8, distToNext=2.
         // split=4 gives splitLength=4, distToNext=2.

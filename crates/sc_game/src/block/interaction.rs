@@ -42,10 +42,12 @@ use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
 
-use crate::container::ContainerOpen;
-use crate::net::{NetworkIntent, NetworkOutbox};
-use crate::net_backpressure::{IntentPublisher, PendingInventoryResync};
-use crate::net_faults::PendingConnectionFaults;
+use crate::inventory::ContainerOpen;
+use crate::net::{
+    BlockBreakProgress, ClosePlayerInventory, CorrectBlockPrediction, IntentPublisher,
+    NetworkOutbox, OpenPlayerInventory, PendingConnectionFaults,
+    PendingInventoryResync, ResyncInventory,
+};
 
 /// Seconds-to-ticks conversion base (Bedrock runs 20 ticks/second).
 const TICKS_PER_SECOND: f32 = 20.0;
@@ -264,6 +266,10 @@ pub struct PlaceBlockRequest {
     pub hotbar_slot: i32,
     /// Held item runtime id (0 = air).
     pub item_id: i32,
+    /// Absolute click-point Y from the protocol; the within-block fraction
+    /// decides stairs/trapdoor upside-down (0.0, the block base, keeps the
+    /// legacy bottom-half placement).
+    pub click_y: f32,
 }
 
 /// Hotbar slot switch request (sent after the network layer decodes `MobEquipment`).
@@ -548,7 +554,7 @@ fn request_inventory_resync(world: &World, outbox: &mut NetworkOutbox, entity: &
         .with_world(world)
         .maybe_with_pending_resync(pending.as_deref_mut())
         .maybe_with_faults(faults.as_deref_mut())
-        .publish(NetworkIntent::ResyncInventory {
+        .publish(ResyncInventory {
             entity_id: runtime_id,
         });
 }
@@ -594,7 +600,7 @@ fn correct_predicted_break(world: &World, entity: &EntityId, position: BlockPosi
         return;
     };
     let dimension = view.read().dimension;
-    crate::net_backpressure::request_column_refresh(
+    crate::net::request_column_refresh(
         world,
         &world_id,
         dimension,
@@ -629,9 +635,9 @@ fn revert_single_block(
     let Some(minecraft_world) = manager.get_world(world_id.as_ref()) else {
         return;
     };
-    crate::net_backpressure::IntentPublisher::new(outbox)
+    crate::net::IntentPublisher::new(outbox)
         .with_world(world)
-        .publish(NetworkIntent::CorrectBlockPrediction {
+        .publish(CorrectBlockPrediction {
             entity_id: actor,
             world_id: world_id.as_ref().clone(),
             dimension: minecraft_world.world_data.get_dimension(),
@@ -771,7 +777,7 @@ fn emit_break_progress(
         return;
     };
     // Break progress is presentation state: safely ignored when budget runs out (rebroadcast next tick).
-    IntentPublisher::new(outbox).publish(NetworkIntent::BlockBreakProgress {
+    IntentPublisher::new(outbox).publish(BlockBreakProgress {
         world_id: world_id.as_ref().clone(),
         cue,
         data,
@@ -1332,7 +1338,7 @@ pub fn handle_place_block(
             request.position, request.face, request.hotbar_slot, request.item_id
         );
         // Empty hands cannot place (clients never predict empty-hand placement, no resync needed).
-        if crate::crafting::open_crafting_station(
+        if crate::inventory::crafting::open_crafting_station(
             &world,
             request.entity,
             request.position,
@@ -1442,7 +1448,7 @@ pub fn handle_place_block(
                 continue;
             };
             // Authoritative revision tracks inventory changes (craft transactions compare it at execution).
-            crate::crafting::bump_inventory_revision(&world, &request.entity);
+            crate::inventory::crafting::bump_inventory_revision(&world, &request.entity);
             Some(InventoryReservation {
                 entity: request.entity,
                 inventory: (*inventory).clone(),
@@ -1458,7 +1464,14 @@ pub fn handle_place_block(
             world_id: world_id.as_ref().clone(),
             position: target,
             layer: 0,
-            state: BlockRuntimeId(block_runtime_id),
+            state: BlockRuntimeId(resolve_placement_state(
+                &world,
+                &request.entity,
+                block_runtime_id,
+                request.face,
+                request.click_y,
+                &target,
+            )),
             cause: BlockChangeCause::Player(request.entity),
             flags: update_flags::DEFAULT,
         });
@@ -1466,6 +1479,48 @@ pub fn handle_place_block(
             reservations.pending.insert(request_id, reservation);
         }
     }
+}
+
+/// Placement orientation: data-driven facing from the player transform
+/// (see [`super::facing`]). Any missing input (no transform/registry)
+/// keeps the item-mapped default state, so orientation never blocks a
+/// place that used to succeed.
+fn resolve_placement_state(
+    world: &World,
+    entity: &EntityId,
+    base_hash: u32,
+    face: u8,
+    click_y: f32,
+    target: &BlockPosition,
+) -> u32 {
+    let Some(transform) = world.get_component::<Transform>(entity) else {
+        return base_hash;
+    };
+    let data = transform.read();
+    let eye_height = world
+        .get_component::<PhysicsBody>(entity)
+        .map(|body| body.base_offset)
+        .unwrap_or(1.62);
+    let Some(registry) = world.get_resource::<BlockStateRegistry>() else {
+        return base_hash;
+    };
+    let click_frac = if click_y.is_finite() {
+        Some(click_y - click_y.floor())
+    } else {
+        None
+    };
+    super::facing::orient_state(
+        &registry,
+        base_hash,
+        face,
+        data.rotation.yaw,
+        data.position,
+        target.x,
+        target.y,
+        target.z,
+        eye_height,
+        click_frac,
+    )
 }
 
 /// Consume authoritative block-write results and roll back only rejected
@@ -1492,7 +1547,7 @@ pub fn resolve_block_placement_reservations(
                 result.request_id, reservation.entity
             );
         }
-        crate::crafting::bump_inventory_revision(&world, &reservation.entity);
+        crate::inventory::crafting::bump_inventory_revision(&world, &reservation.entity);
         request_inventory_resync(&world, &mut outbox, &reservation.entity);
     }
 }
@@ -1548,7 +1603,7 @@ pub fn handle_open_inventory(world: World, mut reader: EventReader<OpenInventory
                 previous.window_id,
                 previous.kind_name()
             );
-            crate::craft_inventory::return_items(&world, request.entity);
+            crate::inventory::craft_inventory::return_items(&world, request.entity);
             world.remove_component::<ContainerOpen>(&request.entity);
         }
         world.add_component(&request.entity, ContainerOpen::player_inventory());
@@ -1584,7 +1639,7 @@ fn close_open_container(world: &World, request: &CloseInventoryRequest) {
         );
         return;
     };
-    crate::craft_inventory::return_items(world, request.entity);
+    crate::inventory::craft_inventory::return_items(world, request.entity);
     // Component presence means "window open"; removing it closes the window. This cannot fail,
     // so no path leaves a stuck marker behind.
     world.remove_component::<ContainerOpen>(&request.entity);
@@ -1606,13 +1661,26 @@ fn close_open_container(world: &World, request: &CloseInventoryRequest) {
     let Some(mut outbox) = world.get_resource_mut::<NetworkOutbox>() else {
         return;
     };
-    // Reply type uses the server-registered real type, never reflected client bytes (see
-    // `ContainerOpen::protocol_type`): vanilla closes workstations with NONE (-9), and reflecting it
+    // Reply type uses the server-registered real type, never reflected client bytes:
+    // vanilla closes workstations with NONE (-9), and reflecting it
     // would corrupt client window tracking so later windows close instantly.
-    IntentPublisher::new(&mut outbox).publish(NetworkIntent::ClosePlayerInventory {
+    // Resolved from the workstation decl at the bound block; missing decls
+    // fall back to 0 (the client already closed locally, the byte only
+    // feeds tracking cleanup). The inventory window keeps -1.
+    let container_type = if open.is_player_inventory() {
+        -1
+    } else {
+        open.workstation()
+            .and_then(|(_, world_id, pos)| {
+                crate::inventory::crafting::workstation_decl_at(&world, &world_id, pos)
+            })
+            .map(|decl| decl.container)
+            .unwrap_or(0)
+    };
+    IntentPublisher::new(&mut outbox).publish(ClosePlayerInventory {
         entity_id: runtime_id,
         window_id: open.window_id,
-        container_type: open.protocol_type(),
+        container_type,
     });
 }
 
@@ -1620,14 +1688,14 @@ fn outbox_for_open_inventory(world: &World, runtime_id: u64) {
     let Some(mut outbox) = world.get_resource_mut::<NetworkOutbox>() else {
         return;
     };
-    IntentPublisher::new(&mut outbox).publish(NetworkIntent::OpenPlayerInventory {
-        entity_id: runtime_id,
-    });
+    IntentPublisher::new(&mut outbox).publish(
+        OpenPlayerInventory { entity_id: runtime_id });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::net::NetworkIntent;
     use sc_ecs::system::{IntoSystem, System};
 
     #[test]
@@ -1682,20 +1750,16 @@ mod tests {
                 .iter()
                 .filter(|intent| matches!(
                     intent,
-                    NetworkIntent::BlockBreakProgress {
-                        cue: crate::net::BlockBreakProgressCue::Start,
-                        ..
-                    }
+                    NetworkIntent::BlockBreakProgress(p)
+                        if p.cue == crate::net::BlockBreakProgressCue::Start
                 ))
                 .count(),
             1
         );
         assert!(!intents.iter().any(|intent| matches!(
             intent,
-            NetworkIntent::BlockBreakProgress {
-                cue: crate::net::BlockBreakProgressCue::Update,
-                ..
-            }
+            NetworkIntent::BlockBreakProgress(p)
+                if p.cue == crate::net::BlockBreakProgressCue::Update
         )));
     }
 
@@ -1998,13 +2062,8 @@ mod tests {
             .drain();
         assert!(intents.iter().any(|intent| matches!(
             intent,
-            NetworkIntent::CorrectBlockPrediction {
-                x: 0,
-                y: 64,
-                z: 0,
-                runtime_id: 32000,
-                ..
-            }
+            NetworkIntent::CorrectBlockPrediction(p)
+                if p.x == 0 && p.y == 64 && p.z == 0 && p.runtime_id == 32000
         )));
         for _ in 0..20 {
             advance(&world);
@@ -2042,7 +2101,7 @@ mod tests {
         assert!(
             !intents.iter().any(|intent| matches!(
                 intent,
-                NetworkIntent::CorrectBlockPrediction { .. }
+                NetworkIntent::CorrectBlockPrediction(_)
             )),
             "in-tolerance completions must not roll back (rollback flashes)"
         );
@@ -2075,7 +2134,7 @@ mod tests {
             .drain();
         assert!(intents.iter().any(|intent| matches!(
             intent,
-            NetworkIntent::CorrectBlockPrediction { .. }
+            NetworkIntent::CorrectBlockPrediction(_)
         )));
     }
 
@@ -2135,10 +2194,8 @@ mod tests {
             .drain();
         assert!(intents.iter().any(|intent| matches!(
             intent,
-            NetworkIntent::BlockBreakProgress {
-                cue: crate::net::BlockBreakProgressCue::Start,
-                ..
-            }
+            NetworkIntent::BlockBreakProgress(p)
+                if p.cue == crate::net::BlockBreakProgressCue::Start
         )));
     }
 
@@ -2295,19 +2352,111 @@ mod tests {
         assert!(world.get_component::<ContainerOpen>(&entity).is_some());
     }
 
-    /// Close replies must carry the server-registered real window type (workstation=1), never reflected
-    /// client NONE (-9): close replies take the registered window type, and the comment
+    /// Close replies must carry the decl container type (workstation=1), never reflected
+    /// client NONE (-9): close replies take the bound block's workstation decl, and the comment
     /// "Client always wants a response. If not sent, inventores won't open
     /// anymore." A wrong reply type corrupts client window tracking, so later windows close instantly.
     #[test]
     fn close_inventory_echoes_server_window_type_not_client_none() {
+        use sc_block::block_json::{compile_bundle, BlockJsonRegistry};
+        use sc_packloader::block::{
+            fingerprint_bundle, parse_block_file, BlockBundleBudgets, BlockJsonBundle,
+        };
+        use sc_world::chunk::{BlockRuntimeId, ChunkPosition};
+        use sc_world::storage::{ChunkKey, EmptyWorldStorage, WorldChunkProvider};
+
+        let air = r#"{
+            "format_version": "1.10.0",
+            "minecraft:block": {
+                "description": {"identifier": "minecraft:air", "states": {}},
+                "components": {},
+                "sc:default_state": {},
+                "sc:protocol_runtime_ids": [0]
+            }
+        }"#;
+        let table = r#"{
+            "format_version": "1.10.0",
+            "minecraft:block": {
+                "description": {"identifier": "minecraft:crafting_table", "states": {}},
+                "components": {
+                    "sc:workstation": {
+                        "station": "crafting_table",
+                        "container": 1,
+                        "window": true,
+                        "grid": 3,
+                        "slots": []
+                    }
+                },
+                "sc:default_state": {},
+                "sc:protocol_runtime_ids": [50]
+            }
+        }"#;
+        let raws: Vec<(&str, &str)> = vec![
+            ("definitions/blocks/minecraft/air.block.json", air),
+            (
+                "definitions/blocks/minecraft/crafting_table.block.json",
+                table,
+            ),
+        ];
+        let budgets = BlockBundleBudgets::default();
+        let mut refs: Vec<(&str, &[u8])> = raws.iter().map(|(p, b)| (*p, b.as_bytes())).collect();
+        refs.sort_by(|a, b| a.0.cmp(b.0));
+        let files = refs
+            .iter()
+            .map(|(p, b)| parse_block_file("test", p, b, &budgets).expect("夹具应合法"))
+            .collect();
+        let bundle = BlockJsonBundle {
+            schema_version: 1,
+            network_id_mode: "hashed".to_string(),
+            fingerprint: fingerprint_bundle(&refs, "hashed"),
+            files,
+        };
+        let snapshot = compile_bundle(&bundle, "test", &budgets, &|_| None, &|_| true)
+            .expect("应编译")
+            .0;
+        let registry = BlockStateRegistry::from_block_snapshot(&snapshot);
+        let table_runtime = registry
+            .runtime_id(
+                registry
+                    .state_of("minecraft:crafting_table", &[])
+                    .expect("工作台应在 bundle 中"),
+            )
+            .expect("runtime id");
+
         let world = World::new();
         world.insert_resource(NetworkOutbox::default());
+        // One-chunk world with a real workbench at the bound position.
+        let provider = WorldChunkProvider::new(std::sync::Arc::new(EmptyWorldStorage));
+        let column = provider
+            .insert_empty_chunk(ChunkKey::new(0, ChunkPosition::new(0, 0)), -64, 319)
+            .unwrap();
+        column
+            .write()
+            .set_block_at(0, 1, 2, 3, BlockRuntimeId(table_runtime.0));
+        let mut manager = sc_world::manager::MinecraftWorldManager::new();
+        let world_id = manager.push_world(
+            sc_utils::world::r#type::WorldType::Overworld,
+            sc_world::world::MinecraftWorld::new(
+                sc_world::manager::MinecraftWorldId::random(),
+                "test".into(),
+                std::path::PathBuf::new(),
+                sc_utils::world::data::MinecraftWorldData {
+                    world_type: Some(sc_utils::world::r#type::WorldType::Overworld),
+                    ..Default::default()
+                },
+                provider,
+            ),
+        );
+        world.insert_resource(manager);
+        world.insert_resource(registry);
+        let published = BlockJsonRegistry::new();
+        published.publish(std::sync::Arc::new(snapshot));
+        world.insert_resource(published);
         let entity = world.spawn((
             ContainerOpen::at_workstation(
                 7,
                 sc_recipe::StationKind::CraftingTable,
-                sc_world::manager::MinecraftWorldId::random(),
+                world_id,
                 (1, 2, 3),
             ),
             MinecraftEntityId(42),
@@ -2327,11 +2476,9 @@ mod tests {
         let mut outbox = outbox;
         let intents = outbox.drain();
         let close = intents.iter().find_map(|intent| match intent {
-            NetworkIntent::ClosePlayerInventory {
-                window_id,
-                container_type,
-                ..
-            } => Some((*window_id, *container_type)),
+            NetworkIntent::ClosePlayerInventory(payload) => {
+                Some((payload.window_id, payload.container_type))
+            }
             _ => None,
         });
         assert_eq!(close, Some((7, 1)), "回显窗口号 7、真实类型 WORKBENCH(1)");
@@ -2339,7 +2486,7 @@ mod tests {
 
     /// Break progress is a **per-tick increment** (accumulated by clients); the step formula matches `65535 / breakTick`.
     #[test]
-    fn break_progress_step_matches_pnx_formula() {
+    fn break_progress_step_matches_formula() {
         assert_eq!(break_progress_step(20), 65_535 / 20); // 旧常量行为（回退时长）
         assert_eq!(break_progress_step(30), 65_535 / 30); // stone 1.5s
         assert_eq!(break_progress_step(60), 65_535 / 60); // coal_ore 3s

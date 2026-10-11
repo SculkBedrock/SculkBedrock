@@ -54,7 +54,7 @@ mod tests {
     use sc_binary::ByteWriter;
 
     #[test]
-    fn network_settings_matches_pnx_2168_zlib_layout() {
+    fn network_settings_matches_2168_zlib_layout() {
         let packet = NetworkSettings {
             compression_threshold: 1,
             compression_algorithm: CompressionAlgorithm::Zlib,

@@ -18,10 +18,11 @@ use sc_item::{ItemRegistry, ItemStack};
 use sc_log::t_log;
 use sc_utils::game::client::MinecraftClient;
 
-use crate::item_drop::ItemDropStore;
-use crate::net::{IntentReliability, NetworkIntent, NetworkOutbox, ParticleCue, SoundCue};
-use crate::net_backpressure::IntentPublisher;
-use crate::net_faults::PendingConnectionFaults;
+use crate::item::ItemDropStore;
+use crate::net::{
+    IntentPublisher, IntentReliability, NetworkOutbox, ParticleCue,
+    PendingConnectionFaults, PlayParticle, PlaySound, SoundCue, UpdateBlock,
+};
 
 /// Drop receipt for one `OperationId` (in-memory idempotency).
 ///
@@ -192,7 +193,7 @@ pub fn block_changed_to_outbox(
             break;
         };
         if change.flags & update_flags::NETWORK != 0 {
-            publisher.publish(NetworkIntent::UpdateBlock {
+            publisher.publish(UpdateBlock {
                 world_id: change.world_id.clone(),
                 dimension: change.dimension,
                 incarnation: change.incarnation,
@@ -216,7 +217,7 @@ pub fn block_changed_to_outbox(
                 && change.flags & update_flags::NO_GRAPHIC == 0
                 && matches!(change.cause, BlockChangeCause::Player(_))
             {
-                publisher.publish(NetworkIntent::PlaySound {
+                publisher.publish(PlaySound {
                     world_id: change.world_id.clone(),
                     cue: SoundCue::BlockPlace,
                     data: change.current.0 as i32,
@@ -234,7 +235,7 @@ pub fn block_changed_to_outbox(
         if change.flags & update_flags::NO_GRAPHIC == 0 {
             // Only the destroy-block particle broadcasts; break sounds
             // stay client-predicted (server echo would double-play).
-            publisher.publish(NetworkIntent::PlayParticle {
+            publisher.publish(PlayParticle {
                 world_id: change.world_id.clone(),
                 cue: ParticleCue::BlockBreak,
                 data: change.previous.0 as i32,
@@ -251,6 +252,12 @@ pub fn block_changed_to_outbox(
             .map(|context| context.creative)
             .unwrap_or_else(|| is_creative_player(&world, &change.cause))
         {
+            // Identity still goes (the block is gone); contents drop nothing.
+            crate::block_entity::destroy_block_entity(
+                &world,
+                &change.world_id,
+                (change.position.x, change.position.y, change.position.z),
+            );
             continue;
         }
         // Idempotent: one OperationId rolls dice at most once.
@@ -261,6 +268,14 @@ pub fn block_changed_to_outbox(
             );
             continue;
         }
+        // Tracked process contents (furnace slots) join the break drops
+        // (identity is destroyed whether or not anything was inside).
+        let process_contents = crate::block_entity::take_break_contents(
+            &world,
+            &change.world_id,
+            (change.position.x, change.position.y, change.position.z),
+        )
+        .unwrap_or_default();
         // Fortune level: limited implementation (no enchant table).
         // Harvest flag comes from the break request snapshot.
         let hand = if let Some(context) = &change.break_context {
@@ -268,7 +283,7 @@ pub fn block_changed_to_outbox(
         } else {
             match &change.cause {
                 BlockChangeCause::Player(entity) => {
-                    crate::interaction::hand_snapshot(&world, entity)
+                    crate::block::hand_snapshot(&world, entity)
                 }
                 _ => sc_block::mining_drops::HandSnapshot {
                     item: None,
@@ -282,7 +297,7 @@ pub fn block_changed_to_outbox(
         let fortune_level = hand.fortune_level;
         let harvested = non_player
             || harvested_for_hand(&block_registry, &json_registry, change.previous.0, &hand);
-        if let Some(stacks) = roll_break_drops(
+        let mut stacks = roll_break_drops(
             &block_registry,
             &json_registry,
             &item_registry,
@@ -291,7 +306,12 @@ pub fn block_changed_to_outbox(
             harvested,
             hand.item.as_deref(),
             &change,
-        ) {
+        )
+        .unwrap_or_default();
+        // Container contents are not block drops (they roll no table), but
+        // they share the pending/backpressure path below.
+        stacks.extend(process_contents);
+        if !stacks.is_empty() {
             let mut pending = PendingBreakDrops { change, stacks };
             if blocked_worlds.contains(&pending.change.world_id)
                 || !publish_break_drops(&mut pending, &mut drops, &item_registry, &mut publisher)
@@ -458,6 +478,7 @@ fn deterministic_jitter(change: &sc_block::write::BlockChanged, stack: &ItemStac
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::net::NetworkIntent;
     use sc_block::block_json::{compile_bundle, BlockJsonRegistry};
     use sc_block::registry::BlockStateRegistry;
     use sc_packloader::block::{
@@ -536,7 +557,7 @@ mod tests {
         let block_registry = BlockStateRegistry::from_block_snapshot(&snapshot);
         let json_registry = BlockJsonRegistry::new();
         json_registry.publish(std::sync::Arc::new(snapshot));
-        let mut item_registry = sc_item::ItemRegistry::new();
+        let item_registry = sc_item::ItemRegistry::new();
         item_registry
             .upsert(sc_item::ItemDefinition::new(1, "minecraft:cobblestone").max_stack_size(64));
         item_registry.upsert(sc_item::ItemDefinition::new(2, "minecraft:coal").max_stack_size(64));
@@ -590,8 +611,8 @@ mod tests {
         assert_eq!(receipts.pending[0].stacks, expected);
         drop(receipts);
         let sent = world.get_resource_mut::<NetworkOutbox>().unwrap().drain();
-        assert!(sent.iter().any(|intent| matches!(intent, NetworkIntent::SpawnItemEntity { world_id, .. } if world_id == &other.world_id)));
-        assert!(!sent.iter().any(|intent| matches!(intent, NetworkIntent::SpawnItemEntity { world_id, .. } if world_id == &change.world_id)));
+        assert!(sent.iter().any(|intent| matches!(intent, NetworkIntent::SpawnItemEntity(p) if p.world_id == other.world_id)));
+        assert!(!sent.iter().any(|intent| matches!(intent, NetworkIntent::SpawnItemEntity(p) if p.world_id == change.world_id)));
         system.run(&world);
         assert_eq!(
             world.get_resource::<DropReceipts>().unwrap().pending[0].stacks,
@@ -627,7 +648,118 @@ mod tests {
         world.insert_resource(DropReceipts::default());
         block_changed_to_outbox.into_system().run(&world);
         assert!(world.get_resource_mut::<NetworkOutbox>().unwrap().drain().iter().any(|intent|
-            matches!(intent, NetworkIntent::SpawnItemEntity { stack, .. } if stack.runtime_id == 1)));
+            matches!(intent, NetworkIntent::SpawnItemEntity(p) if p.stack.runtime_id == 1)));
+    }
+
+    /// S4: breaking a tracked furnace drops its container contents through
+    /// the same pending path as block drops, destroys the identity, and
+    /// never double-drops on retry; creative breaks destroy without drops.
+    #[test]
+    fn tracked_break_drops_process_contents_once() {
+        use sc_block::workstation::SlotRole;
+        use sc_ecs::system::{IntoSystem, System};
+        let (json, blocks, items) = compile_test_bundle();
+        let runtime = blocks
+            .state(blocks.state_of("example:ore", &[]).unwrap())
+            .unwrap()
+            .hash;
+        fn track(
+            world: &World,
+            world_id: &sc_world::manager::MinecraftWorldId,
+            input: (u16, u16),
+            fuel: (u16, u16),
+        ) {
+            let entity = world.spawn((
+                crate::block_entity::BlockEntityRef {
+                    world: world_id.clone(),
+                    pos: (3, 64, 5),
+                    kind: crate::block_entity::BlockEntityKind::Furnace(
+                        sc_recipe::StationKind::Furnace,
+                    ),
+                },
+                crate::inventory::crafting::BlockProcessState::new(
+                    sc_recipe::StationKind::Furnace,
+                    vec![SlotRole::Input, SlotRole::Fuel, SlotRole::Result],
+                    200,
+                ),
+            ));
+            let process = world
+                .get_component::<crate::inventory::crafting::BlockProcessState>(&entity)
+                .expect("刚挂载");
+            process.set_slot(SlotRole::Input, ItemStack::new(input.0, input.1));
+            process.set_slot(SlotRole::Fuel, ItemStack::new(fuel.0, fuel.1));
+            // Track it (the hook is index-driven; spawning alone is not enough).
+            world
+                .get_resource_mut::<crate::block_entity::BlockEntityIndex>()
+                .expect("index")
+                .insert(world_id.clone(), (3, 64, 5), entity);
+        }
+        fn coal_spawns(world: &World) -> Vec<(u16, u16)> {
+            world
+                .get_resource_mut::<NetworkOutbox>()
+                .unwrap()
+                .drain()
+                .into_iter()
+                .filter_map(|intent| match intent {
+                    NetworkIntent::SpawnItemEntity(payload) => (payload.stack.runtime_id == 2)
+                        .then_some((payload.stack.runtime_id, payload.stack.count)),
+                    _ => None,
+                })
+                .collect()
+        }
+        let world = World::new();
+        world.insert_resource(json);
+        world.insert_resource(blocks);
+        world.insert_resource(items);
+        world.insert_resource(ItemDropStore::default());
+        world.insert_resource(NetworkOutbox::default());
+        world.insert_resource(BlockChangedQueue::default());
+        world.insert_resource(DropReceipts::default());
+        world.insert_resource(crate::block_entity::BlockEntityIndex::default());
+        // Survival break: coal input x3 + coal fuel x1 join the ore drops.
+        let change = fake_change(runtime, 200);
+        let survival_world = change.world_id.clone();
+        track(&world, &change.world_id, (2, 3), (2, 1));
+        world
+            .get_resource_mut::<BlockChangedQueue>()
+            .unwrap()
+            .push(change);
+        block_changed_to_outbox.into_system().run(&world);
+        let spawns = coal_spawns(&world);
+        assert!(spawns.contains(&(2, 3)), "input coal drops: {spawns:?}");
+        assert!(spawns.contains(&(2, 1)), "fuel coal drops: {spawns:?}");
+        // Identity destroyed with the block.
+        let index = world
+            .get_resource::<crate::block_entity::BlockEntityIndex>()
+            .unwrap();
+        assert!(index.get(&survival_world, (3, 64, 5)).is_none());
+        drop(index);
+        // Retry (same operation) never re-drops: claim dedups and the
+        // entity is already gone.
+        block_changed_to_outbox.into_system().run(&world);
+        assert!(coal_spawns(&world).is_empty(), "no double drops");
+        // Creative break: destroys without dropping.
+        let mut creative = fake_change(runtime, 201);
+        track(&world, &creative.world_id, (2, 3), (2, 1));
+        creative.break_context = Some(sc_block::write::BlockBreakContext {
+            hand: sc_block::mining_drops::HandSnapshot {
+                item: None,
+                efficiency_level: 0,
+                fortune_level: 0,
+            },
+            creative: true,
+        });
+        let creative_world = creative.world_id.clone();
+        world
+            .get_resource_mut::<BlockChangedQueue>()
+            .unwrap()
+            .push(creative);
+        block_changed_to_outbox.into_system().run(&world);
+        assert!(coal_spawns(&world).is_empty(), "creative drops nothing");
+        let index = world
+            .get_resource::<crate::block_entity::BlockEntityIndex>()
+            .unwrap();
+        assert!(index.get(&creative_world, (3, 64, 5)).is_none());
     }
 
     #[test]
@@ -650,8 +782,8 @@ mod tests {
                 &mut IntentPublisher::new(&mut outbox),
             );
             for intent in outbox.drain() {
-                if let NetworkIntent::SpawnItemEntity { stack, .. } = intent {
-                    total += stack.count;
+                if let NetworkIntent::SpawnItemEntity(payload) = intent {
+                    total += payload.stack.count;
                     packets += 1;
                 }
             }
@@ -732,7 +864,7 @@ mod tests {
             outbox
                 .drain()
                 .iter()
-                .filter(|intent| matches!(intent, NetworkIntent::SpawnItemEntity { .. }))
+                .filter(|intent| matches!(intent, NetworkIntent::SpawnItemEntity(_)))
                 .count(),
             1
         );
@@ -760,7 +892,7 @@ mod tests {
         let (json_registry, block_registry, item_registry) = compile_test_bundle();
         // Plain blocks without drops yield None (never guess by name).
         let plain_hash = {
-            let idx = json_registry
+            let _idx = json_registry
                 .get()
                 .unwrap()
                 .default_state_idx("example:plain")
@@ -863,7 +995,7 @@ mod tests {
             sc_entity::motion::Position::new(0.0, 64.0, 0.0),
             sc_entity::motion::Velocity::default(),
             &registry,
-            &mut crate::net_backpressure::IntentPublisher::new(&mut outbox),
+            &mut crate::net::IntentPublisher::new(&mut outbox),
         );
         assert!(admitted);
         // max 2: 5 -> 2+2+1, total unchanged.
@@ -874,7 +1006,7 @@ mod tests {
             intents
                 .iter()
                 .filter_map(|i| match i {
-                    NetworkIntent::SpawnItemEntity { stack, .. } => Some(stack.count),
+                    NetworkIntent::SpawnItemEntity(payload) => Some(payload.stack.count),
                     _ => None,
                 })
                 .sum()
@@ -898,7 +1030,7 @@ mod tests {
                 sc_entity::motion::Position::new(0.0, 64.0, 0.0),
                 sc_entity::motion::Velocity::default(),
                 &registry,
-                &mut crate::net_backpressure::IntentPublisher::new(&mut outbox),
+                &mut crate::net::IntentPublisher::new(&mut outbox),
             );
             assert!(admitted);
         }
@@ -909,7 +1041,7 @@ mod tests {
             sc_entity::motion::Position::new(0.0, 64.0, 0.0),
             sc_entity::motion::Velocity::default(),
             &registry,
-            &mut crate::net_backpressure::IntentPublisher::new(&mut outbox),
+            &mut crate::net::IntentPublisher::new(&mut outbox),
         );
         assert!(!busy, "满载必须返回 busy");
     }

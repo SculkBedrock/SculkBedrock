@@ -202,6 +202,22 @@ impl Default for PlayerListEntry {
     }
 }
 
+/// Sanitize one skin image for the wire: bytes must be exactly `w*h*4`.
+/// Login parsing only validates the main image; cape/animation images with
+/// mismatched claims (or failed base64 decodes) echo verbatim and the real
+/// client over-reads and drops the connection. Inconsistent images degrade
+/// to an empty 0x0 image instead of killing the session.
+fn consistent_image(width: i32, height: i32, bytes: &[u8]) -> (i32, i32, &[u8]) {
+    let expected = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(4));
+    if width >= 0 && height >= 0 && expected.is_some_and(|expected| expected == bytes.len()) {
+        (width, height, bytes)
+    } else {
+        (0, 0, &[])
+    }
+}
+
 /// PlayerList ADD entry body:
 /// uuid + entityId(varlong) + name + xuid + platformChatId + buildPlatform(LInt)
 /// + skin + isTeacher + isHost + isSubClient + color(LInt).
@@ -217,11 +233,62 @@ fn write_player_list_add_entry(buf: &mut ByteWriter, entry: &PlayerListEntry) ->
                                              // during world init).
     let default_skin = Skin::default();
     let skin = entry.skin.as_ref().unwrap_or(&default_skin);
+    // Skin-echo consistency report: mismatched image claims used to echo
+    // verbatim and over-read the real client into a disconnect; they now
+    // degrade to empty images below (see consistent_image).
+    {
+        let (sw, sh) = skin.dimensions();
+        let cape_ok = (skin.cape_width as usize)
+            .checked_mul(skin.cape_height as usize)
+            .and_then(|p| p.checked_mul(4))
+            .is_some_and(|n| n == skin.cape_data.len());
+        let anim_bad = skin
+            .animations
+            .iter()
+            .filter(|a| {
+                (a.width as usize)
+                    .checked_mul(a.height as usize)
+                    .and_then(|p| p.checked_mul(4))
+                    .is_none_or(|n| n != a.image.len())
+            })
+            .count();
+        log::debug!(
+            "playerlist skin echo: id={} main={}x{}+{}B cape={}x{}+{}B consistent={} anims={} inconsistent_anims={} pfid_len={} patch_len={} geo_len={} geo_preview={:?} animdata_len={} capeid={:?} fullid={:?} arm={:?} color={:?} pieces={} tints={} premium={} persona={} capeclassic={} primary={} overriding={}",
+            skin.skin_id(),
+            sw,
+            sh,
+            skin.skin_data().len(),
+            skin.cape_width,
+            skin.cape_height,
+            skin.cape_data.len(),
+            cape_ok,
+            skin.animations.len(),
+            anim_bad,
+            skin.play_fab_id.len(),
+            skin.skin_resource_patch.len(),
+            skin.geometry_data.len(),
+            skin.geometry_data.get(..skin.geometry_data.len().min(80)),
+            skin.animation_data.len(),
+            skin.cape_id,
+            skin.full_skin_id,
+            skin.arm_size,
+            skin.skin_color,
+            skin.persona_pieces.len(),
+            skin.tint_colors.len(),
+            skin.premium,
+            skin.persona,
+            skin.cape_on_classic,
+            true,
+            skin.overriding_player_appearance
+        );
+    }
     buf.write_string(skin.skin_id())?; // skinId
     if !crate::protocol::version::protocol_at_least(
         crate::protocol::version::PROTOCOL_VERSION_1_26_60,
     ) {
-        buf.write_string(&skin.play_fab_id)?; // playFabId (removed in 2225)
+        // Skin-internal PlayFabID (2nd skin field, gone in 2225). Never an
+        // entry-level field; deleting this desyncs the skin.
+        buf.write_string(&skin.play_fab_id)?; // playFabId
     }
     buf.write_string(if skin.skin_resource_patch.is_empty() {
         // Fall back to default Steve geometry when the client omits it.
@@ -229,24 +296,32 @@ fn write_player_list_add_entry(buf: &mut ByteWriter, entry: &PlayerListEntry) ->
     } else {
         &skin.skin_resource_patch
     })?; // skinResourcePatch
-    let (skin_width, skin_height) = skin.dimensions();
+    let (skin_width, skin_height, skin_bytes) =
+        consistent_image(skin.dimensions().0, skin.dimensions().1, skin.skin_data());
     buf.write_i32_le(skin_width)?; // putImage: width (LInt)
     buf.write_i32_le(skin_height)?; // putImage: height (LInt)
-    buf.write_slice(skin.skin_data())?; // putImage: data (byte array)
+    buf.write_slice(skin_bytes)?; // putImage: data (byte array)
     buf.write_var_u32(skin.animations.len() as u32)?; // animations.size
     for anim in &skin.animations {
-        buf.write_i32_le(anim.width as i32)?;
-        buf.write_i32_le(anim.height as i32)?;
-        buf.write_slice(&anim.image)?;
+        let (width, height, image) =
+            consistent_image(anim.width as i32, anim.height as i32, &anim.image);
+        buf.write_i32_le(width)?;
+        buf.write_i32_le(height)?;
+        buf.write_slice(image)?;
         // animation_type/expression_type are varints; fixed-width writes
         // would shift all following skin fields.
         buf.write_var_u32(anim.texture_type as u32)?;
         buf.write_f32_le(anim.frames)?;
         buf.write_var_u32(anim.expression_type as u32)?;
     }
-    buf.write_i32_le(skin.cape_width as i32)?; // capeData width (LInt)
-    buf.write_i32_le(skin.cape_height as i32)?; // capeData height (LInt)
-    buf.write_slice(&skin.cape_data)?; // capeData (byte array)
+    let (cape_width, cape_height, cape_bytes) = consistent_image(
+        skin.cape_width as i32,
+        skin.cape_height as i32,
+        &skin.cape_data,
+    );
+    buf.write_i32_le(cape_width)?; // capeData width (LInt)
+    buf.write_i32_le(cape_height)?; // capeData height (LInt)
+    buf.write_slice(cape_bytes)?; // capeData (byte array)
     buf.write_string(if skin.geometry_data.is_empty() {
         "{}" // default empty geometry
     } else {
@@ -280,9 +355,11 @@ fn write_player_list_add_entry(buf: &mut ByteWriter, entry: &PlayerListEntry) ->
     }
     buf.write_var_u32(skin.tint_colors.len() as u32)?; // tintColors.size
     for tint in &skin.tint_colors {
-        // Tint type is a string (e.g. "persona_mouth"), not an enum ordinal.
+        // Tint type is a string (e.g. "persona_mouth"), not an enum ordinal,
+        // followed directly by exactly 4 colors. There is NO inner count
+        // here (the v2168 skin tint-map layout reads 4 LInts); an extra
+        // varint desyncs the skin tail and the client drops the connection.
         buf.write_string(&tint.piece_type)?;
-        buf.write_var_u32(tint.colors.len() as u32)?;
         for i in 0..4 {
             // Exactly 4 colors are required; missing entries are zero.
             let color = tint
@@ -553,6 +630,7 @@ pub struct CraftingData {
     pub smithing_transform: Vec<CraftingSmithingWire>,
     pub brewing: Vec<CraftingBrewingWire>,
     pub containers: Vec<CraftingContainerWire>,
+    pub reducers: Vec<CraftingReducerWire>,
 }
 
 /// 2168 shaped entry.
@@ -612,6 +690,20 @@ pub struct CraftingContainerWire {
     pub output_id: i32,
 }
 
+/// 2168 material-reducer entry: input item key plus element outputs.
+#[derive(Clone, Debug)]
+pub struct CraftingReducerWire {
+    pub input_id: i32,
+    pub outputs: Vec<CraftingReducerOutput>,
+}
+
+/// 2168 material-reducer output (numeric item id + count).
+#[derive(Clone, Debug)]
+pub struct CraftingReducerOutput {
+    pub item_id: i32,
+    pub count: i32,
+}
+
 /// One wire ingredient: exact item or tag. This is the wire form of
 /// `IngredientChoice`, not the internal spec itself.
 #[derive(Clone, Debug)]
@@ -647,6 +739,7 @@ impl CraftingData {
             smithing_transform: Vec::new(),
             brewing: Vec::new(),
             containers: Vec::new(),
+            reducers: Vec::new(),
         }
     }
 
@@ -925,24 +1018,53 @@ impl CraftingData {
                         }
                     }
                 }
-                RecipeBody::MaterialReducer(_) => {
-                    disabled.push((
-                        recipe.identifier.clone(),
-                        "material reducer has no 2168 wire segment in this build".to_string(),
-                    ));
+                RecipeBody::MaterialReducer(body) => {
+                    // Input resolves modern first, then legacy `id:data`
+                    // forms (bucket:8/10, sand:1, stone_slab3:1, ...).
+                    let Some(input_id) = reducer_input_id(&body.input, item_runtime) else {
+                        disabled.push((
+                            recipe.identifier.clone(),
+                            "unknown reducer input".to_string(),
+                        ));
+                        continue;
+                    };
+                    let mut outputs = Vec::new();
+                    let mut ok = true;
+                    for out in &body.outputs {
+                        match item_runtime(&out.identifier) {
+                            Some((runtime_id, _)) => outputs.push(CraftingReducerOutput {
+                                item_id: runtime_id as i32,
+                                count: out.count.max(1) as i32,
+                            }),
+                            None => {
+                                disabled.push((
+                                    recipe.identifier.clone(),
+                                    format!("unknown reducer output '{}'", out.identifier),
+                                ));
+                                ok = false;
+                                break;
+                            }
+                        }
+                    }
+                    if !ok {
+                        continue;
+                    }
+                    data.reducers
+                        .push(CraftingReducerWire { input_id, outputs });
                 }
             }
         }
         (data, disabled)
     }
 
-    pub fn counts(&self) -> (usize, usize, usize, usize, usize) {
+    pub fn counts(&self) -> (usize, usize, usize, usize, usize, usize) {
         (
             self.shaped.len(),
             self.shapeless.len(),
             self.smithing_transform.len(),
             self.brewing.len(),
             self.containers.len(),
+            self.reducers.len(),
         )
     }
 }
@@ -992,29 +1114,153 @@ fn choice_to_numeric(
     }
 }
 
+/// Bedrock potion damage id for `minecraft:potion_type:X` (X lowercased).
+/// Stable protocol potion ids 0-46 (name, string id, damage).
+pub(crate) fn potion_damage(name: &str) -> Option<i32> {
+    Some(match name {
+        "water" => 0,
+        "mundane" => 1,
+        "long_mundane" => 2,
+        "thick" => 3,
+        "awkward" => 4,
+        "nightvision" => 5,
+        "long_nightvision" => 6,
+        "invisibility" => 7,
+        "long_invisibility" => 8,
+        "leaping" => 9,
+        "long_leaping" => 10,
+        "strong_leaping" => 11,
+        "fire_resistance" => 12,
+        "long_fire_resistance" => 13,
+        "swiftness" => 14,
+        "long_swiftness" => 15,
+        "strong_swiftness" => 16,
+        "slowness" => 17,
+        "long_slowness" => 18,
+        "water_breathing" => 19,
+        "long_water_breathing" => 20,
+        "healing" => 21,
+        "strong_healing" => 22,
+        "harming" => 23,
+        "strong_harming" => 24,
+        "poison" => 25,
+        "long_poison" => 26,
+        "strong_poison" => 27,
+        "regeneration" => 28,
+        "long_regeneration" => 29,
+        "strong_regeneration" => 30,
+        "strength" => 31,
+        "long_strength" => 32,
+        "strong_strength" => 33,
+        "weakness" => 34,
+        "long_weakness" => 35,
+        "wither" => 36,
+        "turtle_master" => 37,
+        "long_turtle_master" => 38,
+        "strong_turtle_master" => 39,
+        "slow_falling" => 40,
+        "long_slow_falling" => 41,
+        "strong_slowness" => 42,
+        "wind_charged" => 43,
+        "weaving" => 44,
+        "oozing" => 45,
+        "infested" => 46,
+        _ => return None,
+    })
+}
+
+/// Legacy reducer `id:data` inputs → modern item names. Each mapping is
+/// pack-self-validated: the legacy and modern twin files carry identical
+/// outputs (checked offline; see the audit probe). `:0` is the vanilla
+/// default variant (same item).
+pub(crate) fn legacy_reducer_item(identifier: &str, data: i32) -> Option<&'static str> {
+    Some(match (identifier, data) {
+        ("minecraft:bucket", 8) => "minecraft:water_bucket",
+        ("minecraft:bucket", 10) => "minecraft:lava_bucket",
+        ("minecraft:sand", 0) => "minecraft:sand",
+        ("minecraft:sand", 1) => "minecraft:red_sand",
+        ("minecraft:sandstone", 0) => "minecraft:sandstone",
+        ("minecraft:sandstone", 1) => "minecraft:chiseled_sandstone",
+        ("minecraft:sandstone", 2) => "minecraft:cut_sandstone",
+        ("minecraft:sandstone", 3) => "minecraft:smooth_sandstone",
+        ("minecraft:red_sandstone", 0) => "minecraft:red_sandstone",
+        ("minecraft:red_sandstone", 1) => "minecraft:chiseled_red_sandstone",
+        ("minecraft:red_sandstone", 2) => "minecraft:cut_red_sandstone",
+        ("minecraft:red_sandstone", 3) => "minecraft:smooth_red_sandstone",
+        ("minecraft:dirt", 0) => "minecraft:dirt",
+        ("minecraft:grass", 0) => "minecraft:tallgrass",
+        ("minecraft:cobblestone_wall", 0) => "minecraft:cobblestone_wall",
+        ("minecraft:quartz_block", 0) => "minecraft:quartz_block",
+        ("minecraft:stone_slab", 1) => "minecraft:sandstone_slab",
+        ("minecraft:stone_slab2", 0) => "minecraft:red_sandstone_slab",
+        ("minecraft:stone_slab2", 5) => "minecraft:mossy_cobblestone_slab",
+        ("minecraft:stone_slab2", 6) => "minecraft:smooth_sandstone_slab",
+        ("minecraft:stone_slab3", 1) => "minecraft:smooth_red_sandstone_slab",
+        ("minecraft:stone_slab4", 3) => "minecraft:cut_sandstone_slab",
+        ("minecraft:stone_slab4", 4) => "minecraft:cut_red_sandstone_slab",
+        _ => return None,
+    })
+}
+
+/// Reducer input → wire key (input item runtime id). Modern names resolve
+/// directly; legacy `id:data` forms go through [`legacy_reducer_item`].
+/// Dict-form `{"item", "data": 0}` inputs are the same item.
+fn reducer_input_id(
+    spec: &sc_recipe::IngredientSpec,
+    resolve: &dyn Fn(&str) -> Option<(u16, u32)>,
+) -> Option<i32> {
+    let choice = spec.choices.first()?;
+    match choice {
+        sc_recipe::IngredientChoice::Item { identifier, data } => {
+            if let Some((runtime_id, _)) = resolve(identifier) {
+                return Some(runtime_id as i32);
+            }
+            let modern = legacy_reducer_item(identifier, data.unwrap_or(0))?;
+            let (runtime_id, _) = resolve(modern)?;
+            Some(runtime_id as i32)
+        }
+        sc_recipe::IngredientChoice::Tag { .. } => None,
+    }
+}
+
+/// Recipe ingredient wire type ids (v2168 boolean-style switch).
+mod ingredient_kind {
+    pub const EMPTY: u32 = 0;
+    pub const PRESENT: u32 = 1;
+}
+
+/// v2168 recipe ingredient bodies (wire-verified against real 1.26.40 clients):
+/// empty = switch 0 + varint aux + varint count; otherwise switch 1 +
+/// type-id string (`name` / `item_tag`) + body + varint count. There is NO
+/// u8 descriptor tag on this protocol (Mojang's 2225 docs describe the
+/// newer cereal layout; writing it here desyncs 2168 clients on sight).
 fn write_ingredient(
     buf: &mut ByteWriter,
     ingredient: &CraftingIngredientWire,
 ) -> Result<(), Error> {
     match ingredient {
         CraftingIngredientWire::Empty => {
-            buf.write_var_u32(0)?;
-            buf.write_u16_le(0)?;
+            buf.write_var_u32(ingredient_kind::EMPTY)?;
+            buf.write_var_i32(32767)?; // aux: any
+            buf.write_var_i32(0)?; // count
         }
         CraftingIngredientWire::Item {
             identifier,
             data,
             count,
         } => {
-            buf.write_var_u32(1)?;
+            buf.write_var_u32(ingredient_kind::PRESENT)?;
+            buf.write_string("name")?;
             buf.write_string(identifier)?;
             buf.write_var_i32(*data)?;
-            buf.write_u16_le(*count as u16)?;
+            buf.write_var_i32(*count)?;
         }
         CraftingIngredientWire::Tag { tag, count, .. } => {
-            buf.write_var_u32(3)?;
+            buf.write_var_u32(ingredient_kind::PRESENT)?;
+            buf.write_string("item_tag")?;
             buf.write_string(tag)?;
-            buf.write_u16_le(*count as u16)?;
+            buf.write_var_i32(32767)?; // aux: any
+            buf.write_var_i32(*count)?;
         }
     }
     Ok(())
@@ -1109,7 +1355,9 @@ impl Writer for CraftingData {
             buf.write_string(&smithing.tag)?;
             buf.write_var_u32(smithing.network_id)?;
         }
-        // smithing trim: one fixed minecraft:smithing_armor_trim entry.
+        // smithing trim: one fixed minecraft:smithing_armor_trim entry whose
+        // three ingredients are ItemTag descriptors in v2168 boolean style
+        // (switch 1 + "item_tag" + tag + varint aux + varint count).
         buf.write_var_u32(1)?;
         buf.write_string("minecraft:smithing_armor_trim")?;
         for item_tag in [
@@ -1117,11 +1365,10 @@ impl Writer for CraftingData {
             "minecraft:trimmable_armors",
             "minecraft:trim_materials",
         ] {
-            // putTrimRecipeIngredient:varuint(1) + "item_tag" + tag + meta(32767) + count(1)
-            buf.write_var_u32(1)?;
+            buf.write_var_u32(ingredient_kind::PRESENT)?;
             buf.write_string("item_tag")?;
             buf.write_string(item_tag)?;
-            buf.write_var_i32(32767)?; // meta
+            buf.write_var_i32(32767)?; // aux: any
             buf.write_var_i32(1)?; // count
         }
         buf.write_string("smithing_table")?; // CRAFTING_TAG_SMITHING_TABLE
@@ -1141,7 +1388,15 @@ impl Writer for CraftingData {
             buf.write_var_i32(container.ingredient_id)?;
             buf.write_var_i32(container.output_id)?;
         }
-        buf.write_var_u32(0)?; // material reducers size
+        buf.write_var_u32(self.reducers.len() as u32)?;
+        for reducer in &self.reducers {
+            buf.write_var_i32(reducer.input_id)?;
+            buf.write_var_u32(reducer.outputs.len() as u32)?;
+            for output in &reducer.outputs {
+                buf.write_var_i32(output.item_id)?;
+                buf.write_var_i32(output.count)?;
+            }
+        }
         buf.write_bool(self.clean_recipes)
     }
 }
@@ -1236,11 +1491,147 @@ mod tests {
         persona_piece_type_id, write_player_list_add_entry, CraftingData, PlayerListEntry,
         SetSpawnPosition,
     };
-    use sc_binary::interfaces::{Reader, Writer};
+    use sc_binary::interfaces::Writer;
     use sc_binary::{ByteReader, ByteWriter};
 
     #[test]
-    fn set_spawn_position_matches_pnx_join_layout() {
+    fn inconsistent_skin_images_degrade_to_empty_instead_of_desync() {
+        use super::consistent_image;
+        // Consistent images pass through untouched.
+        let bytes = vec![0u8; 2 * 3 * 4];
+        let (w, h, out) = consistent_image(2, 3, &bytes);
+        assert_eq!((w, h), (2, 3));
+        assert_eq!(out.len(), 24);
+        // Mismatched claims (e.g. failed base64 decode with nonzero
+        // dimensions) degrade to an empty 0x0 image: the client reads
+        // exactly what the dimensions promise, never over-reading.
+        assert_eq!(consistent_image(64, 64, &[]), (0, 0, [].as_slice()));
+        assert_eq!(
+            consistent_image(64, 64, &vec![0u8; 10]),
+            (0, 0, [].as_slice())
+        );
+        assert_eq!(consistent_image(0, 0, &[]), (0, 0, [].as_slice()));
+    }
+
+    /// Full persona-style ADD entry walks clean under the v2168 layout
+    /// (header, entry
+    /// fields, skin block, tail flags, zero trailing bytes. A structural
+    /// deviation here desyncs the client into a disconnect, so the walk
+    /// asserts every field, not just the framing.
+    #[test]
+    fn player_list_add_persona_entry_walks_clean_under_v2168_layout() {
+        use super::PlayerList;
+        use crate::protocol::version::{with_protocol_version, PROTOCOL_VERSION_1_26_40};
+        use sc_utils::game::skin::{PersonaPiece, PersonaTint, Skin, SkinAnimation};
+        use uuid::Uuid;
+
+        let mut skin = Skin::new(vec![7u8; 64 * 64 * 4], 64, 64, "persona-test")
+            .expect("consistent skin builds");
+        skin.play_fab_id = "pf".to_string();
+        skin.animations.push(SkinAnimation {
+            width: 32,
+            height: 32,
+            image: vec![9u8; 32 * 32 * 4],
+            texture_type: 1,
+            frames: 2.0,
+            expression_type: 0,
+        });
+        skin.persona_pieces.push(PersonaPiece {
+            piece_id: "piece".to_string(),
+            piece_type: "persona_skeleton".to_string(),
+            pack_id: "00000000-0000-0000-0000-000000000000".to_string(),
+            is_default: true,
+            product_id: "prod".to_string(),
+        });
+        skin.tint_colors.push(PersonaTint {
+            piece_type: "persona_mouth".to_string(),
+            colors: vec!["#ff0000".to_string()],
+        });
+        skin.persona = true;
+
+        let packet = PlayerList {
+            list_type: PlayerList::TYPE_ADD,
+            entries: vec![PlayerListEntry {
+                uuid: Uuid::nil(),
+                entity_id: 1,
+                name: "YouZikua".to_string(),
+                xuid: "123".to_string(),
+                platform_chat_id: String::new(),
+                build_platform: 1,
+                skin: Some(skin),
+                ..Default::default()
+            }],
+        };
+        let bytes = with_protocol_version(PROTOCOL_VERSION_1_26_40, || {
+            let mut writer = ByteWriter::new();
+            packet.write(&mut writer).unwrap();
+            writer.as_slice().to_vec()
+        });
+        let mut reader = ByteReader::from(bytes.as_slice());
+        // Header: count + [isAdd + legacy type].
+        assert_eq!(reader.read_var_u32().unwrap(), 1);
+        assert_eq!(reader.read_var_u32().unwrap(), 1);
+        assert_eq!(reader.read_u8().unwrap(), 0);
+        // Entry head.
+        assert_eq!(reader.read_uuid().unwrap(), Uuid::nil());
+        assert_eq!(reader.read_var_i64().unwrap(), 1);
+        assert_eq!(reader.read_string().unwrap(), "YouZikua");
+        assert_eq!(reader.read_string().unwrap(), "123");
+        assert_eq!(reader.read_string().unwrap(), "");
+        assert_eq!(reader.read_i32_le().unwrap(), 1);
+        // Skin block.
+        assert_eq!(reader.read_string().unwrap(), "persona-test");
+        assert_eq!(reader.read_string().unwrap(), "pf");
+        assert!(!reader.read_string().unwrap().is_empty()); // Steve fallback patch
+        let (w, h) = (reader.read_i32_le().unwrap(), reader.read_i32_le().unwrap());
+        let image = reader.read_sized_slice().unwrap();
+        assert_eq!((w, h), (64, 64));
+        assert_eq!(image.len(), 64 * 64 * 4);
+        assert_eq!(reader.read_var_u32().unwrap(), 1); // one animation
+        let (aw, ah) = (reader.read_i32_le().unwrap(), reader.read_i32_le().unwrap());
+        let anim_image = reader.read_sized_slice().unwrap();
+        assert_eq!((aw, ah), (32, 32));
+        assert_eq!(anim_image.len(), 32 * 32 * 4);
+        assert_eq!(reader.read_var_u32().unwrap(), 1); // texture type
+        assert_eq!(reader.read_f32_le().unwrap(), 2.0); // frames
+        assert_eq!(reader.read_var_u32().unwrap(), 0); // expression
+        let (cw, ch) = (reader.read_i32_le().unwrap(), reader.read_i32_le().unwrap());
+        assert_eq!((cw, ch), (0, 0));
+        assert!(reader.read_sized_slice().unwrap().is_empty()); // empty cape
+        assert_eq!(reader.read_string().unwrap(), "{}"); // empty geometry
+        assert_eq!(reader.read_string().unwrap(), "0.0.0"); // engine version
+        assert_eq!(reader.read_string().unwrap(), ""); // animation data
+        assert_eq!(reader.read_string().unwrap(), ""); // cape id
+        assert_eq!(reader.read_string().unwrap(), "persona-test"); // full id echo
+        assert_eq!(reader.read_u8().unwrap(), 1); // wide
+        assert_eq!(reader.read_i32_le().unwrap(), 0); // no skin color
+        assert_eq!(reader.read_var_u32().unwrap(), 1); // one persona piece
+        assert_eq!(reader.read_string().unwrap(), "piece");
+        assert_eq!(reader.read_i32_le().unwrap(), 1); // skeleton
+        assert_eq!(reader.read_uuid().unwrap(), Uuid::nil());
+        assert!(reader.read_bool().unwrap()); // is_default
+        assert_eq!(reader.read_string().unwrap(), "prod");
+        assert_eq!(reader.read_var_u32().unwrap(), 1); // one tint
+        assert_eq!(reader.read_string().unwrap(), "persona_mouth");
+        for _ in 0..4 {
+            reader.read_i32_le().unwrap(); // exactly 4 colors, no inner count
+        }
+        assert!(!reader.read_bool().unwrap()); // premium
+        assert!(reader.read_bool().unwrap()); // persona
+        assert!(!reader.read_bool().unwrap()); // cape on classic
+        assert!(reader.read_bool().unwrap()); // primary user
+        assert!(!reader.read_bool().unwrap()); // overriding appearance
+        assert_eq!(reader.read_string().unwrap(), "false"); // trusted flag
+        assert_eq!(reader.read_string().unwrap(), ""); // profile hash
+        assert!(!reader.read_bool().unwrap()); // teacher
+        assert!(!reader.read_bool().unwrap()); // host
+        assert!(!reader.read_bool().unwrap()); // sub client
+        assert_eq!(reader.read_i32_le().unwrap(), 0); // color
+        assert!(reader.as_slice().is_empty(), "no trailing bytes");
+    }
+
+    #[test]
+    fn set_spawn_position_matches_join_layout() {
         let packet = SetSpawnPosition {
             spawn_type: SetSpawnPosition::TYPE_PLAYER_SPAWN,
             x: 2,
@@ -1293,7 +1684,8 @@ mod tests {
             "minecraft:trimmable_armors",
             "minecraft:trim_materials",
         ] {
-            // putTrimRecipeIngredient:varuint(1) + "item_tag" + tag + meta + count
+            // Trim ingredients are ItemTag descriptors in v2168 boolean
+            // style: switch 1 + "item_tag" + tag + varint aux + varint count.
             assert_eq!(reader.read_var_u32().unwrap(), 1);
             assert_eq!(reader.read_string().unwrap(), "item_tag");
             assert_eq!(reader.read_string().unwrap(), item_tag);
@@ -1447,17 +1839,12 @@ mod tests {
 
     #[test]
     fn complete_version_pack_builds_a_nonempty_crafting_table() {
-        use std::io::Cursor;
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../version_packs/[SC原版版本包] Vanilla-1.26.40.scver"
-        );
-        let Ok(bytes) = std::fs::read(path) else {
+        let Some(mut source) = sc_packloader::test_pack::open_test_pack() else {
+            eprintln!("[skip] 版本包缺失，跳过测试");
             return;
         };
-        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
         let mut version =
-            sc_packloader::version_control::loader::ZippedVersionPack::get_version(&mut zip)
+            sc_packloader::version_control::loader::ZippedVersionPack::get_version(&mut source)
                 .unwrap();
         let runtime = version.take_runtime_id();
         let mut packs = version.take_behavior_packs();
@@ -1560,21 +1947,154 @@ mod tests {
         // PlayFab ID string ("pf" = length prefix + 2 bytes) is gone on 2225.
         assert_eq!(old_bytes.len(), new_bytes.len() + 3);
     }
+    /// Live-pack audit: every compiled recipe must reach the wire.
+    /// Compile-disabled entries must all be Mojang-removed (`deprecated`
+    /// tags); wire-disabled must be empty (the trim recipe rides the
+    /// hardcoded id-1 entry). Skips when no version pack is vendored
+    /// next to the checkout (same pattern as the palette tests).
+    #[test]
+    fn live_pack_recipes_all_reach_the_wire() {
+        let Some(mut source) = sc_packloader::test_pack::open_test_pack() else {
+            eprintln!("[skip] 版本包缺失，跳过配方审计");
+            return;
+        };
+        let mut pack =
+            sc_packloader::version_control::loader::ZippedVersionPack::get_version(&mut source)
+                .expect("pack parses");
+        let budgets = sc_packloader::recipe_source::RecipeSourceBudgets::default();
+        let mut behavior = pack.take_behavior_packs();
+        behavior.sort_by(|(a, _), (b, _)| a.cmp(b));
+        let mut files = Vec::new();
+        for (order, (_, rp)) in behavior.iter().enumerate() {
+            let (mut part, _) =
+                sc_packloader::recipe_source::read_recipes_from_resource_pack(rp, order, &budgets);
+            files.append(&mut part);
+        }
+        let inputs: Vec<sc_recipe::SourceRecipe> = files
+            .iter()
+            .map(|file| {
+                sc_recipe::SourceRecipe::from_parts(
+                    file.pack_name.clone(),
+                    file.pack_order,
+                    file.relative_path.clone(),
+                    file.format_version.clone(),
+                    file.raw.clone(),
+                    file.fingerprint,
+                    file.raw_bytes,
+                )
+            })
+            .collect();
+        let (snapshot, diagnostics) = sc_recipe::RecipeRegistrySnapshot::compile(
+            &inputs,
+            &sc_recipe::CompileBudgets::default(),
+            false,
+        )
+        .expect("compile ok");
+        for entry in &diagnostics.disabled {
+            assert!(
+                entry.reason.contains("deprecated"),
+                "compile-disabled non-deprecated recipe {}: {}",
+                entry.identifier,
+                entry.reason
+            );
+        }
+        let runtime = pack.take_runtime_id();
+        let registry = sc_item::ItemRegistry::new();
+        for (index, entry) in runtime.iter().enumerate() {
+            registry.upsert(sc_item::ItemDefinition::new(
+                (index + 1) as u16,
+                entry.name.clone(),
+            ));
+        }
+        let names: std::collections::HashSet<String> =
+            runtime.iter().map(|entry| entry.name.clone()).collect();
+        let groups: std::collections::HashMap<String, Vec<String>> = pack
+            .take_recipe_groups()
+            .into_iter()
+            .map(|(key, members)| {
+                (
+                    key,
+                    members
+                        .into_iter()
+                        .filter(|member| names.contains(member))
+                        .collect(),
+                )
+            })
+            .filter(|(_, members): &(String, Vec<String>)| !members.is_empty())
+            .collect();
+        let tags = sc_recipe::MapTagResolver::new(groups);
+        let item_runtime = |id: &str| {
+            let runtime = registry.runtime_id_by_name(id).or_else(|| {
+                sc_recipe::rename_alias(&tags, id)
+                    .and_then(|alias| registry.runtime_id_by_name(&alias))
+            })?;
+            let def = registry.get(runtime)?;
+            Some((runtime, def.default_block_runtime_id.unwrap_or(0)))
+        };
+        let brewing_id = |id: &str| {
+            if let Some(rest) = id.strip_prefix("minecraft:potion_type:") {
+                let damage = super::potion_damage(&rest.to_lowercase())?;
+                let runtime = registry.runtime_id_by_name("minecraft:potion")?;
+                return Some((runtime as i32, damage));
+            }
+            let (runtime, _) = item_runtime(id)?;
+            Some((runtime as i32, 0))
+        };
+        let (data, disabled) = CraftingData::from_snapshot(&snapshot, &item_runtime, &brewing_id);
+        // Compile-disabled (Mojang-removed, asserted above) flow through
+        // with a prefix, as does the trim recipe absorbed by the hardcoded
+        // id-1 wire entry the writer always emits; only genuine wire
+        // omissions must be empty.
+        let absorbed = disabled
+            .iter()
+            .filter(|(_, reason)| reason.starts_with("absorbed by hardcoded"))
+            .count();
+        let wire_only: Vec<_> = disabled
+            .into_iter()
+            .filter(|(_, reason)| {
+                !reason.starts_with("compile disabled:")
+                    && !reason.starts_with("absorbed by hardcoded")
+            })
+            .collect();
+        assert!(wire_only.is_empty(), "wire-disabled recipes: {wire_only:?}");
+        let sent = data.shaped.len()
+            + data.shapeless.len()
+            + data.smithing_transform.len()
+            + data.brewing.len()
+            + data.containers.len()
+            + data.reducers.len();
+        // The trim recipe rides the hardcoded id-1 wire entry instead of a
+        // vec; everything else must be sent through the segments.
+        assert_eq!(
+            sent + absorbed,
+            diagnostics.recipe_count,
+            "every recipe sent"
+        );
+    }
 }
 
 #[cfg(test)]
 mod ingredient_wire_tests {
     use super::{write_ingredient, CraftingIngredientWire};
-    use sc_binary::interfaces::Writer;
-    use sc_binary::ByteWriter;
+    use sc_binary::{ByteReader, ByteWriter};
 
-    /// Ingredient descriptor layout: varuint type + body + fixed u16 count.
+    /// v2168 recipe ingredient layout (wire-verified against real 1.26.40
+    /// clients): uvarint switch (0 = empty, 1 = present) + optional type-id
+    /// string + body + varint count. There is
+    /// NO u8 descriptor tag on this protocol (Mojang's 2225 docs describe
+    /// the newer cereal layout; that shape desyncs 2168 clients on sight).
     #[test]
     fn ingredient_descriptors_match_official_layout() {
+        // Empty: switch 0 + varint aux + varint count.
         let mut writer = ByteWriter::new();
         write_ingredient(&mut writer, &CraftingIngredientWire::Empty).unwrap();
-        assert_eq!(writer.as_slice(), &[0, 0, 0]);
+        let mut reader = ByteReader::from(writer.as_slice());
+        assert_eq!(reader.read_var_u32().unwrap(), 0);
+        assert_eq!(reader.read_var_i32().unwrap(), 32767);
+        assert_eq!(reader.read_var_i32().unwrap(), 0);
+        assert!(reader.as_slice().is_empty(), "no trailing bytes");
 
+        // Item: switch 1 + "name" + string + varint aux + varint count.
         let mut writer = ByteWriter::new();
         write_ingredient(
             &mut writer,
@@ -1585,13 +2105,15 @@ mod ingredient_wire_tests {
             },
         )
         .unwrap();
-        let bytes = writer.as_slice();
-        assert_eq!(bytes[0], 1);
-        assert!(bytes
-            .windows(b"minecraft:stick".len())
-            .any(|w| w == b"minecraft:stick"));
-        assert_eq!(&bytes[bytes.len() - 3..], &[0, 1, 0]);
+        let mut reader = ByteReader::from(writer.as_slice());
+        assert_eq!(reader.read_var_u32().unwrap(), 1);
+        assert_eq!(reader.read_string().unwrap(), "name");
+        assert_eq!(reader.read_string().unwrap(), "minecraft:stick");
+        assert_eq!(reader.read_var_i32().unwrap(), 0);
+        assert_eq!(reader.read_var_i32().unwrap(), 1);
+        assert!(reader.as_slice().is_empty(), "no trailing bytes");
 
+        // Tag: switch 1 + "item_tag" + string + varint aux + varint count.
         let mut writer = ByteWriter::new();
         write_ingredient(
             &mut writer,
@@ -1601,11 +2123,12 @@ mod ingredient_wire_tests {
             },
         )
         .unwrap();
-        let bytes = writer.as_slice();
-        assert_eq!(bytes[0], 3);
-        assert!(bytes
-            .windows(b"minecraft:planks".len())
-            .any(|w| w == b"minecraft:planks"));
-        assert_eq!(&bytes[bytes.len() - 2..], &[1, 0]);
+        let mut reader = ByteReader::from(writer.as_slice());
+        assert_eq!(reader.read_var_u32().unwrap(), 1);
+        assert_eq!(reader.read_string().unwrap(), "item_tag");
+        assert_eq!(reader.read_string().unwrap(), "minecraft:planks");
+        assert_eq!(reader.read_var_i32().unwrap(), 32767);
+        assert_eq!(reader.read_var_i32().unwrap(), 1);
+        assert!(reader.as_slice().is_empty(), "no trailing bytes");
     }
 }

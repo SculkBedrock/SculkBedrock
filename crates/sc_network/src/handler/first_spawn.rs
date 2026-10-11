@@ -16,7 +16,6 @@ use sc_utils::game::client::MinecraftClient;
 use sc_world::manager::{MinecraftWorldId, MinecraftWorldManager};
 use std::sync::Arc;
 
-use crate::client::MinecraftClientNetwork;
 use crate::player_connection::{PlayerConnection, PlayerConnectionError, PlayerConnectionStatus};
 use crate::protocol::client::transaction::ItemData;
 use crate::protocol::server::inventory::{
@@ -458,8 +457,8 @@ fn normalize_slots(mut items: Vec<ItemData>, slot_count: usize) -> Vec<ItemData>
 /// Build the `CraftingData` packet from the shared recipe snapshot.
 ///
 /// Falls back to the trim-only empty table when no registry or item table
-/// is loaded. Brewing numeric ids have no stage-1 resolver, so brewing /
-/// container / material-reducer recipes are reported disabled and skipped
+/// is loaded. Brewing resolves through potion damage ids plus the item
+/// registry; unresolvable entries are reported disabled and skipped
 /// (never sent with guessed ids).
 pub(crate) fn crafting_data_for_connection(world: &World) -> CraftingData {
     let (Some(registry), Some(items)) = (
@@ -472,13 +471,40 @@ pub(crate) fn crafting_data_for_connection(world: &World) -> CraftingData {
     if snapshot.is_empty() {
         return CraftingData::empty();
     }
+    let tags = world
+        .get_resource::<sc_game::SharedItemTags>()
+        .map(|shared| shared.resolver());
+    // Legacy rename aliases (single-member groups): direct registry hits
+    // win; otherwise the alias member resolves (suffix families never
+    // canonicalize, so multi-member misses still disable loudly).
     let item_runtime = |id: &str| {
-        let runtime = items.runtime_id_by_name(id)?;
+        let resolved = items
+            .runtime_id_by_name(id)
+            .map(|runtime| (runtime, id.to_string()))
+            .or_else(|| {
+                tags.as_ref().and_then(|tags| {
+                    sc_recipe::rename_alias(tags, id).and_then(|alias| {
+                        items
+                            .runtime_id_by_name(&alias)
+                            .map(|runtime| (runtime, alias))
+                    })
+                })
+            });
+        let (runtime, _) = resolved?;
         let def = items.get(runtime)?;
         Some((runtime, def.default_block_runtime_id.unwrap_or(0)))
     };
-    // No numeric brewing-id table in stage-1: disable brewing loudly.
-    let brewing_id = |_: &str| None;
+    // Brewing numerics: potion types map to (potion item, damage id);
+    // plain items map to (runtime id, 0). No guessing: unmapped disables.
+    let brewing_id = |id: &str| {
+        if let Some(rest) = id.strip_prefix("minecraft:potion_type:") {
+            let damage = crate::protocol::server::misc::potion_damage(&rest.to_lowercase())?;
+            let runtime = items.runtime_id_by_name("minecraft:potion")?;
+            return Some((runtime as i32, damage));
+        }
+        let (runtime, _) = item_runtime(id)?;
+        Some((runtime as i32, 0))
+    };
     let (data, disabled) = CraftingData::from_snapshot(&snapshot, &item_runtime, &brewing_id);
     if !disabled.is_empty() {
         log::debug!(

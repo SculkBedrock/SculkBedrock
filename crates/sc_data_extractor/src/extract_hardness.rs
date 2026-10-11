@@ -50,15 +50,15 @@ impl HardnessReport {
 }
 
 pub fn run(args: &[String]) {
-    let mut pnx: Option<&str> = None;
+    let mut java_src: Option<&str> = None;
     let mut palette: Option<&str> = None;
     let mut out: Option<&str> = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--pnx" => {
+            "--java-src" => {
                 i += 1;
-                pnx = args.get(i).map(String::as_str);
+                java_src = args.get(i).map(String::as_str);
             }
             "--palette" => {
                 i += 1;
@@ -75,8 +75,8 @@ pub fn run(args: &[String]) {
         }
         i += 1;
     }
-    let (Some(pnx), Some(palette), Some(out)) = (pnx, palette, out) else {
-        eprintln!("usage: extract-hardness --pnx <src/main/java> --palette <block_palette.nbt> --out <hardness.json>");
+    let (Some(java_src), Some(palette), Some(out)) = (java_src, palette, out) else {
+        eprintln!("usage: extract-hardness --java-src <src/main/java> --palette <block_palette.nbt> --out <hardness.json>");
         std::process::exit(2);
     };
     let raw = fs::read(palette).unwrap_or_else(|e| {
@@ -100,7 +100,7 @@ pub fn run(args: &[String]) {
             eprintln!("legacy palette parse failed: {e}");
             std::process::exit(1);
         });
-    let report = extract_hardness_from_entries(Path::new(pnx), &entries);
+    let report = extract_hardness_from_entries(Path::new(java_src), &entries);
     eprintln!(
         "[extract-hardness] classes={} self-declared={} inherited={} unbreakable={} non-literal={} unknown-chain={} java-missing-id={} palette-without-hardness={} hard-errors={}",
         report.classes,

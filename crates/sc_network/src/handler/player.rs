@@ -8,7 +8,7 @@ use sc_ecs::async_manager::SCECSAsync;
 use sc_ecs::entity::EntityId;
 use sc_ecs::params::event::EventReader;
 use sc_ecs::world::World;
-use sc_entity::motion::{PhysicsBody, Position, Rotation, Transform};
+use sc_entity::motion::{FallState, PhysicsBody, Position, Rotation, Transform};
 use sc_entity::player::adventure_settings::AdventureSettings;
 use sc_entity::{MinecraftEntityId, SpawnEntity};
 use sc_eventbus::param::SCEventReader;
@@ -178,16 +178,22 @@ impl Plugin for SCPlayerHandlerPlugin {
 /// group_index; items resolve names via the runtime table and unresolvable
 /// items are skipped (creative_net_id stays dense). Returns an empty table
 /// when data is missing.
+///
+/// The grant table mirrors the listing 1:1 (same loop, same skip rules, same
+/// dense ids): the game layer resolves client `CraftCreative` takes through
+/// it. Templates carry count 1 with the listed damage; NBT extras do not
+/// round-trip (see [`sc_item::CreativeGrantTable`]).
 fn build_creative_content(
     world: &World,
     runtime_manager: &MinecraftRuntimeManager,
-) -> CreativeContent {
+) -> (CreativeContent, sc_item::CreativeGrantTable) {
     use base64::Engine;
+    let empty = || (CreativeContent::empty(), sc_item::CreativeGrantTable::default());
     let Some(registry) = world.get_resource::<sc_item::ItemRegistry>() else {
-        return CreativeContent::empty();
+        return empty();
     };
     let Some(data) = runtime_manager.creative_items() else {
-        return CreativeContent::empty();
+        return empty();
     };
 
     // Resolve a name to an item definition (runtime id via the runtime table).
@@ -255,6 +261,7 @@ fn build_creative_content(
 
     // 2. Items: skip out-of-range group_index (bad data).
     let mut items: Vec<CreativeItem> = Vec::with_capacity(data.items.len());
+    let mut grants = sc_item::CreativeGrantTable::default();
     for entry in &data.items {
         let group_id = entry.group_index;
         if group_id < 0 || group_id as usize >= groups.len() {
@@ -271,8 +278,20 @@ fn build_creative_content(
             slot_data: slot,
             group_id: group_id as u32,
         });
+        // Same skip rules, same dense id: the grant template for this entry.
+        let grant_id = grants.push(sc_item::ItemStack {
+            runtime_id: def.runtime_id,
+            count: 1,
+            damage: entry.damage as u32,
+            block_runtime_id: def.default_block_runtime_id.unwrap_or(0),
+        });
+        debug_assert_eq!(
+            grant_id,
+            items.last().map(|item| item.creative_net_id).unwrap_or(0),
+            "grant table must mirror CreativeContent ids",
+        );
     }
-    CreativeContent { groups, items }
+    (CreativeContent { groups, items }, grants)
 }
 
 /// Build Bedrock ItemRegistry/ItemComponent from version-pack semantic data.
@@ -329,6 +348,7 @@ fn build_biome_definition_list(world: &World) -> BiomeDefinitionList {
     });
 
     let mut definitions = Vec::with_capacity(biomes.len());
+    let mut unmapped = 0usize;
     for biome in biomes {
         let mut temperature = 0.5f32;
         let mut downfall = 0.5f32;
@@ -350,12 +370,16 @@ fn build_biome_definition_list(world: &World) -> BiomeDefinitionList {
             }
         }
 
+        let biome_id = manager
+            .biome_id(&biome.description.identifier)
+            .unwrap_or(-1);
+        if biome_id < 0 {
+            unmapped += 1;
+        }
         definitions.push(BiomeDefinition {
             name: biome.description.identifier.clone(),
             name_index: None,
-            id: manager
-                .biome_id(&biome.description.identifier)
-                .unwrap_or(-1),
+            id: biome_id,
             temperature,
             downfall,
             foliage_snow,
@@ -370,6 +394,16 @@ fn build_biome_definition_list(world: &World) -> BiomeDefinitionList {
                 .and_then(NbtValue::as_compound)
                 .cloned(),
         });
+    }
+    if unmapped > 0 {
+        log::warn!(
+            "{}",
+            t_log!(
+                "console.world.biome_unmapped",
+                count = unmapped,
+                total = definitions.len()
+            )
+        );
     }
 
     BiomeDefinitionList::from_definitions(definitions)
@@ -430,6 +464,8 @@ fn create_player(world: World, mut event_reader: EventReader<CreatePlayer>) {
                         // Movement component (position is filled in once the first movement packet is adopted).
                         Transform::new(Position::new(0.0, 0.0, 0.0), Rotation::default()),
                         PhysicsBody::player(),
+                        // Fall tracking starts at spawn Y; first-move adoption re-pins it.
+                        FallState::new(0.0, false),
                         PlayerInventory::default(),
                         // Do not pre-insert `sc_game::ContainerOpen`: presence means
                         // "a window is open", and there is no window at login.
@@ -1136,11 +1172,12 @@ fn player_login(world: World, mut receiver: SCEventReader<PlayerLogin>) {
                 .get_resource_mut::<LoginPacketCache>()
                 .map(|mut cache| {
                     cache.creative_content(|| {
-                        crate::packet::raw_batch::packet_to_bytes(build_creative_content(
-                            &world,
-                            &runtime_manager,
-                        ))
-                        .unwrap_or_default()
+                        let (content, grants) = build_creative_content(&world, &runtime_manager);
+                        // Publish the grant table for the game layer (creative
+                        // takes resolve through it); deterministic pack data,
+                        // so re-publishing on each login is idempotent.
+                        world.insert_resource(grants);
+                        crate::packet::raw_batch::packet_to_bytes(content).unwrap_or_default()
                     })
                 })
                 .unwrap_or_default();

@@ -23,6 +23,7 @@ pub mod mining_drops;
 pub mod position;
 pub mod registry;
 pub mod state;
+pub mod workstation;
 pub mod write;
 
 use log::warn;

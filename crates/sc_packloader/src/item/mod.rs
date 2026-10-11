@@ -189,7 +189,7 @@ impl ItemComponentTable {
     pub fn build(&mut self, runtime_manager: &MinecraftRuntimeManager) {
         let mut entries = self.entries.write();
         entries.clear();
-        for (name, id) in runtime_manager.runtime_entries() {
+        for (_name, id) in runtime_manager.runtime_entries() {
             let runtime_id = id as u16;
             if runtime_id == 0 {
                 continue;
@@ -236,6 +236,7 @@ impl ItemComponentTable {
     pub fn len(&self) -> usize {
         self.entries.read().len()
     }
+
     pub fn is_empty(&self) -> bool {
         self.entries.read().is_empty()
     }
@@ -836,7 +837,7 @@ mod tests {
     }
 
     #[test]
-    fn modern_item_json_builds_pnx_shaped_component_tag() {
+    fn modern_item_json_builds_shaped_component_tag() {
         let item = parse_item(
             r#"{
               "format_version": "1.26.30",
@@ -998,5 +999,20 @@ mod tests {
         // Hole indices without defined components return None instead of panicking.
         assert!(!table.has::<Food>(999));
         assert_eq!(table.count(), 1);
+    }
+
+    #[test]
+    fn fuel_component_parses_duration_seconds() {
+        let spawner: MinecraftItemSpawner = serde_json::from_value(serde_json::json!({
+            "description": { "identifier": "minecraft:coal" },
+            "components": { "minecraft:fuel": { "duration": 80.0 } }
+        }))
+        .expect("fuel spawner");
+        let fuel = spawner
+            .components
+            .as_ref()
+            .and_then(|components| components.get::<component::Fuel>())
+            .expect("coal should be fuel");
+        assert_eq!(fuel.duration, 80.0);
     }
 }

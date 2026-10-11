@@ -213,6 +213,46 @@ fn read_storage_item(buf: &mut ByteReader) -> Result<ItemData, Error> {
     })
 }
 
+/// ContainerSetData (0x33): block-container progress values (furnace
+/// cook/lit, brewing stand). Server -> client only.
+///
+/// Wire layout (v2168 container-data encoding, unchanged
+/// through 2168): u8 window id, varint property id, varint value.
+/// Furnace properties: 0 = cook tick count, 1 = lit time remaining,
+/// 2 = lit duration.
+#[derive(Clone, Debug, MinecraftPacket)]
+pub struct ContainerSetData {
+    pub window_id: u8,
+    pub property: i32,
+    pub value: i32,
+}
+
+impl ContainerSetData {
+    /// Furnace cook progress (arrow): ticks cooked toward the station total.
+    pub const FURNACE_TICK_COUNT: i32 = 0;
+    /// Furnace lit time remaining (flame icon numerator).
+    pub const FURNACE_LIT_TIME: i32 = 1;
+    /// Furnace lit duration (flame icon denominator).
+    pub const FURNACE_LIT_DURATION: i32 = 2;
+}
+
+impl Writer for ContainerSetData {
+    fn write(&self, buf: &mut ByteWriter) -> Result<(), Error> {
+        buf.write_u8(self.window_id)?;
+        buf.write_var_i32(self.property)?;
+        buf.write_var_i32(self.value)
+    }
+}
+
+impl Reader<ContainerSetData> for ContainerSetData {
+    fn read(_buf: &mut ByteReader) -> Result<Self, Error> {
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "ContainerSetData decode is unsupported",
+        ))
+    }
+}
+
 /// InventorySlot (0x32), v975 layout.
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct InventorySlot {
@@ -295,6 +335,8 @@ pub struct ArmorSlotDamage {
 }
 
 /// Armor slot positions for PlayerArmorDamage entries.
+// Wire-protocol namespace mirrors official docs.
+#[allow(non_snake_case)]
 pub mod ArmorSlot {
     pub const HEAD: u8 = 0;
     pub const TORSO: u8 = 1;
@@ -413,7 +455,7 @@ mod tests {
     }
 
     #[test]
-    fn pnx_container_lengths_match() {
+    fn container_lengths_match() {
         let armor = InventoryContent::new(
             InventoryContent::SPECIAL_ARMOR,
             vec![ItemData::default(); 4],
@@ -429,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn inventory_slot_matches_pnx_layout() {
+    fn inventory_slot_matches_layout() {
         let packet = InventorySlot {
             full_container_name_id: None,
             full_container_dynamic_id: None,
@@ -483,7 +525,7 @@ mod tests {
     }
 
     #[test]
-    fn offhand_mob_equipment_matches_pnx_container_tail() {
+    fn offhand_mob_equipment_matches_container_tail() {
         let packet = MobEquipment {
             runtime_entity_id: 22,
             item: ItemData::default(),
@@ -515,7 +557,7 @@ mod tests {
     }
 
     #[test]
-    fn workbench_container_open_matches_pnx_layout() {
+    fn workbench_container_open_matches_layout() {
         // CraftingTableInventory.onOpen: window 1 + WORKBENCH(1) +
         // BlockPosition + target entity -1. Y uses zigzag like UpdateBlock.
         let packet = ContainerOpen {

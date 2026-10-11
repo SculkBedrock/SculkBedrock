@@ -55,7 +55,6 @@ impl ObjectHolder for EmptyObjectHolder {}
 mod tests {
     use super::*;
     use crate::worldgen::material::MaterialBlocks;
-    use crate::worldgen::random::RandomSourceProvider;
     use sc_world::chunk::BlockRuntimeId;
 
     fn test_blocks() -> MaterialBlocks {

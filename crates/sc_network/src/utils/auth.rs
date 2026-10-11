@@ -109,6 +109,8 @@ lazy_static::lazy_static! {
 }
 
 struct AuthEnvironment {
+    // Retained for auth diagnostics; not yet read in this build.
+    #[allow(dead_code)]
     jwks_url: String,
     issuer: String,
     jwks: JwksResponse,

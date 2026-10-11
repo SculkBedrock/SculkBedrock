@@ -9,6 +9,8 @@ use sc_network_macros::MinecraftPacket;
 use std::io::Error;
 
 /// Client action types.
+// Wire-protocol namespace mirrors official docs.
+#[allow(non_snake_case)]
 pub mod PlayerActionType {
     pub const START_BREAK: i32 = 0;
     pub const ABORT_BREAK: i32 = 1;

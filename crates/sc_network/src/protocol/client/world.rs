@@ -51,6 +51,8 @@ impl Writer for ServerboundLoadingScreen {
 }
 
 /// Cursor item drag state (uint8): Start = 0, Stop = 1.
+// Wire-protocol namespace mirrors official docs.
+#[allow(non_snake_case)]
 pub mod CursorItemDragState {
     pub const START: u8 = 0;
     pub const STOP: u8 = 1;
@@ -61,7 +63,6 @@ pub mod CursorItemDragState {
 pub struct ServerboundCursorItemDrag {
     pub state: u8,
 }
-
 impl Reader<ServerboundCursorItemDrag> for ServerboundCursorItemDrag {
     fn read(buf: &mut ByteReader) -> Result<ServerboundCursorItemDrag, Error> {
         Ok(Self {
@@ -102,7 +103,6 @@ impl Writer for ServerboundStonecutterSetRecipe {
 /// ServerboundMatchmakingCancel (0x164). Empty cancellation signal.
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct ServerboundMatchmakingCancel;
-
 impl Reader<ServerboundMatchmakingCancel> for ServerboundMatchmakingCancel {
     fn read(_buf: &mut ByteReader) -> Result<ServerboundMatchmakingCancel, Error> {
         Ok(Self)
@@ -112,6 +112,41 @@ impl Reader<ServerboundMatchmakingCancel> for ServerboundMatchmakingCancel {
 impl Writer for ServerboundMatchmakingCancel {
     fn write(&self, _buf: &mut ByteWriter) -> Result<(), Error> {
         Ok(())
+    }
+}
+
+/// ClientCameraAimAssist (0x141). Client-side aim-assist activation signal.
+///
+/// Official layout (Endstone protocol-docs, BDS-extracted): camera preset id
+/// string, action u8, allow-aim-assist bool. Observed live wire bytes
+/// `[00, 01, 00]` decode exactly as empty preset + action 1 + disallow.
+///
+/// No handler system reads this packet: activation is client-side cosmetic
+/// and the server has no aim-assist preset registry, so decoded packets are
+/// deliberately ignored (previously they failed decode and warned per batch).
+#[derive(Clone, Debug, MinecraftPacket)]
+pub struct ClientCameraAimAssist {
+    pub camera_preset_id: String,
+    /// Raw action discriminant (official enum values unverified; kept raw).
+    pub action: u8,
+    pub allow_aim_assist: bool,
+}
+
+impl Reader<ClientCameraAimAssist> for ClientCameraAimAssist {
+    fn read(buf: &mut ByteReader) -> Result<ClientCameraAimAssist, Error> {
+        Ok(Self {
+            camera_preset_id: buf.read_string()?,
+            action: buf.read_u8()?,
+            allow_aim_assist: buf.read_bool()?,
+        })
+    }
+}
+
+impl Writer for ClientCameraAimAssist {
+    fn write(&self, buf: &mut ByteWriter) -> Result<(), Error> {
+        buf.write_string(&self.camera_preset_id)?;
+        buf.write_u8(self.action)?;
+        buf.write_bool(self.allow_aim_assist)
     }
 }
 
@@ -195,5 +230,29 @@ mod protocol_2225_tests {
         let decoded = ServerboundStonecutterSetRecipe::read(&mut reader).unwrap();
         assert_eq!(decoded.container_id, 29);
         assert_eq!(decoded.recipe_index, 2);
+    }
+
+    #[test]
+    fn client_camera_aim_assist_decodes_observed_wire_bytes() {
+        // Live client bytes at login (empty preset + action 1 + disallow).
+        let mut reader = ByteReader::from([0x00u8, 0x01, 0x00].as_slice());
+        let decoded = ClientCameraAimAssist::read(&mut reader).unwrap();
+        assert_eq!(decoded.camera_preset_id, "");
+        assert_eq!(decoded.action, 1);
+        assert!(!decoded.allow_aim_assist);
+        assert!(reader.as_slice().is_empty(), "payload fully consumed");
+
+        let packet = ClientCameraAimAssist {
+            camera_preset_id: "test:preset".to_string(),
+            action: 1,
+            allow_aim_assist: true,
+        };
+        let mut writer = ByteWriter::new();
+        packet.write(&mut writer).unwrap();
+        let mut reader = ByteReader::from(writer.as_slice());
+        let decoded = ClientCameraAimAssist::read(&mut reader).unwrap();
+        assert_eq!(decoded.camera_preset_id, "test:preset");
+        assert_eq!(decoded.action, 1);
+        assert!(decoded.allow_aim_assist);
     }
 }

@@ -39,9 +39,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use sc_command::events::{CommandOrigin, RawCommandInput};
 use sc_command::registry::CommandRegistry;
 use sc_console::{
-    install_logger, shared_provider, spawn_console_hosted, CommandEntry, ConsoleConfig,
-    ConsoleDriver, ConsoleHandle, ConsoleHeader, ResolvedMode, StaticCompletionProvider,
-    WelcomeChoice,
+    install_logger, set_console_max_level, shared_provider, spawn_console_hosted, CommandEntry,
+    ConsoleConfig, ConsoleDriver, ConsoleHandle, ConsoleHeader, ResolvedMode,
+    StaticCompletionProvider, WelcomeChoice,
 };
 use sc_ecs::app::plugin::Plugin;
 use sc_ecs::app::App;
@@ -78,6 +78,9 @@ pub struct ConsoleBridgePlugin;
 
 impl Plugin for ConsoleBridgePlugin {
     fn build(&self, app: &App) {
+        // Build-time window first: welcome gate, quote fetch and early
+        // warnings run before PreStartup/SCStartup own the config.
+        apply_build_time_locale_and_log_level();
         init_console();
         app.insert_resource(ConsoleMetaCache::default())
             .add_systems(sc_ecs::schedule::PreUpdate, drain_console_commands)
@@ -129,9 +132,43 @@ fn wait_for_welcome_gate() {
 /// Failures fall back to the console default and are reported later by
 /// `init_properties`, which owns config errors.
 fn read_properties_language() -> Option<String> {
+    read_properties_early().map(|p| p.language)
+}
+
+/// Best-effort full properties load for build-time seeds (language for log
+/// locale, `log_level` for log gates). `None` keeps today's defaults; the
+/// PreStartup/SCStartup path re-applies everything authoritatively.
+fn read_properties_early() -> Option<ServerProperties> {
     let mut path = std::env::current_dir().ok()?;
     path.push("server_properties.toml");
-    ServerProperties::load(&path).ok().map(|p| p.language)
+    ServerProperties::load(&path).ok()
+}
+
+/// `[log] log_level` text to filter (only `info` narrows; anything else,
+/// including future values rejected at authoritative load, stays `debug`).
+fn level_filter_for(log_level: &str) -> log::LevelFilter {
+    match log_level {
+        "info" => log::LevelFilter::Info,
+        _ => log::LevelFilter::Debug,
+    }
+}
+
+/// Pre-apply file language and log level for the build-time window.
+///
+/// Plugin `build` (welcome gate, build-time quote fetch, early warnings)
+/// runs before PreStartup/SCStartup own the config; without this, that whole
+/// window logs with the default locale (raw `en.<key>` lines) and always at
+/// Debug (third-party fetch traces flood `info` runs). Idempotent and
+/// best-effort; `init_properties`/`startup` re-apply authoritatively later.
+fn apply_build_time_locale_and_log_level() {
+    let Some(props) = read_properties_early() else {
+        return;
+    };
+    sc_log::set_locale(&props.language);
+    std::env::set_var("SCULK_LOCALE", &props.language);
+    let filter = level_filter_for(props.log_level.as_str());
+    log::set_max_level(filter);
+    set_console_max_level(filter);
 }
 
 /// Persist the welcome choice (if any) into `server_properties.toml`.
@@ -399,7 +436,7 @@ fn maybe_start_hitokoto(choice: Option<WelcomeChoice>) {
 
 /// Best-effort read of `[server] enable_hitokoto` (default off on any failure).
 fn read_properties_hitokoto() -> bool {
-    let mut path = match std::env::current_dir() {
+    let path = match std::env::current_dir() {
         Ok(mut d) => {
             d.push("server_properties.toml");
             d
@@ -586,6 +623,15 @@ fn shutdown_console_on_exit(mut reader: EventReader<SCExit>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn log_level_text_maps_to_filter_with_debug_default() {
+        assert_eq!(level_filter_for("info"), log::LevelFilter::Info);
+        assert_eq!(level_filter_for("debug"), log::LevelFilter::Debug);
+        // Unknown/future values stay loud; authoritative load rejects them.
+        assert_eq!(level_filter_for("verbose"), log::LevelFilter::Debug);
+        assert_eq!(level_filter_for(""), log::LevelFilter::Debug);
+    }
 
     #[test]
     fn patch_replaces_value_and_keeps_comment() {

@@ -66,6 +66,10 @@ impl Reader<UpdateAttributes> for UpdateAttributes {
 
 /// ActorEvent ids for item stack sync.
 pub mod actor_event {
+    /// HURT: damage animation.
+    pub const HURT: u8 = 2;
+    /// DEATH: death animation.
+    pub const DEATH: u8 = 3;
     /// UPDATE_STACK_SIZE: stack count sync after item merge.
     pub const UPDATE_STACK_SIZE: u8 = 50;
 }

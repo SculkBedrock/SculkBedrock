@@ -12,12 +12,15 @@ sc_entity = { path = "../sc_entity" }
 sc_world = { path = "../sc_world" }
 sc_utils = { path = "../sc_utils" }
 sc_block = { path = "../sc_block" }
+sc_nbt = { path = "../sc_nbt" }
 sc_item = { path = "../sc_item" }
+sc_packloader = { path = "../sc_packloader" }
 sc_eventbus = { path = "../sc_eventbus" }
 sc_log = { path = "../sc_log" }
 sc_recipe = { path = "../sc_recipe" }
 log = "0.4"
 rand = "0.8.5"
+sc_game_macros = { path = "sc_game_macros" }
 parking_lot = { version = "0.12", features = ["arc_lock", "send_guard"] }
 async-trait = "0.1"
 

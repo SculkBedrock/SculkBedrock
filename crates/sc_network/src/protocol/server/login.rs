@@ -19,6 +19,8 @@ use uuid::Uuid;
 /// Player eye height. Bedrock player positions are eye level (feet + 1.62);
 // the StartGame player position adds this offset on write.
 const PLAYER_EYE_HEIGHT: f32 = 1.62;
+// Retained wire-protocol constant; V3 movement not yet gated in this build.
+#[allow(dead_code)]
 const SERVER_AUTHORITATIVE_V3_MOVEMENT: i32 = 3;
 
 #[derive(Clone, Debug, BinaryIo, MinecraftPacket)]

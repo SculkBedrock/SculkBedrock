@@ -39,9 +39,9 @@
 - **Multi-threaded chunk pipeline**: shared loading, shared encoding, ordered delivery. (Currently not fully complete; design needs verification)
 - **Multi-threading / async support**: natively supported. Network / game logic run concurrently through the scheduler, ensuring smooth gameplay.
 - **Intent-based network system**: decouples the game logic layer from the network layer via intents, preventing mutual interference.
-- **MCBE addon compatibility**: run official MCBE addons easily via **Molang** and **JavaScript** interpreters. May further support Minecraft: China Edition Python plugins in the future.
-- **Plugin system**: **Rust built-in plugins** and **C-ABI dynamic library plugins** coexist; may support PowerNukkitX plugins, TypeScript plugins, etc. in the future.
-- **Beautiful TUI interface**: not sure what it's for, but it looks awesome.
+- **MCBE addon compatibility**: run official MCBE addons easily via a **Molang interpreter and a JavaScript interpreter**. May further support Minecraft: China Edition Python plugins in the future.
+- **Plugin system**: **Rust built-in plugins** and **C-ABI dynamic library plugins** coexist; may support PowerNukkitX/AllayMC plugins, TypeScript plugins, etc. in the future (depends on the actual situation, not guaranteed).
+- **Beautiful TUI interface**: no idea what it's for, but it looks awesome anyway.
 - **More for you to discover**
 
 ## 🎆 Getting Started 🎆
@@ -53,7 +53,7 @@ You need Cargo to build it.
 
 The server **requires a version pack** to start and accept players.
 
-- Version packs: [SculkBedrock-VersionPack](https://github.com/SculkBedrock/SculkBedrock-VersionPacks)
+- Version packs: [VersionPack](https://github.com/SculkBedrock/VersionPacks)
 - Put the downloaded `.scver` file into the `version_packs/` directory.
 - Plugin sources inside the version-pack repository live under `crates/ur_vanilla`.
 
@@ -78,19 +78,23 @@ Settings live in `server_properties.toml` (ports, MOTD, view distance, per-tick 
 ### Network:
 
 - [x] Basic protocol packet implementation
-- [ ] Complete protocol packet implementation
 - [x] Login and spawn
 - [x] Chunk subscribe / encode / ordered-delivery loop with receipts **(partially complete)**
+- [ ] ⏸️ **(in progress)** **(major feature)** Data-driven, ECS-based ProtoBuf network protocol format
+- [ ] Complete protocol packet implementation
 
 ### Game logic:
 
 - [x] Item recipe crafting **(partially complete)**
 - [ ] ⏸️ **(in progress)** Crafting table / furnace / stonecutter block functions
 - [ ] ⏸️ **(in progress)** Entity fall damage calculation / hunger
+- [ ] ⏸️ **(in progress)** Item durability
+- [ ] ⏸️ **(in progress)** Ender chest / chest / dispenser / dropper container block functions
+- [ ] ⏸️ **(in progress)** Item drop collision
 - [ ] Item enchantments / values
 
 ### Blocks:
-- [ ] Block Entity support
+- [ ] ⏸️ **(in progress)** Block Entity support
 - [ ] Functional blocks
 
 ### Other features:
@@ -108,7 +112,7 @@ Thanks to the following open-source projects for reference and inspiration on pr
 - [PowerNukkitX](https://github.com/PowerNukkitX/PowerNukkitX)
 - [PocketMine-MP](https://github.com/pmmp/PocketMine-MP)
 - [JSPrismarine](https://github.com/JSPrismarine/JSPrismarine)
-- [NetrexMC](https://github.com/NetrexMC)
+- [NetrexMC](https://github.com/NetrexMC) (rak-rs & binary-utils)
 - [Bevy](https://github.com/bevyengine/bevy)
 ## 👉 Feedback 👈
 

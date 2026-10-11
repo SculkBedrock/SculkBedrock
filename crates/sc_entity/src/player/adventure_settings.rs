@@ -345,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn survival_defaults_match_pnx_container_requirements() {
+    fn survival_defaults_match_container_requirements() {
         // Type defaults: container/mine/build/attack all true; flying/noclip/OP all false.
         // Without OPEN_CONTAINERS, the client closes workbench windows immediately.
         let settings = survival_settings();

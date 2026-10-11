@@ -258,6 +258,25 @@ fn wait_for_overworld(
             return None;
         }
         waited_secs += 1;
+        // Cheap poll: directory names only, no `level.dat` parse and no
+        // LevelDB open. The full load below (which opens every world's
+        // database) runs only after the wanted name appears on disk, so a
+        // permanently mismatched name no longer churns open/close cycles.
+        let found = loader
+            .peek_names()
+            .into_iter()
+            .map(|(_, name)| name)
+            .collect::<Vec<_>>();
+        if !found.iter().any(|name| name == overworld_name) {
+            if waited_secs % REMINDER_EVERY_SECS == 0 {
+                prompt(&found);
+            }
+            continue;
+        }
+        // Name present: single full load. A transient open failure (e.g. a
+        // concurrent holder briefly locking the db, which `get_worlds`
+        // skips with a warning) must not exit startup without an overworld,
+        // so keep waiting instead of returning a world list without one.
         let worlds = loader.get_worlds();
         if has_overworld_name(&worlds, overworld_name) {
             return Some(worlds);

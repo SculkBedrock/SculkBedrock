@@ -24,8 +24,8 @@ use flate2::read::GzDecoder;
 use sc_binary::{ByteReader, ByteWriter};
 use sc_nbt::compound::CompoundNbt;
 use sc_nbt::local::JavaLocalNbt;
-use sc_nbt::reader::{NbtReadTrait, NbtReader};
-use sc_nbt::writer::{NbtWriteTrait, NbtWriter};
+use sc_nbt::reader::NbtReader;
+use sc_nbt::writer::NbtWriter;
 use sc_nbt::NbtValue;
 
 mod extract_defaults;
@@ -68,11 +68,11 @@ fn main() {
              (stock format_version + minecraft:block layout + sc:default_state/sc:protocol_runtime_ids).\n\
              Multi-state defaults must come from --defaults (missing entries report TODO, never guessed).\n\
              \n\
-             sc_data_extractor extract-defaults --pnx <src/main/java> --palette <block_palette.nbt> --out <defaults.json>\n\
+             sc_data_extractor extract-defaults --java-src <src/main/java> --palette <block_palette.nbt> --out <defaults.json>\n\
              Extract default states from upstream Java block sources (getDefaultState semantics),\n\
              each default combination must hit the palette exactly, otherwise reported loudly and skipped.\n\
              \n\
-             sc_data_extractor extract-hardness --pnx <src/main/java> --palette <block_palette.nbt> --out <hardness.json>\n\
+             sc_data_extractor extract-hardness --java-src <src/main/java> --palette <block_palette.nbt> --out <hardness.json>\n\
              Extract hardness from upstream Java block sources (getHardness semantics, -1 means unbreakable)."
         );
         std::process::exit(2);

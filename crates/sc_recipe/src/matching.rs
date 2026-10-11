@@ -104,6 +104,20 @@ fn choice_matches(
     }
 }
 
+/// Legacy rename alias for point resolution (wire encoding, result
+/// lookup): a single-member group canonicalizes to its member
+/// (`minecraft:fish` → `minecraft:cod`). Multi-member families never
+/// canonicalize (they need member choice, handled by `item_family_matches`);
+/// unknown names return `None` (callers fail closed as before).
+pub fn rename_alias(tags: &dyn TagResolver, name: &str) -> Option<String> {
+    let members = tags.members(name);
+    if members.len() == 1 {
+        members.into_iter().next()
+    } else {
+        None
+    }
+}
+
 /// Bedrock legacy family fallback for `Item` ingredients.
 ///
 /// Vanilla recipe files use pseudo names (`minecraft:planks`, `minecraft:log2`,
@@ -559,7 +573,8 @@ mod tests {
     }
 
     #[test]
-    fn shaped_matches_with_offset_and_symmetry() {        let recipe = compile_one(serde_json::json!({
+    fn shaped_matches_with_offset_and_symmetry() {
+        let recipe = compile_one(serde_json::json!({
             "format_version": "1.12",
             "minecraft:recipe_shaped": {
                 "description": {"identifier": "minecraft:test"},

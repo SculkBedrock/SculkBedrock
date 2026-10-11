@@ -394,10 +394,12 @@ pub fn schedule_label_derive(input: TokenStream) -> TokenStream {
                 self
             }
 
+            fn label_name(&self) -> &'static str {
+                ::std::any::type_name::<Self>()
+            }
+
             fn dyn_hash(&self, mut state: &mut dyn ::std::hash::Hasher) {
-                let ty_id = ::std::any::TypeId::of::<Self>();
-                ::std::hash::Hash::hash(&ty_id, &mut state);
-                ::std::hash::Hash::hash(self, &mut state);
+                ::std::hash::Hash::hash(&self.label_name(), &mut state);
             }
         }
     })
@@ -420,10 +422,12 @@ pub fn app_label_derive(input: TokenStream) -> TokenStream {
                 self
             }
 
+            fn label_name(&self) -> &'static str {
+                ::std::any::type_name::<Self>()
+            }
+
             fn dyn_hash(&self, mut state: &mut dyn ::std::hash::Hasher) {
-                let ty_id = ::std::any::TypeId::of::<Self>();
-                ::std::hash::Hash::hash(&ty_id, &mut state);
-                ::std::hash::Hash::hash(self, &mut state);
+                ::std::hash::Hash::hash(&self.label_name(), &mut state);
             }
         }
     })

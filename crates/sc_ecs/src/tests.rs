@@ -43,11 +43,13 @@ fn events_resource_id_distinct() {
     use crate::resource::Resource;
 
     #[derive(Event, Clone, Debug)]
+    #[allow(dead_code)]
     struct EvA {
         x: u32,
     }
 
     #[derive(Event, Clone, Debug)]
+    #[allow(dead_code)]
     struct EvB {
         x: u32,
     }
@@ -106,4 +108,48 @@ fn derived_component_static_name_and_query_count_use_index() {
     assert_eq!(query.len(), 1);
     world.despawn(&second);
     assert!(query.is_empty());
+}
+
+#[test]
+fn schedule_labels_match_across_module_copies() {
+    use crate::intern::Interned;
+    use crate::schedule::{ScheduleLabel, Update};
+    use std::collections::HashMap;
+
+    // Labels are keyed by type, not by value: one schedule slot per label
+    // type even if a label carries data.
+    #[derive(ScheduleLabel, Clone, Debug, PartialEq, Eq, Hash)]
+    struct ProbeLabel(u8);
+
+    // Simulates host vs cdylib-plugin copies of this crate: each module
+    // instance leaks its own box (distinct heap addresses, distinct TypeId
+    // namespaces) into its own interner. Identity must still hold by
+    // stable type name, or plugin `add_systems` lands in an orphaned
+    // schedule slot the host tick loop never visits (/give, /say dead).
+    let host_leaked: &'static dyn ScheduleLabel = Box::leak(Box::new(ProbeLabel(5)));
+    let plugin_leaked: &'static dyn ScheduleLabel = Box::leak(Box::new(ProbeLabel(5)));
+    assert!(
+        !std::ptr::addr_eq(
+            std::ptr::from_ref::<dyn ScheduleLabel>(host_leaked).cast::<()>(),
+            std::ptr::from_ref::<dyn ScheduleLabel>(plugin_leaked).cast::<()>(),
+        ),
+        "test premise: two independent leaks must have distinct addresses"
+    );
+    let host_key = Interned(host_leaked);
+    let plugin_key = Interned(plugin_leaked);
+    assert_eq!(host_key, plugin_key, "same-source labels must be equal");
+    assert_eq!(
+        host_leaked.label_name(),
+        plugin_leaked.label_name(),
+        "label names must be stable"
+    );
+    let mut map: HashMap<Interned<dyn ScheduleLabel>, u32> = HashMap::new();
+    map.insert(host_key, 7);
+    assert_eq!(
+        map.get(&plugin_key),
+        Some(&7),
+        "plugin-interned key must hit the host schedule slot"
+    );
+    // Distinct label types must stay distinct.
+    assert_ne!(host_leaked.label_name(), Update.label_name());
 }

@@ -8,7 +8,7 @@
 use sc_binary::{ByteReader, ByteWriter};
 use sc_nbt::compound::CompoundNbt;
 use sc_nbt::local::BedrockLocalNbt;
-use sc_nbt::reader::{NbtReadTrait, NbtReader};
+use sc_nbt::reader::NbtReader;
 use sc_nbt::writer::NbtWriter;
 use sc_nbt::NbtValue;
 

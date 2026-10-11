@@ -1,6 +1,6 @@
 //! Owner-local inventory, crafting-grid and cursor transactions.
-use crate::container::ContainerOpen;
-use crate::crafting::{CraftRequestEvent, SharedItemTags, SharedRecipeRegistry};
+use crate::inventory::ContainerOpen;
+use crate::inventory::crafting::{CraftRequestEvent, SharedItemTags, SharedRecipeRegistry};
 use parking_lot::Mutex;
 use sc_ecs::{component::Component, entity::EntityId, world::World};
 use sc_item::{ItemRegistry, ItemStack, PlayerInventory};
@@ -16,6 +16,10 @@ pub enum CraftContainer {
     Grid,
     Cursor,
     Output,
+    /// Furnace window slot (`slot` = 0 input / 1 fuel / 2 result).
+    /// Ingredient container enums differ per station (25/45/46) but all map
+    /// to slot 0; the open station validates at execution.
+    Furnace,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -42,6 +46,15 @@ pub enum InventoryAction {
         recipe_id: u32,
         times: u8,
         automatic: bool,
+    },
+    /// Creative-mode materialization (client `CraftCreative` take): grants
+    /// the table template for `creative_id` into the scratch Output slot,
+    /// drained by the request's own Moves. Only valid for creative players;
+    /// the grant must be fully consumed within the same request (a leftover
+    /// Output rejects the whole packet, so grants cannot leak across
+    /// requests into later free takes).
+    Grant {
+        creative_id: u32,
     },
     Consume,
     Create,
@@ -128,14 +141,304 @@ fn same_item(a: &ItemStack, b: &ItemStack) -> bool {
     a.runtime_id == b.runtime_id && a.damage == b.damage && a.block_runtime_id == b.block_runtime_id
 }
 
+/// Fuel check through the item component table (missing table or
+/// component = not fuel, never a code default).
+fn is_fuel(
+    fuel: Option<&sc_packloader::item::ItemComponentTable>,
+    stack: &ItemStack,
+) -> bool {
+    fuel.is_some_and(|table| crate::furnace::fuel_ticks(table, stack) > 0)
+}
+
+fn is_furnace_slot(reference: &CraftSlotRef) -> bool {
+    reference.container == CraftContainer::Furnace
+}
+
+/// Furnace-side endpoint validation: slot range, window binding (None or the
+/// open window id) and stack presence for id-checked requests. Furnace slots
+/// carry no issued net ids, so presence is the only server-side check.
+fn furnace_slot(
+    reference: &CraftSlotRef,
+    window_id: u8,
+    slots: &[ItemStack; 3],
+) -> Option<usize> {
+    let index = reference.slot as usize;
+    if index >= crate::furnace::SLOT_COUNT {
+        return None;
+    }
+    if reference
+        .dynamic
+        .is_some_and(|dynamic| dynamic != window_id as u32)
+    {
+        return None;
+    }
+    if reference.net_id > 0 && slots[index].is_empty() {
+        return None;
+    }
+    Some(index)
+}
+
+/// Move with at least one furnace endpoint (vanilla slot rules: the result
+/// slot is take-only, the fuel slot takes fuel only; input takes anything).
+/// Player endpoints reuse the caller's net-id validation.
+#[allow(clippy::too_many_arguments)]
+fn furnace_move(
+    valid_player: &dyn Fn(CraftSlotRef, usize, &[ItemStack]) -> bool,
+    items: &ItemRegistry,
+    fuel: Option<&sc_packloader::item::ItemComponentTable>,
+    main: usize,
+    table: bool,
+    _station: StationKind,
+    window_id: u8,
+    stacks: &mut [ItemStack],
+    slots: &mut [ItemStack; 3],
+    amount: u8,
+    source: &CraftSlotRef,
+    destination: &CraftSlotRef,
+    op_id: u64,
+) -> bool {
+    enum Side {
+        Player(usize),
+        Furnace(usize),
+    }
+    let Some(src) = (if is_furnace_slot(source) {
+        furnace_slot(source, window_id, slots).map(Side::Furnace)
+    } else {
+        index(*source, main, table).map(Side::Player)
+    }) else {
+        log::debug!("[craft] op={op_id} furnace Move rejected: bad source {source:?}");
+        return false;
+    };
+    let Some(dst) = (if is_furnace_slot(destination) {
+        furnace_slot(destination, window_id, slots).map(Side::Furnace)
+    } else {
+        index(*destination, main, table).map(Side::Player)
+    }) else {
+        log::debug!("[craft] op={op_id} furnace Move rejected: bad destination {destination:?}");
+        return false;
+    };
+    // Result is take-only: it is never a move destination.
+    if matches!(dst, Side::Furnace(d) if d == crate::furnace::RESULT_SLOT as usize) {
+        log::debug!("[craft] op={op_id} furnace Move rejected: result is take-only");
+        return false;
+    }
+    let (src_stack, dst_stack) = match (&src, &dst) {
+        (Side::Player(i), Side::Player(j)) => (&stacks[*i], &stacks[*j]),
+        (Side::Player(i), Side::Furnace(d)) => (&stacks[*i], &slots[*d]),
+        (Side::Furnace(s), Side::Player(j)) => (&slots[*s], &stacks[*j]),
+        (Side::Furnace(s), Side::Furnace(d)) => {
+            let (left, right) = if s == d {
+                log::debug!("[craft] op={op_id} furnace Move rejected: same slot");
+                return false;
+            } else {
+                (&slots[*s], &slots[*d])
+            };
+            (left, right)
+        }
+    };
+    if let Side::Player(i) = src {
+        if !valid_player(*source, i, stacks) {
+            log::debug!("[craft] op={op_id} furnace Move rejected: source net_id check failed");
+            return false;
+        }
+    }
+    if let Side::Player(j) = dst {
+        if !valid_player(*destination, j, stacks) {
+            log::debug!("[craft] op={op_id} furnace Move rejected: destination net_id check failed");
+            return false;
+        }
+    }
+    if amount == 0 || src_stack.count < amount as u16 {
+        log::debug!("[craft] op={op_id} furnace Move rejected: illegal amount");
+        return false;
+    }
+    if !dst_stack.is_empty() && !same_item(src_stack, dst_stack) {
+        log::debug!("[craft] op={op_id} furnace Move rejected: target slot item mismatch");
+        return false;
+    }
+    if dst_stack.count.saturating_add(amount as u16) > items.max_stack_size(src_stack.runtime_id) {
+        log::debug!("[craft] op={op_id} furnace Move rejected: over stack cap");
+        return false;
+    }
+    // Fuel slot takes fuel only.
+    if matches!(dst, Side::Furnace(d) if d == crate::furnace::FUEL_SLOT as usize)
+        && !is_fuel(fuel, src_stack)
+    {
+        log::debug!(
+            "[craft] op={op_id} furnace Move rejected: not fuel ({})",
+            items
+                .get(src_stack.runtime_id)
+                .map(|def| def.name.to_string())
+                .unwrap_or_else(|| format!("runtime:{}", src_stack.runtime_id)),
+        );
+        return false;
+    }
+    let moving = ItemStack {
+        count: 0,
+        ..src_stack.clone()
+    };
+    // Diagnostic: what is about to move (identifier + amount + direction).
+    // Keep at debug: one line per furnace move, off unless log hunting.
+    log::debug!(
+        "[craft] op={op_id} furnace Move applied: {} x{} {} -> {}",
+        items
+            .get(src_stack.runtime_id)
+            .map(|def| def.name.to_string())
+            .unwrap_or_else(|| format!("runtime:{}", src_stack.runtime_id)),
+        amount,
+        match &src {
+            Side::Player(i) => format!("player[{i}]"),
+            Side::Furnace(d) => format!(
+                "furnace[{}]",
+                match d {
+                    0 => "input",
+                    1 => "fuel",
+                    _ => "result",
+                }
+            ),
+        },
+        match &dst {
+            Side::Player(i) => format!("player[{i}]"),
+            Side::Furnace(d) => format!(
+                "furnace[{}]",
+                match d {
+                    0 => "input",
+                    1 => "fuel",
+                    _ => "result",
+                }
+            ),
+        },
+    );
+    match (&src, &dst) {
+        (Side::Player(i), Side::Player(j)) => {
+            if stacks[*j].is_empty() {
+                stacks[*j] = moving;
+            }
+            stacks[*j].count += amount as u16;
+            stacks[*i].count -= amount as u16;
+            stacks[*i].clear_if_empty();
+        }
+        (Side::Player(i), Side::Furnace(d)) => {
+            if slots[*d].is_empty() {
+                slots[*d] = moving;
+            }
+            slots[*d].count += amount as u16;
+            stacks[*i].count -= amount as u16;
+            stacks[*i].clear_if_empty();
+        }
+        (Side::Furnace(s), Side::Player(j)) => {
+            if stacks[*j].is_empty() {
+                stacks[*j] = moving;
+            }
+            stacks[*j].count += amount as u16;
+            slots[*s].count -= amount as u16;
+            slots[*s].clear_if_empty();
+        }
+        (Side::Furnace(s), Side::Furnace(d)) => {
+            if slots[*d].is_empty() {
+                slots[*d] = moving;
+            }
+            slots[*d].count += amount as u16;
+            slots[*s].count -= amount as u16;
+            slots[*s].clear_if_empty();
+        }
+    }
+    true
+}
+
+/// Swap with at least one furnace endpoint (same slot rules as moves).
+#[allow(clippy::too_many_arguments)]
+fn furnace_swap(
+    valid_player: &dyn Fn(CraftSlotRef, usize, &[ItemStack]) -> bool,
+    _items: &ItemRegistry,
+    fuel: Option<&sc_packloader::item::ItemComponentTable>,
+    main: usize,
+    table: bool,
+    _station: StationKind,
+    window_id: u8,
+    stacks: &mut [ItemStack],
+    slots: &mut [ItemStack; 3],
+    source: &CraftSlotRef,
+    destination: &CraftSlotRef,
+    op_id: u64,
+) -> bool {
+    let resolve = |reference: &CraftSlotRef| {
+        if is_furnace_slot(reference) {
+            furnace_slot(reference, window_id, slots).map(|index| (true, index))
+        } else {
+            index(*reference, main, table).map(|index| (false, index))
+        }
+    };
+    let (Some((src_furnace, src)), Some((dst_furnace, dst))) =
+        (resolve(source), resolve(destination))
+    else {
+        log::debug!("[craft] op={op_id} furnace Swap rejected: bad endpoint");
+        return false;
+    };
+    // Result is take-only: Takes move it out, Swaps never touch it.
+    if (src_furnace && src == crate::furnace::RESULT_SLOT as usize)
+        || (dst_furnace && dst == crate::furnace::RESULT_SLOT as usize)
+    {
+        log::debug!("[craft] op={op_id} furnace Swap rejected: result is take-only");
+        return false;
+    }
+    let incoming_src = if src_furnace {
+        slots[src].clone()
+    } else {
+        if !valid_player(*source, src, stacks) {
+            return false;
+        }
+        stacks[src].clone()
+    };
+    let incoming_dst = if dst_furnace {
+        slots[dst].clone()
+    } else {
+        if !valid_player(*destination, dst, stacks) {
+            return false;
+        }
+        stacks[dst].clone()
+    };
+    // Fuel slot takes fuel only (either direction).
+    if dst_furnace
+        && dst == crate::furnace::FUEL_SLOT as usize
+        && !incoming_src.is_empty()
+        && !is_fuel(fuel, &incoming_src)
+    {
+        return false;
+    }
+    if src_furnace
+        && src == crate::furnace::FUEL_SLOT as usize
+        && !incoming_dst.is_empty()
+        && !is_fuel(fuel, &incoming_dst)
+    {
+        return false;
+    }
+    if src_furnace {
+        slots[src] = incoming_dst;
+    } else {
+        stacks[src] = incoming_dst;
+    }
+    if dst_furnace {
+        slots[dst] = incoming_src;
+    } else {
+        stacks[dst] = incoming_src;
+    }
+    true
+}
+
 /// Current crafting context: workstation type plus 3x3 flag.
 ///
-/// Falls back to 2x2 with no workstation window; returns `None` (reject)
-/// when the player moved away, changed worlds, or the block changed.
+/// No open window and the player-inventory window both mean 2x2 crafting
+/// with no station block (the client opens its own inventory to use the
+/// 2x2 grid). Returns `None` (reject) only when a workstation window is
+/// open but stale (moved away, changed worlds, block changed).
 fn station(world: &World, entity: EntityId) -> Option<(StationKind, bool)> {
     let Some(open) = world.get_component::<ContainerOpen>(&entity) else {
-        return Some((StationKind::CraftingTable, false));
+        return Some((StationKind::InventoryCrafting, false));
     };
+    if open.is_player_inventory() {
+        return Some((StationKind::InventoryCrafting, false));
+    }
     let (station, open_world_id, open_position) = open.workstation()?;
     let id = world.get_component::<sc_world::manager::MinecraftWorldId>(&entity)?;
     let transform = world.get_component::<sc_entity::motion::Transform>(&entity)?;
@@ -145,7 +448,7 @@ fn station(world: &World, entity: EntityId) -> Option<(StationKind, bool)> {
         + (pos.z - open_position.2 as f32 - 0.5).powi(2);
     if *id.as_ref() != open_world_id
         || distance > 36.0
-        || crate::crafting::station_block_kind(world, &id, open_position) != Some(station)
+        || crate::inventory::crafting::station_block_kind(world, &id, open_position) != Some(station)
     {
         return None;
     }
@@ -182,15 +485,27 @@ fn craft(
         .checked_sub(2)
         .and_then(|id| snapshot.get_by_index(id))
     else {
+        log::debug!("[craft] op=? rejected: recipe id {recipe_id} out of range");
         return false;
     };
     let Some((station, table)) = station(world, entity) else {
+        log::debug!(
+            "[craft] rejected: no station for {} (moved/world/block changed)",
+            recipe.identifier
+        );
         return false;
     };
     if !recipe.stations.is_empty() && !recipe.stations.contains(&station) {
+        log::debug!(
+            "[craft] rejected: {} needs stations {:?}, at {:?}",
+            recipe.identifier,
+            recipe.stations,
+            station
+        );
         return false;
     }
-    if !crate::crafting::recipe_allowed(world, entity, recipe) {
+    if !crate::inventory::crafting::recipe_allowed(world, entity, recipe) {
+        log::debug!("[craft] rejected: {} not allowed (unlock/gamemode)", recipe.identifier);
         return false;
     }
     let tags = world
@@ -211,6 +526,14 @@ fn craft(
     let requirements = match &recipe.body {
         RecipeBody::Shaped(body) => {
             if body.width as usize > size || body.height as usize > size {
+                log::debug!(
+                    "[craft] rejected: {} shaped {}x{} exceeds {}x{} grid",
+                    recipe.identifier,
+                    body.width,
+                    body.height,
+                    size,
+                    size
+                );
                 return false;
             }
             if !automatic
@@ -218,6 +541,13 @@ fn craft(
                     recipe, &grid, size as u8, size as u8, station, &tags, 1024,
                 )
             {
+                log::debug!(
+                    "[craft] rejected: {} shaped grid mismatch (grid={:?})",
+                    recipe.identifier,
+                    grid.iter()
+                        .map(|cell| cell.as_ref().map(|input| input.identifier.clone()))
+                        .collect::<Vec<_>>()
+                );
                 return false;
             }
             body.grid
@@ -227,7 +557,17 @@ fn craft(
                 .collect::<Vec<_>>()
         }
         RecipeBody::Shapeless(body) => {
-            if station == StationKind::CraftingTable && body.ingredients.len() > size * size {
+            if matches!(
+                station,
+                StationKind::CraftingTable | StationKind::InventoryCrafting
+            ) && body.ingredients.len() > size * size {
+                log::debug!(
+                    "[craft] rejected: {} shapeless needs {} slots, grid is {}x{}",
+                    recipe.identifier,
+                    body.ingredients.len(),
+                    size,
+                    size
+                );
                 return false;
             }
             if !automatic
@@ -239,6 +579,14 @@ fn craft(
                     1024,
                 )
             {
+                log::debug!(
+                    "[craft] rejected: {} shapeless multiset mismatch (have={:?})",
+                    recipe.identifier,
+                    grid.iter()
+                        .flatten()
+                        .map(|input| input.identifier.clone())
+                        .collect::<Vec<_>>()
+                );
                 return false;
             }
             body.ingredients
@@ -255,10 +603,26 @@ fn craft(
     };
     // The transient output slot represents one stack; multi-output recipes stay fail-closed.
     if outputs.len() != 1 {
+        log::debug!(
+            "[craft] rejected: {} has {} outputs, need exactly 1",
+            recipe.identifier,
+            outputs.len()
+        );
         return false;
     }
     let output = &outputs[0];
-    let Some(id) = items.runtime_id_by_name(&output.identifier) else {
+    let Some(id) = items
+        .runtime_id_by_name(&output.identifier)
+        .or_else(|| {
+            sc_recipe::rename_alias(&tags, &output.identifier)
+                .and_then(|alias| items.runtime_id_by_name(&alias))
+        })
+    else {
+        log::debug!(
+            "[craft] rejected: {} output '{}' not in item registry",
+            recipe.identifier,
+            output.identifier
+        );
         return false;
     };
     let Some(count) = output.count.checked_mul(times as u16) else {
@@ -271,6 +635,12 @@ fn craft(
     if (!old.is_empty() && !same_item(&old, &produced))
         || old.count.saturating_add(count) > items.max_stack_size(id)
     {
+        log::debug!(
+            "[craft] rejected: {} output slot blocked (old={:?}, produced={:?})",
+            recipe.identifier,
+            old,
+            produced
+        );
         return false;
     }
     let requirements = requirements
@@ -295,6 +665,17 @@ fn craft(
         })
         .collect::<Vec<_>>();
     let Some(plan) = sc_recipe::plan_consumption(&requirements, &live, &tags, 1024) else {
+        log::debug!(
+            "[craft] rejected: {} consumption plan failed (requirements={:?}, live={:?})",
+            recipe.identifier,
+            requirements
+                .iter()
+                .map(|(spec, count)| (spec.clone(), count))
+                .collect::<Vec<_>>(),
+            live.iter()
+                .map(|(i, input)| (*i, input.identifier.clone(), input.count))
+                .collect::<Vec<_>>()
+        );
         return false;
     };
     for (i, count) in plan {
@@ -303,6 +684,68 @@ fn craft(
     }
     produced.count += old.count;
     stacks[main + 10] = produced;
+    true
+}
+
+/// Creative-mode materialization for one `Grant` action: resolves the table
+/// template for `creative_id` and fills the scratch Output slot with exactly
+/// what this request's Moves consume from it (capped at the item stack cap).
+/// Fail-closed: non-creative players, unknown ids, an occupied Output, a
+/// missing table, or no consuming Move all reject. The caller additionally
+/// rejects any leftover Output at end of request, so granted items cannot
+/// leak across requests into later free takes.
+#[allow(clippy::too_many_arguments)]
+fn grant_creative(
+    world: &World,
+    entity: EntityId,
+    items: &ItemRegistry,
+    stacks: &mut [ItemStack],
+    main: usize,
+    request: &CraftRequestEvent,
+    creative_id: u32,
+    op_id: u64,
+) -> bool {
+    let creative = world
+        .get_component::<sc_utils::game::client::MinecraftClient>(&entity)
+        .is_some_and(|client| client.data.read().gamemode.is_creative());
+    if !creative {
+        log::debug!("[craft] op={op_id} Grant rejected: non-creative player");
+        return false;
+    }
+    let output = main + 10;
+    if !stacks[output].is_empty() {
+        log::debug!("[craft] op={op_id} Grant rejected: output occupied");
+        return false;
+    }
+    let Some(table) = world.get_resource::<sc_item::CreativeGrantTable>() else {
+        log::debug!("[craft] op={op_id} Grant rejected: no grant table");
+        return false;
+    };
+    let Some(template) = table.get(creative_id) else {
+        log::debug!("[craft] op={op_id} Grant rejected: unknown creative id {creative_id}");
+        return false;
+    };
+    let wanted: u16 = request
+        .actions
+        .iter()
+        .filter_map(|action| match action {
+            InventoryAction::Move { amount, source, .. }
+                if source.container == CraftContainer::Output =>
+            {
+                Some(*amount as u16)
+            }
+            _ => None,
+        })
+        .sum();
+    let granted = wanted.min(items.max_stack_size(template.runtime_id));
+    if granted == 0 {
+        log::debug!("[craft] op={op_id} Grant rejected: no consuming move");
+        return false;
+    }
+    stacks[output] = ItemStack {
+        count: granted,
+        ..template
+    };
     true
 }
 
@@ -330,6 +773,37 @@ pub fn execute(world: &World, request: &CraftRequestEvent) -> bool {
     let mut stacks = before.clone();
     let old_extra = state.extra.clone();
     stacks.extend(old_extra.iter().cloned());
+    // Furnace window binding (validated like `station()`; stale windows
+    // reject furnace moves). Working slots load only when touched.
+    let furnace_binding = match station(world, entity) {
+        Some((bound, _)) if crate::furnace::is_furnace_station(bound) => world
+            .get_component::<ContainerOpen>(&entity)
+            .and_then(|open| {
+                open.workstation().map(|(station, world_id, pos)| {
+                    (world_id, pos, station, open.window_id)
+                })
+            }),
+        _ => None,
+    };
+    let touches_furnace = request.actions.iter().any(|action| match action {
+        InventoryAction::Move {
+            source,
+            destination,
+            ..
+        } => is_furnace_slot(source) || is_furnace_slot(destination),
+        InventoryAction::Swap {
+            source,
+            destination,
+        } => is_furnace_slot(source) || is_furnace_slot(destination),
+        _ => false,
+    });
+    let mut furnace_slots: Option<[ItemStack; 3]> = None;
+    if touches_furnace {
+        if let Some((world_id, pos, _, _)) = furnace_binding.as_ref() {
+            furnace_slots = crate::block_entity::process_state_at(world, world_id, *pos)
+                .map(|process| process.furnace_slots());
+        }
+    }
     let valid_ref = |reference: CraftSlotRef, i: usize, current: &[ItemStack]| {
         // Stack network id check: mismatch means client>0 and server id differs;
         // zero/negative ids always pass.
@@ -359,6 +833,9 @@ pub fn execute(world: &World, request: &CraftRequestEvent) -> bool {
     let mut grid_dynamic_seen: Option<Option<u32>> = None;
     let success = (|| {
         let mut crafted = false;
+        // Set by a Grant action: the scratch Output must be empty again by
+        // end of request (grants cannot leak across requests).
+        let mut grant_output = false;
         for action in &request.actions {
             match action {
                 InventoryAction::Move {
@@ -366,6 +843,40 @@ pub fn execute(world: &World, request: &CraftRequestEvent) -> bool {
                     source,
                     destination,
                 } => {
+                    if is_furnace_slot(source) || is_furnace_slot(destination) {
+                        let Some((_, _, station, window_id)) = &furnace_binding else {
+                            log::debug!(
+                                "[craft] op={op_id} Move rejected: furnace slot without a bound furnace window"
+                            );
+                            return false;
+                        };
+                        let Some(slots) = furnace_slots.as_mut() else {
+                            log::debug!(
+                                "[craft] op={op_id} Move rejected: furnace state missing"
+                            );
+                            return false;
+                        };
+                        let fuel_table =
+                            world.get_resource::<sc_packloader::item::ItemComponentTable>();
+                        if !furnace_move(
+                            &valid_ref,
+                            &items,
+                            fuel_table.as_deref(),
+                            main,
+                            table,
+                            *station,
+                            *window_id,
+                            &mut stacks,
+                            slots,
+                            *amount,
+                            source,
+                            destination,
+                            op_id,
+                        ) {
+                            return false;
+                        }
+                        continue;
+                    }
                     let (Some(src), Some(dst)) = (
                         index(*source, main, table),
                         index(*destination, main, table),
@@ -424,6 +935,39 @@ pub fn execute(world: &World, request: &CraftRequestEvent) -> bool {
                     source,
                     destination,
                 } => {
+                    if is_furnace_slot(source) || is_furnace_slot(destination) {
+                        let Some((_, _, station, window_id)) = &furnace_binding else {
+                            log::debug!(
+                                "[craft] op={op_id} Swap rejected: furnace slot without a bound furnace window"
+                            );
+                            return false;
+                        };
+                        let Some(slots) = furnace_slots.as_mut() else {
+                            log::debug!(
+                                "[craft] op={op_id} Swap rejected: furnace state missing"
+                            );
+                            return false;
+                        };
+                        let fuel_table =
+                            world.get_resource::<sc_packloader::item::ItemComponentTable>();
+                        if !furnace_swap(
+                            &valid_ref,
+                            &items,
+                            fuel_table.as_deref(),
+                            main,
+                            table,
+                            *station,
+                            *window_id,
+                            &mut stacks,
+                            slots,
+                            source,
+                            destination,
+                            op_id,
+                        ) {
+                            return false;
+                        }
+                        continue;
+                    }
                     let (Some(src), Some(dst)) = (
                         index(*source, main, table),
                         index(*destination, main, table),
@@ -480,11 +1024,36 @@ pub fn execute(world: &World, request: &CraftRequestEvent) -> bool {
                         return false;
                     }
                 }
+                InventoryAction::Grant { creative_id } => {
+                    if crafted
+                        || !grant_creative(
+                            world,
+                            entity,
+                            &items,
+                            &mut stacks,
+                            main,
+                            request,
+                            *creative_id,
+                            op_id,
+                        )
+                    {
+                        return false;
+                    }
+                    crafted = true;
+                    grant_output = true;
+                }
                 InventoryAction::Unsupported => {
                     log::debug!("[craft] op={op_id} rejected: contains Unsupported actions");
                     return false;
                 }
             }
+        }
+        if grant_output && !stacks[main + 10].is_empty() {
+            log::debug!(
+                "[craft] op={op_id} rejected: Grant output left over (count={})",
+                stacks[main + 10].count,
+            );
+            return false;
         }
         !request.actions.is_empty()
     })();
@@ -506,7 +1075,28 @@ pub fn execute(world: &World, request: &CraftRequestEvent) -> bool {
         }
         *inventory.slots.write() = stacks[..main].to_vec();
         state.extra = stacks[main..].to_vec();
-        crate::crafting::bump_inventory_revision(world, &entity);
+        // Furnace working slots write back to the bound process state
+        // (viewer sync goes out with the response, see `publish_response`).
+        // Missing entities are ensured first (move path creates on touch,
+        // same as the old store path); a refused ensure drops the write
+        // (fail-closed, the response already resyncs the viewer).
+        if let (Some(slots), Some((world_id, pos, station, _))) =
+            (furnace_slots, furnace_binding.as_ref())
+        {
+            use sc_block::workstation::SlotRole;
+            crate::block_entity::ensure_block_entity(
+                world,
+                world_id.clone(),
+                *pos,
+                crate::block_entity::BlockEntityKind::Furnace(*station),
+            );
+            if let Some(process) = crate::block_entity::process_state_at(world, world_id, *pos) {
+                process.set_slot(SlotRole::Input, slots[0].clone());
+                process.set_slot(SlotRole::Fuel, slots[1].clone());
+                process.set_slot(SlotRole::Result, slots[2].clone());
+            }
+        }
+        crate::inventory::crafting::bump_inventory_revision(world, &entity);
     }
     if state.order.len() >= 128 {
         if let Some(old) = state.order.pop_front() {
@@ -635,13 +1225,31 @@ pub fn return_items(world: &World, entity: EntityId) -> bool {    let Some(compo
     state.extra.fill(ItemStack::empty());
     state.ids.retain(|index, _| *index < inventory.len());
     state.grid_dynamic = None;
-    crate::crafting::bump_inventory_revision(world, &entity);
+    crate::inventory::crafting::bump_inventory_revision(world, &entity);
     true
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn player_inventory_window_counts_as_stationless_2x2() {
+        use crate::inventory::ContainerOpen;
+        let world = World::new();
+        let entity = world.spawn(sc_utils::components::DisplayName("craft-test".to_string()));
+        // No window open: 2x2 with no station.
+        assert!(matches!(
+            station(&world, entity),
+            Some((StationKind::InventoryCrafting, false))
+        ));
+        // Player's own inventory open (the 2x2 crafting case): same context,
+        // not a rejection. This is the live log->planks regression.
+        world.add_component(&entity, ContainerOpen::player_inventory());
+        assert!(matches!(
+            station(&world, entity),
+            Some((StationKind::InventoryCrafting, false))
+        ));
+    }
     #[test]
     fn move_into_grid_craft_take_result_and_replay_are_atomic() {
         let world = World::new();
@@ -919,5 +1527,170 @@ mod tests {
         ));
         let inventory = world.get_component::<PlayerInventory>(&entity).unwrap();
         assert_eq!(inventory.get(10).unwrap().runtime_id, 3);
+    }
+
+    fn creative_player(
+        world: &World,
+        gamemode: sc_utils::game::gamemode::Gamemode,
+    ) -> sc_ecs::entity::EntityId {
+        use sc_utils::game::client::MinecraftClient;
+        use sc_utils::world::client_data::MinecraftClientData;
+        let entity = world.spawn(PlayerInventory::new(36));
+        let data = MinecraftClientData {
+            gamemode,
+            ..MinecraftClientData::default()
+        };
+        world.add_component(&entity, MinecraftClient::new(entity, world.clone(), data));
+        entity
+    }
+
+    fn creative_table(world: &World, runtime_id: u16) {
+        let mut table = sc_item::CreativeGrantTable::default();
+        let id = table.push(ItemStack::new(runtime_id, 1));
+        assert_eq!(id, 1);
+        world.insert_resource(table);
+    }
+
+    fn grant_take(
+        grant_id: u32,
+        amount: u8,
+        op: u64,
+        entity: sc_ecs::entity::EntityId,
+    ) -> CraftRequestEvent {
+        use CraftContainer as C;
+        let reference = |container, slot, net_id| CraftSlotRef {
+            container,
+            slot,
+            net_id,
+            dynamic: None,
+        };
+        CraftRequestEvent {
+            entity,
+            recipe_network_id: 0,
+            requested_count: 0,
+            operation_id: op,
+            actions: vec![
+                InventoryAction::Grant {
+                    creative_id: grant_id,
+                },
+                InventoryAction::Results,
+                InventoryAction::Move {
+                    amount,
+                    source: reference(C::Output, 50, -3),
+                    destination: reference(C::Hotbar, 0, 0),
+                },
+            ],
+        }
+    }
+
+    /// Live creative-take shape (action 12 + Results + Output->hotbar Move):
+    /// the grant materializes exactly the moved amount and the hotbar fills.
+    #[test]
+    fn creative_grant_materializes_into_hotbar() {
+        use sc_utils::game::gamemode::Gamemode;
+        let world = World::new();
+        let items = ItemRegistry::new();
+        items.upsert(sc_item::ItemDefinition::new(2, "minecraft:oak_planks"));
+        world.insert_resource(items);
+        world.insert_resource(SharedRecipeRegistry::new(
+            sc_recipe::RecipeRegistrySnapshot::compile(
+                &[],
+                &sc_recipe::CompileBudgets::default(),
+                false,
+            )
+            .unwrap()
+            .0,
+        ));
+        world.insert_resource(SharedItemTags::default());
+        creative_table(&world, 2);
+        let entity = creative_player(&world, Gamemode::Creative);
+        assert!(execute(&world, &grant_take(1, 64, 1, entity)));
+        let inventory = world.get_component::<PlayerInventory>(&entity).unwrap();
+        let stack = inventory.get(0).unwrap();
+        assert_eq!(stack.runtime_id, 2);
+        assert_eq!(stack.count, 64);
+    }
+
+    /// Survival players never materialize: the whole request rejects and the
+    /// hotbar stays empty (no free items outside creative).
+    #[test]
+    fn creative_grant_rejects_non_creative_player() {
+        use sc_utils::game::gamemode::Gamemode;
+        let world = World::new();
+        let items = ItemRegistry::new();
+        items.upsert(sc_item::ItemDefinition::new(2, "minecraft:oak_planks"));
+        world.insert_resource(items);
+        world.insert_resource(SharedRecipeRegistry::new(
+            sc_recipe::RecipeRegistrySnapshot::compile(
+                &[],
+                &sc_recipe::CompileBudgets::default(),
+                false,
+            )
+            .unwrap()
+            .0,
+        ));
+        world.insert_resource(SharedItemTags::default());
+        creative_table(&world, 2);
+        let entity = creative_player(&world, Gamemode::Survival);
+        assert!(!execute(&world, &grant_take(1, 64, 1, entity)));
+        let inventory = world.get_component::<PlayerInventory>(&entity).unwrap();
+        assert!(inventory
+            .get(0)
+            .map(|stack| stack.is_empty())
+            .unwrap_or(true));
+    }
+
+    /// Unknown creative ids reject, and granted output cannot leak across
+    /// requests: a follow-up drain without a fresh Grant finds Output empty.
+    #[test]
+    fn creative_grant_rejects_unknown_id_and_leftovers() {
+        use sc_utils::game::gamemode::Gamemode;
+        use CraftContainer as C;
+        let world = World::new();
+        let items = ItemRegistry::new();
+        items.upsert(sc_item::ItemDefinition::new(2, "minecraft:oak_planks"));
+        world.insert_resource(items);
+        world.insert_resource(SharedRecipeRegistry::new(
+            sc_recipe::RecipeRegistrySnapshot::compile(
+                &[],
+                &sc_recipe::CompileBudgets::default(),
+                false,
+            )
+            .unwrap()
+            .0,
+        ));
+        world.insert_resource(SharedItemTags::default());
+        creative_table(&world, 2);
+        let entity = creative_player(&world, Gamemode::Creative);
+        // Unknown id.
+        assert!(!execute(&world, &grant_take(9, 64, 1, entity)));
+        // Legit take fills hotbar 0...
+        assert!(execute(&world, &grant_take(1, 64, 2, entity)));
+        // ...but a later drain without a fresh Grant rejects (Output empty).
+        let reference = |container, slot, net_id| CraftSlotRef {
+            container,
+            slot,
+            net_id,
+            dynamic: None,
+        };
+        assert!(!execute(
+            &world,
+            &CraftRequestEvent {
+                entity,
+                recipe_network_id: 0,
+                requested_count: 0,
+                operation_id: 3,
+                actions: vec![InventoryAction::Move {
+                    amount: 1,
+                    source: reference(C::Output, 50, -3),
+                    destination: reference(C::Hotbar, 1, 0),
+                }],
+            }
+        ));
+        let inventory = world.get_component::<PlayerInventory>(&entity).unwrap();
+        assert!(inventory
+            .get(1)
+            .map(|stack| stack.is_empty())
+            .unwrap_or(true));
     }
 }

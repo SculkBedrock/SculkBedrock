@@ -141,6 +141,15 @@ macro_rules! define_label {
             /// Casts this value to a form where it can be compared with other type-erased values.
             fn as_dyn_eq(&self) -> &dyn $crate::dyn_method::DynEq;
 
+            /// Stable cross-DLL identity: `std::any::type_name` of the
+            /// concrete label type. Pointer address and `TypeId` both differ
+            /// between the host and a statically-linked cdylib copy of this
+            /// crate (see `resource::ResourceId`), so label equality and
+            /// hashing must use this name: otherwise systems a plugin
+            /// registers via `add_systems` land in an orphaned schedule slot
+            /// that the host tick loop never visits (silent no-run).
+            fn label_name(&self) -> &'static str;
+
             /// Feeds this value into the given [`Hasher`].
             fn dyn_hash(&self, state: &mut dyn ::std::hash::Hasher);
 
@@ -164,6 +173,10 @@ macro_rules! define_label {
                 (**self).as_dyn_eq()
             }
 
+            fn label_name(&self) -> &'static str {
+                (**self).label_name()
+            }
+
             fn dyn_hash(&self, state: &mut dyn ::std::hash::Hasher) {
                 (**self).dyn_hash(state);
             }
@@ -175,7 +188,7 @@ macro_rules! define_label {
 
         impl PartialEq for dyn $label_trait_name {
             fn eq(&self, other: &Self) -> bool {
-                self.as_dyn_eq().dyn_eq(other.as_dyn_eq())
+                self.label_name() == other.label_name()
             }
         }
 
@@ -183,7 +196,7 @@ macro_rules! define_label {
 
         impl ::std::hash::Hash for dyn $label_trait_name {
             fn hash<H: ::std::hash::Hasher>(&self, state: &mut H) {
-                self.dyn_hash(state);
+                self.label_name().hash(state);
             }
         }
 
@@ -193,22 +206,17 @@ macro_rules! define_label {
             }
 
             fn ref_eq(&self, other: &Self) -> bool {
-                use ::std::ptr;
-
-                // Test that both the type id and pointer address are equivalent.
-                self.as_dyn_eq().type_id() == other.as_dyn_eq().type_id()
-                    && ptr::addr_eq(ptr::from_ref::<Self>(self), ptr::from_ref::<Self>(other))
+                // Name-based: pointer address and TypeId are per-module (host
+                // vs cdylib statics/vtables differ), so same-source labels
+                // from different modules must still match. `Hash` is kept in
+                // sync below.
+                self.label_name() == other.label_name()
             }
 
             fn ref_hash<H: ::std::hash::Hasher>(&self, state: &mut H) {
-                use ::std::{hash::Hash, ptr};
+                use ::std::hash::Hash;
 
-                // Hash the type id...
-                self.as_dyn_eq().type_id().hash(state);
-
-                // ...and the pointer address.
-                // Cast to a unit `()` first to discard any pointer metadata.
-                ptr::from_ref::<Self>(self).cast::<()>().hash(state);
+                self.label_name().hash(state);
             }
         }
 
