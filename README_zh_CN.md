@@ -55,7 +55,7 @@
 
 - 版本包仓库：[VersionPack](https://github.com/SculkBedrock/VersionPacks)
 - 将下载的 `.scver` 文件放入 `version_packs/` 目录.
-- 版本包内的插件代码位于版本包仓库的 `crates/ur_vanilla` 下.
+- 版本包内的插件代码位于版本包仓库的 `crates/sc_vanilla` 下, 需要您自行编译并打包至版本包plugins中.
 
 ### 2. 运行 / 构建
 
