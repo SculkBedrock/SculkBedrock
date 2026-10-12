@@ -55,7 +55,7 @@ The server **requires a version pack** to start and accept players.
 
 - Version packs: [VersionPack](https://github.com/SculkBedrock/VersionPacks)
 - Put the downloaded `.scver` file into the `version_packs/` directory.
-- Plugin sources inside the version-pack repository live under `crates/ur_vanilla`, and you need to compile it yourself and package it into the version-pack's plugins directory.
+- Plugin sources inside the version-pack repository live under `crates/sc_vanilla`, and you need to compile it yourself and package it into the version-pack's plugins directory.
 
 ### 2. Run / Build
 
