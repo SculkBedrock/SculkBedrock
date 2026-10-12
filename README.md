@@ -40,7 +40,7 @@
 - **Multi-threading / async support**: natively supported. Network / game logic run concurrently through the scheduler, ensuring smooth gameplay.
 - **Intent-based network system**: decouples the game logic layer from the network layer via intents, preventing mutual interference.
 - **MCBE addon compatibility**: run official MCBE addons easily via a **Molang interpreter and a JavaScript interpreter**. May further support Minecraft: China Edition Python plugins in the future.
-- **Plugin system**: **Rust built-in plugins** and **C-ABI dynamic library plugins** coexist; may support PowerNukkitX/AllayMC plugins, TypeScript plugins, etc. in the future (depends on the actual situation, not guaranteed).
+- **Plugin system**: **Rust built-in plugins** and **C-ABI dynamic library plugins** coexist; may support TypeScript plugins, etc. in the future (depends on the actual situation, not guaranteed).
 - **Beautiful TUI interface**: no idea what it's for, but it looks awesome anyway.
 - **More for you to discover**
 
