@@ -2,8 +2,6 @@
 
 ## Start here
 
-- Read [`docs/unified_architecture_design_2026-09-30.md`](docs/unified_architecture_design_2026-09-30.md) before changing architecture, concurrency, world, chunk, block/item, protocol, persistence, or plugin code.
-- For chunk-pipeline details and its dated implementation snapshot, also read [`docs/performance_memory_and_chunk_pipeline_refactor_2026-09-30.md`](docs/performance_memory_and_chunk_pipeline_refactor_2026-09-30.md).
 - The unified design is a **target architecture**, not proof that every feature is implemented. Verify current code, tests, and status before describing or changing implementation behavior.
 - The old standalone design files were deliberately consolidated. Do not restore or recreate them unless the user asks.
 

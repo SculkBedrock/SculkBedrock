@@ -48,21 +48,18 @@ server_properties.toml / worlds/ / version_packs/ / logs/
 
 ## 2. 构建测试运行
 
-仓库很大，所有命令都用受限并行：
-
 ```shell
-cargo check -p sc_bootstrap -j 2
-cargo run -p sc_bootstrap -j 2
-cargo test -p sc_world -j 1 --lib
-cargo test -p sc_network -j 1 --lib
-cargo test -p sc_block -j 1 --lib
-cargo test -p sc_packloader -j 1 --lib
+cargo check -p sc_bootstrap
+cargo run -p sc_bootstrap
+cargo test -p sc_world --lib
+cargo test -p sc_network --lib
+cargo test -p sc_block --lib
+cargo test -p sc_packloader --lib
 ```
 
 约定：
 
 - 只针对改动的 crate 做 `cargo check` / `cargo test`。
-- 全量构建与真机联调很重，不要随手跑。
 - 改动文件应通过 `rustfmt --check` 与 `git diff --check`。
 
 ## 3. 启动管线

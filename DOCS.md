@@ -47,15 +47,13 @@ server_properties.toml / worlds/ / version_packs/ / logs/
 
 ## 2. Build, test, run
 
-The workspace is large. Use limited parallelism everywhere:
-
 ```shell
-cargo check -p sc_bootstrap -j 2
-cargo run -p sc_bootstrap -j 2
-cargo test -p sc_world -j 1 --lib
-cargo test -p sc_network -j 1 --lib
-cargo test -p sc_block -j 1 --lib
-cargo test -p sc_packloader -j 1 --lib
+cargo check -p sc_bootstrap
+cargo run -p sc_bootstrap
+cargo test -p sc_world --lib
+cargo test -p sc_network --lib
+cargo test -p sc_block --lib
+cargo test -p sc_packloader --lib
 ```
 
 Conventions:
