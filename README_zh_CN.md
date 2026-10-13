@@ -120,7 +120,7 @@ cargo build -p sc_bootstrap
 
 ## 📄许可证📄
 
-如无特殊说明, 项目内容以 GPL-3.0 开源, 见 `LICENSE`. 
+如无特殊说明, 项目内容以 LGPL-3.0 开源, 见 `LICENSE`. 
 
 ## ⚖️免责声明⚖️
 

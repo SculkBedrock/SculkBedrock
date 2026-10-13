@@ -120,7 +120,7 @@ Bug reports and suggestions are welcome. Please include the version-pack identit
 
 ## 📄 License 📄
 
-If not otherwise specified, project content is open source under the GPL-3.0 license, see `LICENSE`.
+If not otherwise specified, project content is open source under the LGPL-3.0 license, see `LICENSE`.
 
 ## ⚖️ Disclaimer ⚖️
 
