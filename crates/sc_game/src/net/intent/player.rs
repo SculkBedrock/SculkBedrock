@@ -78,3 +78,15 @@ pub struct SetEntityMotion {
 pub struct RemoveEntity {
     pub entity_id: u64,
 }
+
+/// Dismiss the death screen and reload the spawn area (reliable fact).
+/// `sc_network` maps it to the `Respawn` packet; the position duplicates
+/// the authoritative teleport for clients that snap before `MovePlayer`.
+#[derive(Clone, Debug, GameIntent)]
+#[intent(reliability = "fact", entity = "entity_id")]
+pub struct RespawnPlayer {
+    pub entity_id: u64,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}

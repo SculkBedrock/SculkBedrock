@@ -21,12 +21,14 @@ pub mod block;
 pub mod block_entity;
 pub mod damage;
 pub mod furnace;
+pub mod hunger;
 pub mod inventory;
 pub mod item;
 pub mod movement;
 pub mod net;
 pub mod plugin;
 pub mod region;
+pub mod respawn;
 pub mod world;
 
 pub use block::{

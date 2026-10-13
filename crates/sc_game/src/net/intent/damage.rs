@@ -12,6 +12,15 @@ pub struct SyncHealth {
     pub entity_id: u64,
 }
 
+/// Authoritative hunger sync after food/saturation/exhaustion changes
+/// (reliable fact). Health and hunger sync independently: each publishes
+/// on its own change instead of sharing one coupled update.
+#[derive(Clone, Debug, GameIntent)]
+#[intent(reliability = "fact", entity = "entity_id")]
+pub struct SyncHunger {
+    pub entity_id: u64,
+}
+
 /// Hurt / death animation cue (reliable fact, lifecycle barrier).
 #[derive(Clone, Debug, GameIntent)]
 #[intent(reliability = "fact", entity = "entity_id")]

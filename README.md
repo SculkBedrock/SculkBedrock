@@ -79,15 +79,15 @@ Settings live in `server_properties.toml` (ports, MOTD, view distance, per-tick 
 
 - [x] Basic protocol packet implementation
 - [x] Login and spawn
-- [x] Chunk subscribe / encode / ordered-delivery loop with receipts **(partially complete)**
-- [ ] ⏸️ **(in progress)** **(major feature)** Data-driven, ECS-based ProtoBuf network protocol format
+- [x] Chunk subscribe / encode / ordered-delivery loop with receipts **(partially complete, to be evaluated)**
+- [ ] ⏸️ **(in progress)** **(major feature, to be evaluated)** Data-driven, ECS-based ProtoBuf network protocol format
 - [ ] Complete protocol packet implementation
 
 ### Game logic:
 
 - [x] Item recipe crafting **(partially complete)**
+- [x] Entity fall damage calculation / hunger **(partially complete)**
 - [ ] ⏸️ **(in progress)** Crafting table / furnace / stonecutter block functions
-- [ ] ⏸️ **(in progress)** Entity fall damage calculation / hunger
 - [ ] ⏸️ **(in progress)** Item durability
 - [ ] ⏸️ **(in progress)** Ender chest / chest / dispenser / dropper container block functions
 - [ ] ⏸️ **(in progress)** Item drop collision

@@ -113,6 +113,7 @@ pub enum MinecraftPackets {
     PlayerArmorDamage(PlayerArmorDamage) = 0x95,
     UpdateAttributes(UpdateAttributes) = 0x1d,
     SetSpawnPosition(SetSpawnPosition) = 0x2b,
+    Respawn(Respawn) = 0x2d,
     SetCommandsEnabled(SetCommandsEnabled) = 0x3b,
     SetDifficulty(SetDifficulty) = 0x3c,
     PlayerList(PlayerList) = 0x3f,

@@ -219,7 +219,7 @@ impl Default for GameRules {
         );
         map.insert(
             GameRule::DoImmediateRespawn,
-            GameRuleValue::new(GameRuleType::Bool(true)),
+            GameRuleValue::new(GameRuleType::Bool(false)),
         );
         map.insert(
             GameRule::DoMobLoot,
@@ -352,6 +352,16 @@ mod tests {
         let rules = GameRules::default();
         assert!(rules.fall_damage_enabled());
         assert_eq!(rules.get_bool(&GameRule::FallDamage), Some(true));
+    }
+
+    #[test]
+    fn immediate_respawn_defaults_off_vanilla() {
+        // Vanilla default is false: the death screen shows and the player
+        // respawns via the button unless the world opts in.
+        assert_eq!(
+            GameRules::default().get_bool(&GameRule::DoImmediateRespawn),
+            Some(false)
+        );
     }
 
     #[test]

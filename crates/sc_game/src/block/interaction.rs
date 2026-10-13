@@ -46,7 +46,7 @@ use crate::inventory::ContainerOpen;
 use crate::net::{
     BlockBreakProgress, ClosePlayerInventory, CorrectBlockPrediction, IntentPublisher,
     NetworkOutbox, OpenPlayerInventory, PendingConnectionFaults,
-    PendingInventoryResync, ResyncInventory,
+    PendingInventoryResync, ResyncInventory, SyncHunger,
 };
 
 /// Seconds-to-ticks conversion base (Bedrock runs 20 ticks/second).
@@ -1145,6 +1145,21 @@ pub fn advance_block_break(
         if admitted.is_none() {
             // Queue full: the break never landed but the client may show air; single-block rollback (no column refresh).
             revert_single_block(&world, &mut outbox, &entity, position);
+        } else if !state.creative {
+            // Landed survival break: mining is exhausting (feeds hunger).
+            // Sync hunger immediately on change (the tick only covers
+            // players it does not skip).
+            if crate::hunger::add_exhaustion(
+                &world,
+                &entity,
+                crate::hunger::MINE_EXHAUSTION_PER_BLOCK,
+            ) {
+                if let Some(actor) = world.get_component::<MinecraftEntityId>(&entity) {
+                    IntentPublisher::new(&mut outbox).publish(SyncHunger {
+                        entity_id: actor.0,
+                    });
+                }
+            }
         }
         world.remove_component::<BreakingState>(&entity);
     }

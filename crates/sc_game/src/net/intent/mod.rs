@@ -28,7 +28,7 @@ use sc_game_macros::GameIntents;
 
 pub use block::{CorrectBlockPrediction, UpdateBlock};
 pub use crafting::{CraftResponse, OpenCraftingStation};
-pub use damage::{HurtEntity, SyncHealth};
+pub use damage::{HurtEntity, SyncHealth, SyncHunger};
 pub use effects::{
     BlockBreakProgress, BlockBreakProgressCue, ParticleCue, PlayParticle, PlaySound, SoundCue,
 };
@@ -39,7 +39,9 @@ pub use inventory::{
 pub use item::{
     DespawnItemEntity, MoveItemEntity, SpawnItemEntity, TakeItemEntity, UpdateItemStackSize,
 };
-pub use player::{MoveEntityAbsolute, MovePlayer, PlayerMoveMode, RemoveEntity, SetEntityMotion};
+pub use player::{
+    MoveEntityAbsolute, MovePlayer, PlayerMoveMode, RemoveEntity, RespawnPlayer, SetEntityMotion,
+};
 
 /// Intent categories: overwriteable state vs lossless reliable facts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -81,6 +83,8 @@ pub enum NetworkIntent {
     SetEntityMotion(SetEntityMotion),
     /// Remove an entity.
     RemoveEntity(RemoveEntity),
+    /// Dismiss the death screen and reload the spawn area.
+    RespawnPlayer(RespawnPlayer),
     /// Block change (carries the world for receiver selection).
     UpdateBlock(UpdateBlock),
     /// Semantic sound cue; protocol ids stay in `sc_network`.
@@ -100,6 +104,8 @@ pub enum NetworkIntent {
     ResyncInventory(ResyncInventory),
     /// Sync authoritative health after damage.
     SyncHealth(SyncHealth),
+    /// Sync authoritative hunger after food changes.
+    SyncHunger(SyncHunger),
     /// Hurt / death animation cue.
     HurtEntity(HurtEntity),
     /// Single-block prediction rollback, sent only to the predicting player.

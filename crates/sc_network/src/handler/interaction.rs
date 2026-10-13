@@ -5,6 +5,9 @@
 //! - `PlayerAction` (0x24) STOP_BREAK -> [`BreakBlockRequest`] (require_breaking_state=true)
 //! - `PlayerAction` (0x24) ABORT_BREAK -> [`AbortBreakRequest`] (clears BreakingState)
 //! - `PlayerAction` (0x24) CREATIVE_DESTROY -> [`BreakBlockRequest`] (require_breaking_state=false)
+//! - `PlayerAction` (0x24) RESPAWN -> game `RespawnRequest` (death-screen button)
+//! - `Respawn` (0x2d) client request -> game `RespawnRequest` (death-screen
+//!   button on current clients: zero position + spawn-progress state)
 //! - `InventoryTransaction` (0x1e) USE_ITEM ClickBlock -> [`PlaceBlockRequest`]
 //! - `MobEquipment` (0x1f) hotbar switch -> [`HeldSlotChanged`]
 //!
@@ -33,6 +36,8 @@ impl Plugin for SCInteractionHandlerPlugin {
                 handle_inventory_transaction,
                 handle_interact,
                 handle_container_close,
+                handle_player_action_respawn,
+                handle_respawn_packet,
             ),
         );
     }
@@ -181,6 +186,44 @@ fn translate_mining_packet(
         _ => {}
     }
     true
+}
+
+/// Death-screen respawn button: `PlayerAction(RESPAWN)` becomes a
+/// protocol-independent game request; the game validates `Dead` before
+/// acting, so stray/duplicate clicks are harmless.
+fn handle_player_action_respawn(
+    world: World,
+    mut reader: EventReader<MinecraftPacketReceiver<crate::protocol::client::action::PlayerAction>>,
+) {
+    use crate::protocol::client::action::PlayerActionType;
+    for event in reader.read() {
+        if event.packet.action != PlayerActionType::RESPAWN {
+            continue;
+        }
+        log::debug!("[interaction] RespawnRequest from {:?}", event.entity);
+        world.send_event(sc_game::respawn::RespawnRequest {
+            entity: event.entity,
+        });
+    }
+}
+
+/// Death-screen respawn button (packet form): the client sends `Respawn`
+/// with a zero position and its spawn-progress state. Any state acts as the
+/// request; the game validates `Dead` before acting.
+fn handle_respawn_packet(
+    world: World,
+    mut reader: EventReader<MinecraftPacketReceiver<crate::protocol::server::misc::Respawn>>,
+) {
+    for event in reader.read() {
+        log::debug!(
+            "[interaction] RespawnRequest packet state={} from {:?}",
+            event.packet.state,
+            event.entity
+        );
+        world.send_event(sc_game::respawn::RespawnRequest {
+            entity: event.entity,
+        });
+    }
 }
 
 fn handle_inventory_transaction(

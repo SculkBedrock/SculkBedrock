@@ -32,6 +32,29 @@ use crate::net::{
 /// Input buffer cap per player: packets beyond it are dropped.
 pub const MAX_PENDING_INPUT: usize = 64;
 
+/// Current player action flags, mirrored from the latest consumed input.
+/// Movement is the sole writer (updated in the input drain); systems like
+/// hunger only read. Interior lock: rewritten every tick without ECS
+/// add/remove churn.
+#[derive(Component, Clone, Debug, Default)]
+pub struct PlayerActionState {
+    pub inner: Arc<RwLock<PlayerActionFlags>>,
+}
+
+/// Sprint/sneak/flight mirror for one tick.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PlayerActionFlags {
+    pub sprinting: bool,
+    pub sneaking: bool,
+    pub flying: bool,
+}
+
+impl PlayerActionState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 /// Player movement state machine component.
 #[derive(Component, Clone, Debug)]
 pub struct PlayerMovement {
@@ -147,6 +170,12 @@ pub fn movement_input_drain(world: World, mut outbox: ResMut<NetworkOutbox>) {
         if inputs.is_empty() {
             continue;
         }
+        // Mirror the latest input flags for action consumers (hunger drain
+        // reads them; movement is the sole writer). Taken before the loop
+        // consumes the vector below.
+        let action_flags = inputs
+            .last()
+            .map(|input| (input.sprinting, input.sneaking, input.flying));
 
         let mut server_pos = state.last_position.unwrap_or_else(|| {
             let pos = client.data.read().position;
@@ -285,6 +314,22 @@ pub fn movement_input_drain(world: World, mut outbox: ResMut<NetworkOutbox>) {
                 &mut publisher,
             );
             // Chunk membership change.
+        }
+        if let Some((sprinting, sneaking, flying)) = action_flags {
+            let action = match world.get_component::<PlayerActionState>(&entity) {
+                Some(action) => action,
+                None => {
+                    world.add_component(&entity, PlayerActionState::new());
+                    let Some(action) = world.get_component::<PlayerActionState>(&entity) else {
+                        continue;
+                    };
+                    action
+                }
+            };
+            let mut flags = action.inner.write();
+            flags.sprinting = sprinting;
+            flags.sneaking = sneaking;
+            flags.flying = flying;
         }
     }
 }

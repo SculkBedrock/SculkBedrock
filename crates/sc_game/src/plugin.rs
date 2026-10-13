@@ -6,6 +6,7 @@
 
 use sc_ecs::app::plugin::Plugin;
 use sc_ecs::app::App;
+use sc_ecs::event::EnumEvents;
 use sc_ecs::params::event::EventReader;
 use sc_ecs::params::local::Local;
 use sc_ecs::params::resource::{Res, ResMut};
@@ -22,6 +23,11 @@ use std::time::Duration;
 
 use crate::block::BlockPlacementReservations;
 use crate::block::{block_changed_to_outbox, DropReceipts};
+use crate::block::{
+    AbortBreakRequest, BreakBlockRequest, CloseInventoryRequest, HeldSlotChanged,
+    OpenInventoryRequest, PlaceBlockRequest, StartBreakRequest,
+};
+use crate::inventory::crafting::CraftRequestEvent;
 use crate::item::{item_drop_tick, item_pickup_tick, ItemDropStore};
 use crate::movement::{movement_broadcast, movement_input_drain, movement_physics, PlayerMovement};
 use crate::net::{
@@ -32,6 +38,7 @@ use crate::region::{
     region_tick, EntityRegion, RegionCommands, RegionDriver, RegionGrid, RegionHub, RegionId,
     RegionPhysicsCommand,
 };
+use crate::respawn::RespawnRequest;
 use crate::world::{
     AnnouncementBus, CrossWorldPing, PingBus, PingMailbox, RegionPingBus, TeleportBus,
     TeleportRequest, WorldAnnouncement,
@@ -47,10 +54,28 @@ use sc_item::ItemRegistry;
 const GAME_TICK_INTERVAL: Duration = Duration::from_millis(50);
 const TELEPORT_COMPLETE_TIMEOUT_TICKS: u32 = 100;
 
+/// All game-domain events in one macro call (mirrors
+/// `MinecraftPackets::add_events`): add new game events as variants here
+/// instead of extending an `add_event` chain by hand. Variant names must
+/// equal the wrapped event type names (the derive reuses them as types).
+#[derive(Clone, Debug, sc_ecs::event::EnumEvents)]
+pub enum GameEvents {
+    BreakBlockRequest(BreakBlockRequest),
+    PlaceBlockRequest(PlaceBlockRequest),
+    HeldSlotChanged(HeldSlotChanged),
+    StartBreakRequest(StartBreakRequest),
+    AbortBreakRequest(AbortBreakRequest),
+    OpenInventoryRequest(OpenInventoryRequest),
+    CloseInventoryRequest(CloseInventoryRequest),
+    RespawnRequest(RespawnRequest),
+    CraftRequestEvent(CraftRequestEvent),
+}
+
 pub struct SCGamePlugin;
 
 impl Plugin for SCGamePlugin {
     fn build(&self, app: &App) {
+        GameEvents::add_events(app);
         app.insert_resource(WorldHub::default())
             .insert_resource(GameWorldMap::default())
             .insert_resource(PingBus::default())
@@ -98,6 +123,10 @@ impl Plugin for SCGamePlugin {
             .add_systems(sc_ecs::schedule::Update, item_pickup_tick)
             // Furnace burn/cook tick (slot facts + coalesced progress).
             .add_systems(sc_ecs::schedule::Update, crate::furnace::process_tick)
+            // Survival hunger tick (metabolic drain, starvation, regen).
+            .add_systems(sc_ecs::schedule::Update, crate::hunger::hunger_tick)
+            // Death-screen button flow (teleport + vitals + dismiss).
+            .add_systems(sc_ecs::schedule::Update, crate::respawn::respawn_tick)
             .add_systems(sc_ecs::schedule::Update, demo_cross_world_transfer)
             .add_systems(sc_ecs::schedule::Update, update_player_region)
             // Authoritative break timing from block data; the server lands
@@ -105,15 +134,7 @@ impl Plugin for SCGamePlugin {
             .add_systems(sc_ecs::schedule::Update, crate::block::advance_block_break)
             .add_systems(sc_utils::schedule::SCMovementBroadcast, movement_broadcast)
             .add_systems(sc_ecs::schedule::PostUpdate, block_changed_to_outbox)
-            // Player place/break boundary events.
-            .add_event::<crate::block::BreakBlockRequest>()
-            .add_event::<crate::block::PlaceBlockRequest>()
-            .add_event::<crate::block::HeldSlotChanged>()
-            .add_event::<crate::block::StartBreakRequest>()
-            .add_event::<crate::block::AbortBreakRequest>()
-            .add_event::<crate::block::OpenInventoryRequest>()
-            .add_event::<crate::block::CloseInventoryRequest>()
-            .add_event::<crate::inventory::crafting::CraftRequestEvent>()
+            // (Game events register via `GameEvents::add_events` above.)
             .add_systems(
                 sc_utils::schedule::SCEventUpdate,
                 (
@@ -711,5 +732,56 @@ fn dispatch_ping_events(world: World, mut hub: ResMut<WorldHub>) {
         } else {
             log::debug!("cross-world event target {} missing, dropping", event.to.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sc_ecs::event::Events;
+
+    /// The `GameEvents` macro must register every game-domain event; a new
+    /// event added as a variant is covered here, a hand-rolled `add_event`
+    /// chain cannot silently drop one.
+    #[test]
+    fn game_events_macro_registers_all_domain_events() {
+        let app = App::new();
+        GameEvents::add_events(&app);
+        assert!(app
+            .world()
+            .get_resource::<Events<BreakBlockRequest>>()
+            .is_some());
+        assert!(app
+            .world()
+            .get_resource::<Events<PlaceBlockRequest>>()
+            .is_some());
+        assert!(app
+            .world()
+            .get_resource::<Events<HeldSlotChanged>>()
+            .is_some());
+        assert!(app
+            .world()
+            .get_resource::<Events<StartBreakRequest>>()
+            .is_some());
+        assert!(app
+            .world()
+            .get_resource::<Events<AbortBreakRequest>>()
+            .is_some());
+        assert!(app
+            .world()
+            .get_resource::<Events<OpenInventoryRequest>>()
+            .is_some());
+        assert!(app
+            .world()
+            .get_resource::<Events<CloseInventoryRequest>>()
+            .is_some());
+        assert!(app
+            .world()
+            .get_resource::<Events<crate::respawn::RespawnRequest>>()
+            .is_some());
+        assert!(app
+            .world()
+            .get_resource::<Events<CraftRequestEvent>>()
+            .is_some());
     }
 }

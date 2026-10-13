@@ -28,11 +28,12 @@ pub use hooks::{dispatch_intent_hooks, IntentSendEvent, IntentSendHook, IntentSe
 pub use input::PlayerInput;
 pub use intent::{
     BlockBreakProgress, BlockBreakProgressCue, ClosePlayerInventory, CorrectBlockPrediction,
-    CraftResponse, DespawnItemEntity, HurtEntity, IntentPayload, IntentReliability, MoveEntityAbsolute,
-    MoveItemEntity, MovePlayer, NetworkIntent, OpenCraftingStation, OpenPlayerInventory, ParticleCue,
-    PlayParticle, PlaySound, PlayerMoveMode, RemoveEntity, ResyncInventory, SetEntityMotion,
-    SoundCue, SpawnItemEntity, SyncFurnaceProgress, SyncFurnaceWindow, SyncHealth, TakeItemEntity, UpdateBlock, UpdateInventorySlot,
-    UpdateItemStackSize,
+    CraftResponse, DespawnItemEntity, HurtEntity, IntentPayload, IntentReliability,
+    MoveEntityAbsolute, MoveItemEntity, MovePlayer, NetworkIntent, OpenCraftingStation,
+    OpenPlayerInventory, ParticleCue, PlayParticle, PlaySound, PlayerMoveMode, RemoveEntity,
+    RespawnPlayer, ResyncInventory, SetEntityMotion, SoundCue, SpawnItemEntity,
+    SyncFurnaceProgress, SyncFurnaceWindow, SyncHealth, SyncHunger, TakeItemEntity, UpdateBlock,
+    UpdateInventorySlot, UpdateItemStackSize,
 };
 pub use outbox::{
     intent_estimated_bytes, intent_estimated_bytes_for, NetworkOutbox, OutboxAdmissionStats,

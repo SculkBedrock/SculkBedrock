@@ -80,6 +80,50 @@ impl Reader<SetTime> for SetTime {
     }
 }
 
+/// RespawnPacket (0x2d)
+/// Death-screen dismissal handshake, both directions:
+/// - client -> server on respawn-button click (position zeros, state is the
+///   client's spawn-progress echo; any state acts as the request, the game
+///   validates `Dead` before acting);
+/// - server -> client after vitals/teleport restore (`READY_TO_SPAWN`
+///   with the spawn position).
+#[derive(Clone, Debug, MinecraftPacket)]
+pub struct Respawn {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub state: u8,
+    pub entity_id: u64,
+}
+
+impl Respawn {
+    pub const STATE_SEARCHING_FOR_SPAWN: u8 = 0;
+    pub const STATE_READY_TO_SPAWN: u8 = 1;
+    pub const STATE_FINISHED_SPAWNING: u8 = 2;
+}
+
+impl Writer for Respawn {
+    fn write(&self, buf: &mut ByteWriter) -> Result<(), Error> {
+        buf.write_f32_le(self.x)?;
+        buf.write_f32_le(self.y)?;
+        buf.write_f32_le(self.z)?;
+        buf.write_u8(self.state)?;
+        buf.write_var_u64(self.entity_id)
+    }
+}
+
+impl Reader<Respawn> for Respawn {
+    fn read(buf: &mut ByteReader) -> Result<Respawn, Error> {
+        Ok(Respawn {
+            x: buf.read_f32_le()?,
+            y: buf.read_f32_le()?,
+            z: buf.read_f32_le()?,
+            state: buf.read_u8()?,
+            entity_id: buf.read_var_u64()?,
+        })
+    }
+}
+
 /// SetDifficultyPacket (0x3c)
 /// Game difficulty setting.
 #[derive(Clone, Debug, MinecraftPacket)]
@@ -1488,7 +1532,7 @@ impl Reader<AvailableCommands> for AvailableCommands {
 #[cfg(test)]
 mod tests {
     use super::{
-        persona_piece_type_id, write_player_list_add_entry, CraftingData, PlayerListEntry,
+        persona_piece_type_id, write_player_list_add_entry, CraftingData, PlayerListEntry, Respawn,
         SetSpawnPosition,
     };
     use sc_binary::interfaces::Writer;
@@ -1657,6 +1701,46 @@ mod tests {
                 0x02, // z=1
             ]
         );
+    }
+
+    #[test]
+    fn respawn_ready_layout_matches_wire() {
+        let packet = Respawn {
+            x: 0.5,
+            y: 64.0,
+            z: -3.25,
+            state: Respawn::STATE_READY_TO_SPAWN,
+            entity_id: 9,
+        };
+        let mut writer = ByteWriter::new();
+        packet.write(&mut writer).unwrap();
+        assert_eq!(
+            writer.as_slice(),
+            &[
+                0x00, 0x00, 0x00, 0x3f, // x=0.5
+                0x00, 0x00, 0x80, 0x42, // y=64.0
+                0x00, 0x00, 0x50, 0xc0, // z=-3.25
+                0x01, // ready to spawn
+                0x09, // runtime entity id
+            ]
+        );
+    }
+
+    #[test]
+    fn respawn_button_bytes_decode_to_client_request() {
+        use sc_binary::interfaces::Reader;
+        // Golden bytes from a live respawn-button click: zero position,
+        // state FINISHED_SPAWNING, runtime id 1. Previously rejected as
+        // unsupported, so the button did nothing.
+        let bytes: [u8; 14] = [
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x01,
+        ];
+        let mut reader = ByteReader::from(&bytes[..]);
+        let packet = Respawn::read(&mut reader).unwrap();
+        assert!(reader.as_slice().is_empty());
+        assert_eq!((packet.x, packet.y, packet.z), (0.0, 0.0, 0.0));
+        assert_eq!(packet.state, Respawn::STATE_FINISHED_SPAWNING);
+        assert_eq!(packet.entity_id, 1);
     }
 
     #[test]

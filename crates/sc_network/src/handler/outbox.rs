@@ -34,7 +34,7 @@ use crate::protocol::server::inventory::{
     ContainerOpen, ContainerSetData, InventoryContent, InventorySlot,
 };
 use crate::protocol::server::item_entity::{AddItemEntity, TakeItemEntity};
-use crate::protocol::server::misc::EntityMetadataEntry;
+use crate::protocol::server::misc::{EntityMetadataEntry, Respawn};
 use crate::protocol::server::movement::{
     MoveEntityAbsolute, MovePlayer, MovePlayerMode, RemoveEntity, SetEntityMotion,
 };
@@ -53,6 +53,7 @@ enum OutPacket {
     AddItemEntity(AddItemEntity),
     TakeItemEntity(TakeItemEntity),
     EntityEvent(EntityEvent),
+    Respawn(Respawn),
     UpdateAttributes(crate::protocol::server::entity::UpdateAttributes),
     LevelEvent(LevelEvent),
     LevelSoundEvent(LevelSoundEvent),
@@ -265,6 +266,32 @@ fn report_outbox_consumer_gone(pending: usize) {
             reports = seen + 1
         )
     );
+}
+
+/// Hunger-only attribute subset for `SyncHunger` (hunger / saturation /
+/// exhaustion entries; the client merges by name). `None` when any entry
+/// is missing (fail-closed: no partial-bar sync).
+fn hunger_attributes_packet(
+    entity_id: u64,
+    attributes: &sc_packloader::definitions::attribute::EntityAttributes,
+) -> Option<crate::protocol::server::entity::UpdateAttributes> {
+    use sc_packloader::definitions::attribute::EntityAttributes as Keys;
+    let (Some(hunger), Some(saturation), Some(exhaustion)) = (
+        attributes.get(Keys::MAX_HUNGER),
+        attributes.get(Keys::SATURATION),
+        attributes.get(Keys::EXHAUSTION),
+    ) else {
+        return None;
+    };
+    let subset = sc_packloader::definitions::attribute::EntityAttributes::new();
+    subset.insert(Keys::MAX_HUNGER.to_string(), hunger);
+    subset.insert(Keys::SATURATION.to_string(), saturation);
+    subset.insert(Keys::EXHAUSTION.to_string(), exhaustion);
+    Some(crate::protocol::server::entity::UpdateAttributes {
+        entity_id: sc_entity::MinecraftEntityId(entity_id),
+        attributes: subset,
+        frame: 0,
+    })
 }
 
 /// Consumes one intent batch in order (veto -> map -> send packet by packet).
@@ -931,6 +958,37 @@ async fn process_outbox_batch(batch: OrderedOutboxBatch) {
                     }
                 }
             }
+            NetworkIntent::SyncHunger(sc_game::net::SyncHunger { entity_id }) => {
+                // Hunger-only subset: same routing as health, smaller packet.
+                let Some(route) = runtime_routes.get(&entity_id) else {
+                    continue;
+                };
+                let Some(world_id) = route.world_id.clone() else {
+                    continue;
+                };
+                let Some(attributes) = world
+                    .get_component::<sc_packloader::definitions::attribute::EntityAttributes>(
+                        &route.entity,
+                    )
+                else {
+                    continue;
+                };
+                let Some(packet) = hunger_attributes_packet(entity_id, &attributes) else {
+                    continue;
+                };
+                if let Some(player) = runtime_entity(&runtime_routes, entity_id) {
+                    sends.push((player, OutPacket::UpdateAttributes(packet.clone())));
+                }
+                for player in players.iter().filter(|p| same_world(&world, p, &world_id)) {
+                    let is_self = world
+                        .get_component::<MinecraftEntityId>(player)
+                        .map(|id| id.0 == entity_id)
+                        .unwrap_or(false);
+                    if !is_self {
+                        sends.push((*player, OutPacket::UpdateAttributes(packet.clone())));
+                    }
+                }
+            }
             NetworkIntent::HurtEntity(sc_game::net::HurtEntity { entity_id, fatal }) => {
                 let Some(world_id) = runtime_world(&runtime_routes, entity_id) else {
                     continue;
@@ -957,6 +1015,21 @@ async fn process_outbox_batch(batch: OrderedOutboxBatch) {
                     }
                 }
             }
+            NetworkIntent::RespawnPlayer(sc_game::net::RespawnPlayer { entity_id, x, y, z }) => {
+                // Death-screen dismiss: only the respawning player reloads.
+                if let Some(player) = runtime_entity(&runtime_routes, entity_id) {
+                    sends.push((
+                        player,
+                        OutPacket::Respawn(Respawn {
+                            x,
+                            y,
+                            z,
+                            state: Respawn::STATE_READY_TO_SPAWN,
+                            entity_id,
+                        }),
+                    ));
+                }
+            }
         }
     }
 
@@ -981,6 +1054,7 @@ async fn process_outbox_batch(batch: OrderedOutboxBatch) {
             OutPacket::AddItemEntity(p) => connection.send_packet(p, true).await,
             OutPacket::TakeItemEntity(p) => connection.send_packet(p, true).await,
             OutPacket::EntityEvent(p) => connection.send_packet(p, true).await,
+            OutPacket::Respawn(p) => connection.send_packet(p, true).await,
             OutPacket::UpdateAttributes(p) => connection.send_packet(p, true).await,
             OutPacket::LevelEvent(p) => connection.send_packet(p, true).await,
             OutPacket::LevelSoundEvent(p) => connection.send_packet(p, true).await,
@@ -1094,6 +1168,8 @@ fn runtime_route_id(intent: &NetworkIntent) -> Option<u64> {
         | NetworkIntent::OpenCraftingStation(sc_game::net::OpenCraftingStation { entity_id, .. })
         | NetworkIntent::OpenPlayerInventory(sc_game::net::OpenPlayerInventory { entity_id })
         | NetworkIntent::SyncHealth(sc_game::net::SyncHealth { entity_id })
+        | NetworkIntent::SyncHunger(sc_game::net::SyncHunger { entity_id })
+        | NetworkIntent::RespawnPlayer(sc_game::net::RespawnPlayer { entity_id, .. })
         | NetworkIntent::HurtEntity(sc_game::net::HurtEntity { entity_id, .. })
         | NetworkIntent::ClosePlayerInventory(sc_game::net::ClosePlayerInventory { entity_id, .. }) => Some(*entity_id),
         _ => None,

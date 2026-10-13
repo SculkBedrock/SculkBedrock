@@ -96,6 +96,10 @@ pub fn apply_fall_damage(
         entity_id: runtime_id,
         fatal,
     });
+    if fatal {
+        // Gamerule opt-in skips the death screen through the same path.
+        crate::respawn::maybe_immediate_respawn(world, entity, runtime_id, publisher);
+    }
     // Keep the runtime-id index usable for the network mapping layer.
     let _ = world.get_component::<MinecraftEntityId>(entity);
     Some(FallSettlement {
