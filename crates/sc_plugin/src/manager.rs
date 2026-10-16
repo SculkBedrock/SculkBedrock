@@ -7,25 +7,179 @@ use sc_ecs::app::App;
 use sc_ecs::resource::Resource;
 use sc_log::{t, t_log};
 
+use sc_error::{ScError, ScSite, capture_site};
+
+#[derive(Debug, ScError)]
 pub enum SCPluginDependenciesError {
-    VersionNotMatch(SCPluginDependency, SCPluginDependency, SCPluginDependency),
-    MissingDependency(SCPluginDependency, SCPluginDependency),
-    CircularDependency(
-        SCPluginDependency,
-        Vec<SCPluginDependency>,
-        SCPluginDependency,
-    ),
-    DependencyFailed(SCPluginDependency, SCPluginDependency),
-    LoaderError(String, SCPluginLoaderError),
+    /// Required dependency version does not match.
+    #[sc_error(code = "plugin.deps.version_mismatch")]
+    VersionNotMatch {
+        /// Plugin declaring the dependency.
+        plugin: SCPluginDependency,
+        /// Required dependency version.
+        dependency: SCPluginDependency,
+        /// Loaded dependency version.
+        real: SCPluginDependency,
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+    /// Required dependency is missing.
+    #[sc_error(code = "plugin.deps.missing")]
+    MissingDependency {
+        /// Plugin declaring the dependency.
+        plugin: SCPluginDependency,
+        /// Missing dependency.
+        dependency: SCPluginDependency,
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+    /// Plugins depend on each other in a cycle.
+    #[sc_error(code = "plugin.deps.circular")]
+    CircularDependency {
+        /// Plugin in the cycle.
+        plugin: SCPluginDependency,
+        /// Dependency stack of the cycle.
+        stack: Vec<SCPluginDependency>,
+        /// Dependency closing the cycle.
+        dependency: SCPluginDependency,
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+    /// A dependency failed validation.
+    #[sc_error(code = "plugin.deps.failed")]
+    DependencyFailed {
+        /// Plugin declaring the dependency.
+        plugin: SCPluginDependency,
+        /// Failed dependency.
+        dependency: SCPluginDependency,
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+    /// Plugin archive failed to load.
+    #[sc_error(code = "plugin.deps.loader")]
+    LoaderError {
+        /// Plugin name.
+        plugin: String,
+        /// Underlying loader error.
+        source: SCPluginLoaderError,
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+}
+
+impl SCPluginDependenciesError {
+    /// Build a version mismatch error, capturing the call site.
+    #[track_caller]
+    pub fn version_not_match(
+        plugin: SCPluginDependency,
+        dependency: SCPluginDependency,
+        real: SCPluginDependency,
+    ) -> Self {
+        let detail = format!(
+            "plugin '{}' requires '{}' version '{}' but found '{}'",
+            plugin.name, dependency.name, dependency.version, real.version
+        );
+        Self::VersionNotMatch {
+            plugin,
+            dependency,
+            real,
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build a missing dependency error, capturing the call site.
+    #[track_caller]
+    pub fn missing_dependency(
+        plugin: SCPluginDependency,
+        dependency: SCPluginDependency,
+    ) -> Self {
+        let detail = format!(
+            "plugin '{}' requires missing dependency '{}'",
+            plugin.name, dependency.name
+        );
+        Self::MissingDependency {
+            plugin,
+            dependency,
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build a circular dependency error, capturing the call site.
+    #[track_caller]
+    pub fn circular_dependency(
+        plugin: SCPluginDependency,
+        stack: Vec<SCPluginDependency>,
+        dependency: SCPluginDependency,
+    ) -> Self {
+        let detail = format!(
+            "plugin '{}' has a circular dependency on '{}'",
+            plugin.name, dependency.name
+        );
+        Self::CircularDependency {
+            plugin,
+            stack,
+            dependency,
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build a failed dependency error, capturing the call site.
+    #[track_caller]
+    pub fn dependency_failed(
+        plugin: SCPluginDependency,
+        dependency: SCPluginDependency,
+    ) -> Self {
+        let detail = format!(
+            "plugin '{}' depends on '{}' which failed validation",
+            plugin.name, dependency.name
+        );
+        Self::DependencyFailed {
+            plugin,
+            dependency,
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build a loader error, capturing the call site.
+    #[track_caller]
+    pub fn loader_error(plugin: String, source: SCPluginLoaderError) -> Self {
+        let detail = format!("failed to load plugin '{plugin}': {}", source.detail());
+        Self::LoaderError {
+            plugin,
+            source,
+            detail,
+            site: capture_site(),
+        }
+    }
 }
 
 impl Display for SCPluginDependenciesError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            SCPluginDependenciesError::VersionNotMatch(plugin, dependency, real) => {
+            Self::VersionNotMatch {
+                plugin,
+                dependency,
+                real,
+                site,
+                ..
+            } => {
                 write!(
                     f,
-                    "{}",
+                    "{} (at {site})",
                     t!(
                         "console.plugin.load_error.version",
                         name = plugin.name,
@@ -34,10 +188,15 @@ impl Display for SCPluginDependenciesError {
                     )
                 )
             }
-            SCPluginDependenciesError::MissingDependency(plugin, dependency) => {
+            Self::MissingDependency {
+                plugin,
+                dependency,
+                site,
+                ..
+            } => {
                 write!(
                     f,
-                    "{}",
+                    "{} (at {site})",
                     t!(
                         "console.plugin.load_error.depend",
                         name = plugin.name,
@@ -45,10 +204,15 @@ impl Display for SCPluginDependenciesError {
                     )
                 )
             }
-            SCPluginDependenciesError::CircularDependency(plugin, _, dependency) => {
+            Self::CircularDependency {
+                plugin,
+                dependency,
+                site,
+                ..
+            } => {
                 write!(
                     f,
-                    "{}",
+                    "{} (at {site})",
                     t!(
                         "console.plugin.load_error.circular",
                         name = plugin.name,
@@ -56,27 +220,47 @@ impl Display for SCPluginDependenciesError {
                     )
                 )
             }
-            SCPluginDependenciesError::DependencyFailed(plugin, dependency) => {
+            Self::DependencyFailed {
+                plugin,
+                dependency,
+                site,
+                ..
+            } => {
                 write!(
                     f,
-                    "plugin {} depends on {}, but that dependency failed validation",
+                    "plugin {} depends on {}, but that dependency failed validation (at {site})",
                     plugin.name, dependency.name
                 )
             }
-            SCPluginDependenciesError::LoaderError(plugin, e) => {
+            Self::LoaderError {
+                plugin,
+                source,
+                site,
+                ..
+            } => {
                 write!(
                     f,
-                    "{}",
+                    "{} (at {site})",
                     t!(
                         "console.plugin.load_error.error",
                         name = plugin,
-                        error = format!("{:?}", e)
+                        error = format!("{:?}", source)
                     )
                 )
             }
         }
     }
 }
+
+impl std::error::Error for SCPluginDependenciesError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::LoaderError { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
 
 pub struct SCPluginDependenciesManager {
     dependencies: HashMap<SCPluginDependency, Vec<SCPluginDependency>>,
@@ -131,7 +315,7 @@ impl SCPluginDependenciesManager {
                     Some(real) if real.version == dependency.version => {}
                     Some(real) => {
                         invalid.insert(name.clone());
-                        errors.push(SCPluginDependenciesError::VersionNotMatch(
+                        errors.push(SCPluginDependenciesError::version_not_match(
                             plugin.clone(),
                             dependency.clone(),
                             real.clone(),
@@ -139,7 +323,7 @@ impl SCPluginDependenciesManager {
                     }
                     None => {
                         invalid.insert(name.clone());
-                        errors.push(SCPluginDependenciesError::MissingDependency(
+                        errors.push(SCPluginDependenciesError::missing_dependency(
                             plugin.clone(),
                             dependency.clone(),
                         ));
@@ -165,7 +349,7 @@ impl SCPluginDependenciesManager {
                     .find(|dependency| invalid.contains(&dependency.name))
                 {
                     invalid.insert(name.clone());
-                    errors.push(SCPluginDependenciesError::DependencyFailed(
+                    errors.push(SCPluginDependenciesError::dependency_failed(
                         plugin.clone(),
                         dependency.clone(),
                     ));
@@ -211,7 +395,7 @@ impl SCPluginDependenciesManager {
                     if let Some(plugin) = self.loaded_plugins.get(&name) {
                         let stack = dependencies_by_name.get(&name).cloned().unwrap_or_default();
                         let dependency = stack.first().cloned().unwrap_or_else(|| plugin.clone());
-                        errors.push(SCPluginDependenciesError::CircularDependency(
+                        errors.push(SCPluginDependenciesError::circular_dependency(
                             plugin.clone(),
                             stack,
                             dependency,

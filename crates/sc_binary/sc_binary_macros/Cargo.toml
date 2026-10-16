@@ -3,6 +3,7 @@ name = "sc_binary_macros"
 version = "0.1.1"
 edition = "2021"
 
+license = "LGPL-3.0-only"
 [lib]
 proc-macro = true
 
@@ -12,3 +13,6 @@ proc-macro2 = "1.0.56"
 quote = "1.0.26"
 regex = "1.8.1"
 syn = { version = "2.0.13", features = ["full"] }
+
+[lints]
+workspace = true

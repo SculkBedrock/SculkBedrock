@@ -317,7 +317,7 @@ fn split_blocks(args: &[String]) {
     let budgets = BlockBundleBudgets::default();
     let files = match split_legacy_palette(&entries, &defaults, &hardness, &budgets) {
         Ok(files) => files,
-        Err(SplitError::MissingDefaults(ids)) => {
+        Err(SplitError::MissingDefaults { ids, .. }) => {
             for id in ids.iter() {
                 println!("TODO_DEFAULT {id}");
             }
@@ -327,7 +327,7 @@ fn split_blocks(args: &[String]) {
             );
             std::process::exit(1);
         }
-        Err(SplitError::Invalid(m)) => {
+        Err(SplitError::Invalid { detail: m, .. }) => {
             eprintln!("split failed: {m}");
             std::process::exit(1);
         }

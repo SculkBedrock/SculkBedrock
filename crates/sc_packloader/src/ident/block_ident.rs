@@ -1,18 +1,12 @@
 use crate::types::block_states::MinecraftBlockStates;
 use serde::Deserialize;
 
-#[derive(Deserialize, Debug, Clone)]
-#[serde(untagged)]
-pub enum MinecraftBlockIdent {
-    BlockName(String),
+crate::define_ident!(
+    MinecraftBlockIdent,
+    BlockName,
     Block(MinecraftBlock),
-}
-
-impl Default for MinecraftBlockIdent {
-    fn default() -> Self {
-        MinecraftBlockIdent::BlockName("minecraft:air".to_string())
-    }
-}
+    default = "minecraft:air"
+);
 
 #[derive(Deserialize, Debug, Default, Clone)]
 pub struct MinecraftBlock {

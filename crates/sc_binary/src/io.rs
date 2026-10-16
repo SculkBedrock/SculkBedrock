@@ -30,6 +30,16 @@ macro_rules! can_write {
     };
 }
 
+/// Return an end-of-buffer error unless `$size` bytes are readable.
+/// Unifies the repeated `can_read!` + `ERR_EOB` checks.
+macro_rules! ensure_remaining {
+    ($self: ident, $size: expr) => {
+        if !can_read!($self, $size) {
+            return Err(Error::new(std::io::ErrorKind::UnexpectedEof, ERR_EOB));
+        }
+    };
+}
+
 macro_rules! read_fn {
     ($name: ident, $typ: ident, $fn_name: ident, $byte_size: literal) => {
         #[inline]
@@ -614,99 +624,49 @@ impl ByteReader {
     }
 
     pub fn read_i32_le_array(&mut self, len: usize) -> Result<Vec<i32>, Error> {
-        let vec_len = len.checked_mul(4).ok_or_else(|| {
-            Error::new(
-                std::io::ErrorKind::InvalidData,
-                "i32 array length overflows usize",
-            )
-        })?;
-        if can_read!(self, vec_len) {
-            let b = self.buf.slice(..vec_len);
-
-            let mut vec = Vec::with_capacity(len);
-            for i in (0..vec_len).step_by(4) {
-                let mut array = [0u8; 4];
-                array.copy_from_slice(&b[i..i + 4]);
-                vec.push(i32::from_le_bytes(array));
-            }
-
-            self.advance(vec_len);
-            Ok(vec)
-        } else {
-            Err(Error::new(std::io::ErrorKind::UnexpectedEof, ERR_EOB))
-        }
+        self.read_fixed_int_array::<i32, 4>(len, "i32", i32::from_le_bytes)
     }
 
     pub fn read_i32_array(&mut self, len: usize) -> Result<Vec<i32>, Error> {
-        let vec_len = len.checked_mul(4).ok_or_else(|| {
-            Error::new(
-                std::io::ErrorKind::InvalidData,
-                "i32 array length overflows usize",
-            )
-        })?;
-        if can_read!(self, vec_len) {
-            let b = self.buf.slice(..vec_len);
-
-            let mut vec = Vec::with_capacity(len);
-            for i in (0..vec_len).step_by(4) {
-                let mut array = [0u8; 4];
-                array.copy_from_slice(&b[i..i + 4]);
-                vec.push(i32::from_be_bytes(array));
-            }
-
-            self.advance(vec_len);
-            Ok(vec)
-        } else {
-            Err(Error::new(std::io::ErrorKind::UnexpectedEof, ERR_EOB))
-        }
+        self.read_fixed_int_array::<i32, 4>(len, "i32", i32::from_be_bytes)
     }
 
     pub fn read_i64_le_array(&mut self, len: usize) -> Result<Vec<i64>, Error> {
-        let vec_len = len.checked_mul(8).ok_or_else(|| {
-            Error::new(
-                std::io::ErrorKind::InvalidData,
-                "i64 array length overflows usize",
-            )
-        })?;
-        if can_read!(self, vec_len) {
-            let b = self.buf.slice(..vec_len);
-
-            let mut vec = Vec::with_capacity(len);
-            for i in (0..vec_len).step_by(8) {
-                let mut array = [0u8; 8];
-                array.copy_from_slice(&b[i..i + 8]);
-                vec.push(i64::from_le_bytes(array));
-            }
-
-            self.advance(vec_len);
-            Ok(vec)
-        } else {
-            Err(Error::new(std::io::ErrorKind::UnexpectedEof, ERR_EOB))
-        }
+        self.read_fixed_int_array::<i64, 8>(len, "i64", i64::from_le_bytes)
     }
 
     pub fn read_i64_array(&mut self, len: usize) -> Result<Vec<i64>, Error> {
-        let vec_len = len.checked_mul(8).ok_or_else(|| {
+        self.read_fixed_int_array::<i64, 8>(len, "i64", i64::from_be_bytes)
+    }
+
+    /// Shared implementation behind the `read_i32*`/`read_i64*` array readers:
+    /// one overflow-checked byte budget, one remaining-bytes check, then a
+    /// fixed-stride decode loop. Error kinds and messages match the readers
+    /// this replaces.
+    fn read_fixed_int_array<T, const BYTES: usize>(
+        &mut self,
+        len: usize,
+        type_name: &'static str,
+        convert: impl Fn([u8; BYTES]) -> T,
+    ) -> Result<Vec<T>, Error> {
+        let vec_len = len.checked_mul(BYTES).ok_or_else(|| {
             Error::new(
                 std::io::ErrorKind::InvalidData,
-                "i64 array length overflows usize",
+                format!("{type_name} array length overflows usize"),
             )
         })?;
-        if can_read!(self, vec_len) {
-            let b = self.buf.slice(..vec_len);
+        ensure_remaining!(self, vec_len);
+        let b = self.buf.slice(..vec_len);
 
-            let mut vec = Vec::with_capacity(len);
-            for i in (0..vec_len).step_by(8) {
-                let mut array = [0u8; 8];
-                array.copy_from_slice(&b[i..i + 8]);
-                vec.push(i64::from_be_bytes(array));
-            }
-
-            self.advance(vec_len);
-            Ok(vec)
-        } else {
-            Err(Error::new(std::io::ErrorKind::UnexpectedEof, ERR_EOB))
+        let mut vec = Vec::with_capacity(len);
+        for i in (0..vec_len).step_by(BYTES) {
+            let mut array = [0u8; BYTES];
+            array.copy_from_slice(&b[i..i + BYTES]);
+            vec.push(convert(array));
         }
+
+        self.advance(vec_len);
+        Ok(vec)
     }
 
     /// Reads a slice from the stream into the slice passed by the caller.
@@ -1308,6 +1268,37 @@ mod tests {
                 "round trip of {value}"
             );
         }
+    }
+
+    #[test]
+    fn fixed_int_arrays_round_trip_both_endian() {
+        let values_i32 = [0i32, 1, -1, i32::MAX, i32::MIN, 0x123456];
+        let values_i64 = [0i64, 1, -1, i64::MAX, i64::MIN, 0x123456789];
+        let mut writer = ByteWriter::new();
+        for v in values_i32 {
+            writer.write_i32_le(v).unwrap();
+        }
+        for v in values_i32 {
+            writer.write_i32(v).unwrap();
+        }
+        for v in values_i64 {
+            writer.write_i64_le(v).unwrap();
+        }
+        for v in values_i64 {
+            writer.write_i64(v).unwrap();
+        }
+        let mut reader = ByteReader::from(writer.as_slice());
+        assert_eq!(
+            reader.read_i32_le_array(values_i32.len()).unwrap(),
+            values_i32
+        );
+        assert_eq!(reader.read_i32_array(values_i32.len()).unwrap(), values_i32);
+        assert_eq!(
+            reader.read_i64_le_array(values_i64.len()).unwrap(),
+            values_i64
+        );
+        assert_eq!(reader.read_i64_array(values_i64.len()).unwrap(), values_i64);
+        assert!(reader.as_slice().is_empty());
     }
 
     #[test]

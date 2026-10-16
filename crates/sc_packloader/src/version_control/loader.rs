@@ -14,6 +14,7 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use sc_error::{ScError, ScSite, capture_site};
 use sc_log::t_log;
 
 fn json_entry_is_allowed(size: u64) -> bool {
@@ -24,23 +25,155 @@ fn binary_entry_is_allowed(size: u64) -> bool {
     size <= MAX_BINARY_ENTRY_BYTES
 }
 
-#[derive(Debug)]
+#[derive(Debug, ScError)]
 pub enum VersionPackLoaderError {
-    ZipError(String, zip::result::ZipError),
-    JsonError(String, serde_json::Error),
-    IoError(String, std::io::Error),
-    FileNotFound(&'static str),
-    DeserializationError(String),
+    /// Zip entry failure.
+    #[sc_error(code = "packloader.version.zip")]
+    ZipError {
+        /// Entry path.
+        path: String,
+        /// Underlying zip error.
+        source: zip::result::ZipError,
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+    /// JSON parse failure.
+    #[sc_error(code = "packloader.version.json")]
+    JsonError {
+        /// Entry path.
+        path: String,
+        /// Underlying JSON error.
+        source: serde_json::Error,
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+    /// File I/O failure.
+    #[sc_error(code = "packloader.version.io")]
+    IoError {
+        /// Entry path.
+        path: String,
+        /// Underlying I/O error.
+        source: std::io::Error,
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+    /// Required file is missing.
+    #[sc_error(code = "packloader.version.not_found")]
+    FileNotFound {
+        /// Missing entry path.
+        path: &'static str,
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+    /// Entry contents fail validation.
+    #[sc_error(code = "packloader.version.deserialization")]
+    DeserializationError {
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
     //LoadPluginsError(SCPluginLoaderError),
+}
+
+impl VersionPackLoaderError {
+    /// Build a zip error, capturing the call site.
+    #[track_caller]
+    pub fn zip_error(path: String, source: zip::result::ZipError) -> Self {
+        let detail = format!("failed to read '{path}': {source}");
+        Self::ZipError {
+            path,
+            source,
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build a JSON error, capturing the call site.
+    #[track_caller]
+    pub fn json_error(path: String, source: serde_json::Error) -> Self {
+        let detail = format!("failed to parse '{path}': {source}");
+        Self::JsonError {
+            path,
+            source,
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build an I/O error, capturing the call site.
+    #[track_caller]
+    pub fn io_error(path: String, source: std::io::Error) -> Self {
+        let detail = format!("failed to read '{path}': {source}");
+        Self::IoError {
+            path,
+            source,
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build a missing-file error, capturing the call site.
+    #[track_caller]
+    pub fn file_not_found(path: &'static str) -> Self {
+        Self::FileNotFound {
+            path,
+            detail: format!("required file '{path}' not found"),
+            site: capture_site(),
+        }
+    }
+
+    /// Build a validation error, capturing the call site.
+    #[track_caller]
+    pub fn deserialization_error(detail: String) -> Self {
+        Self::DeserializationError {
+            detail,
+            site: capture_site(),
+        }
+    }
 }
 
 impl std::fmt::Display for VersionPackLoaderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        match self {
+            Self::ZipError { detail, site, .. } => {
+                write!(f, "[packloader.version.zip] {detail} (at {site})")
+            }
+            Self::JsonError { detail, site, .. } => {
+                write!(f, "[packloader.version.json] {detail} (at {site})")
+            }
+            Self::IoError { detail, site, .. } => {
+                write!(f, "[packloader.version.io] {detail} (at {site})")
+            }
+            Self::FileNotFound { detail, site, .. } => {
+                write!(f, "[packloader.version.not_found] {detail} (at {site})")
+            }
+            Self::DeserializationError { detail, site } => {
+                write!(f, "[packloader.version.deserialization] {detail} (at {site})")
+            }
+        }
     }
 }
 
-impl Error for VersionPackLoaderError {}
+impl Error for VersionPackLoaderError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ZipError { source, .. } => Some(source),
+            Self::JsonError { source, .. } => Some(source),
+            Self::IoError { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
 
 pub struct VersionPackLoader {
     dir_path: PathBuf,
@@ -183,40 +316,40 @@ impl ZippedVersionPack {
         pack: &mut PackSource,
     ) -> Result<SCVersionPackManifest, VersionPackLoaderError> {
         let Some(size) = pack.file_size("manifest.json") else {
-            return Err(VersionPackLoaderError::FileNotFound("manifest.json"));
+            return Err(VersionPackLoaderError::file_not_found("manifest.json"));
         };
         if !json_entry_is_allowed(size) {
-            return Err(VersionPackLoaderError::DeserializationError(
+            return Err(VersionPackLoaderError::deserialization_error(
                 "manifest.json exceeds JSON budget".to_string(),
             ));
         }
         let Some(bytes) = pack.read_file("manifest.json") else {
-            return Err(VersionPackLoaderError::FileNotFound("manifest.json"));
+            return Err(VersionPackLoaderError::file_not_found("manifest.json"));
         };
         serde_json::from_reader(BudgetReader::new(bytes.as_slice()))
-            .map_err(|e| VersionPackLoaderError::JsonError("manifest.json".to_string(), e))
+            .map_err(|e| VersionPackLoaderError::json_error("manifest.json".to_string(), e))
     }
 
     fn get_runtime_id(
         pack: &mut PackSource,
     ) -> Result<Vec<MinecraftRuntimeJson>, VersionPackLoaderError> {
         let Some(size) = pack.file_size("definitions/runtime.json") else {
-            return Err(VersionPackLoaderError::FileNotFound(
+            return Err(VersionPackLoaderError::file_not_found(
                 "definitions/attributes.json",
             ));
         };
         if !json_entry_is_allowed(size) {
-            return Err(VersionPackLoaderError::DeserializationError(
+            return Err(VersionPackLoaderError::deserialization_error(
                 "definitions/runtime.json exceeds JSON budget".to_string(),
             ));
         }
         let Some(bytes) = pack.read_file("definitions/runtime.json") else {
-            return Err(VersionPackLoaderError::FileNotFound(
+            return Err(VersionPackLoaderError::file_not_found(
                 "definitions/attributes.json",
             ));
         };
         serde_json::from_reader(BudgetReader::new(bytes.as_slice())).map_err(|e| {
-            VersionPackLoaderError::JsonError("definitions/runtime.json".to_string(), e)
+            VersionPackLoaderError::json_error("definitions/runtime.json".to_string(), e)
         })
     }
 
@@ -272,8 +405,8 @@ impl ZippedVersionPack {
             );
             match parsed.map(|value| value.get()) {
                 Ok(MinecraftJson::MinecraftBiomeSpawner(biome)) => biomes.push(biome),
-                Ok(_) => first_error = Some(VersionPackLoaderError::DeserializationError(name)),
-                Err(error) => first_error = Some(VersionPackLoaderError::JsonError(name, error)),
+                Ok(_) => first_error = Some(VersionPackLoaderError::deserialization_error(name)),
+                Err(error) => first_error = Some(VersionPackLoaderError::json_error(name, error)),
             }
         });
         match first_error {
@@ -348,22 +481,22 @@ impl ZippedVersionPack {
         pack: &mut PackSource,
     ) -> Result<HashMap<String, EntityAttribute>, VersionPackLoaderError> {
         let Some(size) = pack.file_size("definitions/attributes.json") else {
-            return Err(VersionPackLoaderError::FileNotFound(
+            return Err(VersionPackLoaderError::file_not_found(
                 "definitions/runtime.json",
             ));
         };
         if !json_entry_is_allowed(size) {
-            return Err(VersionPackLoaderError::DeserializationError(
+            return Err(VersionPackLoaderError::deserialization_error(
                 "definitions/attributes.json exceeds JSON budget".to_string(),
             ));
         }
         let Some(bytes) = pack.read_file("definitions/attributes.json") else {
-            return Err(VersionPackLoaderError::FileNotFound(
+            return Err(VersionPackLoaderError::file_not_found(
                 "definitions/runtime.json",
             ));
         };
         serde_json::from_reader(BudgetReader::new(bytes.as_slice())).map_err(|e| {
-            VersionPackLoaderError::JsonError("definitions/attributes.json".to_string(), e)
+            VersionPackLoaderError::json_error("definitions/attributes.json".to_string(), e)
         })
     }
 
@@ -378,17 +511,17 @@ impl ZippedVersionPack {
     /// Returns FileNotFound when absent or unreadable.
     fn get_entity_identifiers(pack: &mut PackSource) -> Result<Vec<u8>, VersionPackLoaderError> {
         let Some(size) = pack.file_size("definitions/entity_identifiers.nbt") else {
-            return Err(VersionPackLoaderError::FileNotFound(
+            return Err(VersionPackLoaderError::file_not_found(
                 "definitions/entity_identifiers.nbt",
             ));
         };
         if !binary_entry_is_allowed(size) {
-            return Err(VersionPackLoaderError::FileNotFound(
+            return Err(VersionPackLoaderError::file_not_found(
                 "definitions/entity_identifiers.nbt",
             ));
         }
         pack.read_file("definitions/entity_identifiers.nbt").ok_or(
-            VersionPackLoaderError::FileNotFound("definitions/entity_identifiers.nbt"),
+            VersionPackLoaderError::file_not_found("definitions/entity_identifiers.nbt"),
         )
     }
 
@@ -463,7 +596,7 @@ impl ZippedVersionPack {
                 let bundle =
                     load_block_json_bundle(pack, decl, &pack_id, &BlockBundleBudgets::default())
                         .map_err(|e| {
-                            VersionPackLoaderError::DeserializationError(format!("block_data: {e}"))
+                            VersionPackLoaderError::deserialization_error(format!("block_data: {e}"))
                         })?;
                 (bundle, true)
             }

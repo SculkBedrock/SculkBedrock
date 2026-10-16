@@ -48,8 +48,8 @@ pub(crate) async fn send_first_spawn(
     epoch: u64,
 ) -> Result<(), PlayerConnectionError> {
     let Some(connection) = world.get_component::<PlayerConnection>(&entity) else {
-        return Err(PlayerConnectionError::RecvError(
-            sc_raknet::connection::RecvError::Closed,
+        return Err(PlayerConnectionError::recv(
+            sc_raknet::connection::RecvError::closed("connection closed"),
         ));
     };
 
@@ -131,7 +131,7 @@ pub(crate) async fn send_first_spawn(
 
     // This is the one-shot state transition in the protocol handshake.
     let Some(view) = world.get_component::<sc_world::chunk_view::ChunkView>(&entity) else {
-        return Err(PlayerConnectionError::PacketNotQueued(
+        return Err(PlayerConnectionError::not_queued(
             crate::player_connection::PacketSendOutcome::StaleContext,
         ));
     };
@@ -156,7 +156,7 @@ pub(crate) async fn send_first_spawn(
         )
         .await?;
     if spawn_outcome != crate::player_connection::PacketSendOutcome::Queued {
-        return Err(PlayerConnectionError::PacketNotQueued(spawn_outcome));
+        return Err(PlayerConnectionError::not_queued(spawn_outcome));
     }
 
     // The login sequence already sent the full server-wide player list (including
@@ -221,7 +221,7 @@ pub(crate) async fn send_first_spawn(
         )
         .await?;
     if teleport_outcome != crate::player_connection::PacketSendOutcome::Queued {
-        return Err(PlayerConnectionError::PacketNotQueued(teleport_outcome));
+        return Err(PlayerConnectionError::not_queued(teleport_outcome));
     }
 
     debug!(
@@ -276,8 +276,8 @@ fn inventory_sync_context(
     entity: EntityId,
 ) -> Result<Option<InventorySyncContext>, PlayerConnectionError> {
     let Some(connection) = world.get_component::<PlayerConnection>(&entity) else {
-        return Err(PlayerConnectionError::RecvError(
-            sc_raknet::connection::RecvError::Closed,
+        return Err(PlayerConnectionError::recv(
+            sc_raknet::connection::RecvError::closed("connection closed"),
         ));
     };
     let Some(entity_id) = world.get_component::<MinecraftEntityId>(&entity) else {

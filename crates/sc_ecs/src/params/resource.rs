@@ -2,19 +2,45 @@ use crate::resource::Resource;
 use crate::system::{SystemParam, SystemParamState};
 use crate::world::World;
 use parking_lot::{ArcRwLockReadGuard, ArcRwLockWriteGuard, RawRwLock};
+use sc_error::{ScError, ScSite, capture_site};
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use sc_log::t_log;
 
+#[derive(ScError)]
 pub enum ResourceError {
-    NotFound(String),
+    /// Requested resource is absent from the world.
+    #[sc_error(code = "ecs.resource.not_found")]
+    NotFound {
+        /// Missing resource name.
+        name: String,
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+}
+
+impl ResourceError {
+    /// Build a missing-resource error, capturing the call site.
+    #[track_caller]
+    pub fn not_found(name: String) -> Self {
+        let detail = format!("Resource({name}) not found");
+        Self::NotFound {
+            name,
+            detail,
+            site: capture_site(),
+        }
+    }
 }
 
 impl std::fmt::Display for ResourceError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotFound(name) => write!(f, "Resource({}) not found", name),
+            Self::NotFound { detail, site, .. } => {
+                write!(f, "[ecs.resource.not_found] {detail} (at {site})")
+            }
         }
     }
 }
@@ -22,12 +48,13 @@ impl std::fmt::Display for ResourceError {
 impl Debug for ResourceError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotFound(name) => write!(f, "Resource({}) not found", name),
+            Self::NotFound { name, .. } => write!(f, "Resource({name}) not found"),
         }
     }
 }
 
 impl std::error::Error for ResourceError {}
+
 
 /// Shared read handle: an owned read guard (`read_arc_recursive`, so
 /// re-reading the same resource on one thread never deadlocks against a

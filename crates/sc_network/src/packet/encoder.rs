@@ -67,12 +67,10 @@ impl PackerEncoder {
     }
 
     pub(crate) fn prepare<T: Writer>(&self, packet: T) -> Result<Vec<u8>, PacketEncryptionError> {
-        let serialized = packet
-            .write_to_bytes()
-            .map_err(|e| PacketEncryptionError::IoError(e))?;
+        let serialized = packet.write_to_bytes().map_err(PacketEncryptionError::io)?;
         let serialized = serialized.as_slice();
         let batch_plain = serialized.get(1..).ok_or_else(|| {
-            PacketEncryptionError::IoError(Error::other("encoded packet batch is empty"))
+            PacketEncryptionError::io(Error::other("encoded packet batch is empty"))
         })?;
         dump::record_wire("out", None, "batch_plain", batch_plain, "uncompressed");
 
@@ -82,7 +80,7 @@ impl PackerEncoder {
         let bytes = if let Some(compression_algorithm) = self.compression_algorithm {
             let mut compressed = compression_algorithm
                 .encode(batch_plain)
-                .map_err(|e| PacketEncryptionError::IoError(e))?;
+                .map_err(PacketEncryptionError::io)?;
             compressed.reserve(1);
             compressed.insert(0, compression_algorithm.get_bytes());
             dump::record_wire("out", None, "batch_compressed", &compressed, "compressed");

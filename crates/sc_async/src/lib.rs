@@ -43,3 +43,17 @@ fn global_runtime() -> &'static Runtime {
         Runtime::new().unwrap_or_else(|error| panic!("failed to create async runtime: {error}"))
     })
 }
+
+/// Format a caught panic payload as a short message.
+///
+/// Shared by the bounded worker pools (chunk load/generate in
+/// `sc_world::chunk_executor`, dirty-column writeback in
+/// `sc_world::writeback`): both isolate a plugin/storage panic to one job so
+/// its waiters receive a terminal error instead of stranding them.
+pub fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|message| (*message).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "non-string panic payload".to_string())
+}

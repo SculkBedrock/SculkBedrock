@@ -679,15 +679,15 @@ mod tests {
         );
         assert!(!outbox.admits(IntentReliability::OverwritableState));
         assert!(!outbox.admits(IntentReliability::ReliableFact));
-        assert_eq!(
+        assert!(matches!(
             outbox.push(NetworkIntent::SetEntityMotion(SetEntityMotion {
                 entity_id: 2,
                 x: 0.0,
                 y: 0.0,
                 z: 0.0,
             })),
-            Err(OutboxPushError::StateBudget)
-        );
+            Err(OutboxPushError::StateBudget { .. })
+        ));
     }
 }
 

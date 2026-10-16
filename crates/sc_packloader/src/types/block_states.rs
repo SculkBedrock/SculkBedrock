@@ -1,4 +1,1 @@
-use serde::Deserialize;
-
-#[derive(Deserialize, Debug, Default, Clone)]
-pub struct MinecraftBlockStates {}
+pub use super::small_types::MinecraftBlockStates;

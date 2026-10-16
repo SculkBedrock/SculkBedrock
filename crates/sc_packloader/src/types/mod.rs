@@ -6,4 +6,5 @@ pub mod filter;
 pub mod molang;
 pub mod noise_type;
 pub mod range;
+pub mod small_types;
 pub mod trigger;

@@ -6,7 +6,9 @@ use crate::protocol::MAX_FRAGS;
 use crate::server::current_epoch;
 use crate::utils::{add24, contains_inclusive24, forward_distance24, seq24};
 use log::trace;
+use sc_error::{ScError, ScSite, capture_site};
 use std::collections::{HashMap, HashSet};
+use std::fmt::{Display, Formatter};
 
 use super::{FragmentQueue, OrderedQueue, OrderedQueueReject};
 
@@ -26,24 +28,92 @@ const NACK_RETRY_INTERVAL_SECS: u64 = 1;
 /// to close and let the peer reconnect and resume.
 pub(crate) const ORDERED_GAP_TTL_SECS: u64 = 10;
 
-#[derive(Debug, Clone)]
+/// Receive-path failure.
+#[derive(Debug, Clone, ScError)]
 pub enum RecvQueueError {
-    OldSeq,
+    /// Duplicate or stale datagram sequence.
+    #[sc_error(code = "raknet.recv.old_seq")]
+    OldSeq { detail: String, site: ScSite },
     /// Refuse to ACK a datagram whose reliable frames cannot be retained.
+    #[sc_error(code = "raknet.recv.reliable_window_exhausted")]
     ReliableWindowExhausted {
         index: u32,
         head: u32,
         size: u32,
+        detail: String,
+        site: ScSite,
     },
     /// An ordered channel could not buffer another frame.
-    ///
-    /// Terminal: ordered delivery has no gap tolerance, so the connection must
-    /// be closed instead of stalling silently.
+    #[sc_error(code = "raknet.recv.order_channel_exhausted")]
     OrderChannelExhausted {
         entries: usize,
         bytes: usize,
+        detail: String,
+        site: ScSite,
     },
 }
+
+impl RecvQueueError {
+    /// Build an old-sequence error, capturing the call site.
+    #[track_caller]
+    pub fn old_seq(detail: impl Into<String>) -> Self {
+        Self::OldSeq {
+            detail: detail.into(),
+            site: capture_site(),
+        }
+    }
+
+    /// Build a reliable-window-exhausted error, capturing the call site.
+    #[track_caller]
+    pub fn reliable_window_exhausted(index: u32, head: u32, size: u32) -> Self {
+        let detail =
+            format!("Reliable window exhausted: index {index} head {head} size {size}");
+        Self::ReliableWindowExhausted {
+            index,
+            head,
+            size,
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build an order-channel-exhausted error, capturing the call site.
+    #[track_caller]
+    pub fn order_channel_exhausted(entries: usize, bytes: usize) -> Self {
+        let detail = format!("Order channel exhausted: {entries} entries {bytes} bytes");
+        Self::OrderChannelExhausted {
+            entries,
+            bytes,
+            detail,
+            site: capture_site(),
+        }
+    }
+}
+
+impl Display for RecvQueueError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OldSeq { detail, site } => {
+                write!(f, "[raknet.recv.old_seq] {detail} (at {site})")
+            }
+            Self::ReliableWindowExhausted { detail, site, .. } => {
+                write!(
+                    f,
+                    "[raknet.recv.reliable_window_exhausted] {detail} (at {site})"
+                )
+            }
+            Self::OrderChannelExhausted { detail, site, .. } => {
+                write!(
+                    f,
+                    "[raknet.recv.order_channel_exhausted] {detail} (at {site})"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for RecvQueueError {}
+
 
 #[derive(Debug, Clone)]
 pub struct RecvQueue {
@@ -136,7 +206,7 @@ impl RecvQueue {
                 // Already delivered and accounted for, so acknowledging it is
                 // what stops the peer retransmitting something we have.
                 self.queue_ack(sequence);
-                return Err(RecvQueueError::OldSeq);
+                return Err(RecvQueueError::old_seq("Duplicate datagram sequence"));
             }
             WindowAccept::Behind => {
                 // A very late original datagram may contain the missing reliable
@@ -148,7 +218,9 @@ impl RecvQueue {
                 self.out_of_window = self.out_of_window.saturating_add(1);
                 self.oldseq_rejects = self.oldseq_rejects.saturating_add(1);
 
-                return Err(RecvQueueError::OldSeq);
+                return Err(RecvQueueError::old_seq(
+                    "Datagram is outside the receive window",
+                ));
             }
         }
         self.nack.remove(&sequence);
@@ -258,11 +330,11 @@ impl RecvQueue {
                 WindowAccept::Accepted => {}
                 WindowAccept::Duplicate | WindowAccept::Behind => return Ok(()),
                 WindowAccept::OutOfWindow => {
-                    return Err(RecvQueueError::ReliableWindowExhausted {
-                        index: seq24(reliable_index),
-                        head: self.reliable_window.range().0,
-                        size: self.reliable_window.size(),
-                    });
+                    return Err(RecvQueueError::reliable_window_exhausted(
+                        seq24(reliable_index),
+                        self.reliable_window.range().0,
+                        self.reliable_window.size(),
+                    ));
                 }
             }
         }
@@ -407,7 +479,7 @@ impl RecvQueue {
                         self.ignored_ordered = self.ignored_ordered.saturating_add(1);
                     }
                     Err(OrderedQueueReject::Exhausted { entries, bytes }) => {
-                        return Err(RecvQueueError::OrderChannelExhausted { entries, bytes });
+                        return Err(RecvQueueError::order_channel_exhausted(entries, bytes));
                     }
                 }
             }
@@ -655,7 +727,8 @@ mod tests {
             Err(RecvQueueError::ReliableWindowExhausted {
                 index: 2048,
                 head: 0,
-                size: 2048
+                size: 2048,
+                ..
             })
         ));
         assert!(queue.ack_flush().is_empty());

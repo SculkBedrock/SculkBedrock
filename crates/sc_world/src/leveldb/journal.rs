@@ -21,22 +21,22 @@ pub(super) struct SpilloverJournal {
 }
 
 fn backend(status: impl std::fmt::Display) -> WorldStorageError {
-    WorldStorageError::Backend(format!("spillover journal: {status}"))
+    WorldStorageError::backend(format!("spillover journal: {status}"))
 }
 
 fn decode(key: &[u8], value: &[u8]) -> Result<SpilloverJournalEntry, WorldStorageError> {
     let (target, operation_id) = parse_spillover_journal_key(key).ok_or_else(|| {
-        WorldStorageError::Unsupported("invalid or unsupported spillover journal key".into())
+        WorldStorageError::unsupported("invalid or unsupported spillover journal key".into())
     })?;
     let write = decode_spillover_journal_value(target, value)
-        .ok_or_else(|| WorldStorageError::Corrupt("invalid spillover journal value".into()))?;
+        .ok_or_else(|| WorldStorageError::corrupt("invalid spillover journal value".into()))?;
     let (min_y, max_y) = dimension_bounds(target.dimension);
     if operation_id.source.dimension != target.dimension
         || ChunkPosition::from_world(write.x, write.z) != target.position
         || write.layer > 1
         || !(min_y..=max_y).contains(&write.y)
     {
-        return Err(WorldStorageError::Corrupt(format!(
+        return Err(WorldStorageError::corrupt(format!(
             "invalid spillover coordinates for operation {operation_id:?}"
         )));
     }
@@ -58,7 +58,7 @@ pub(super) fn read_target(
     let mut value = Vec::new();
     while iterator.current(&mut key, &mut value) && key.starts_with(&prefix) {
         if entries.len() >= MAX_GENERATED_SPILLOVER_WRITES {
-            return Err(WorldStorageError::Capacity(
+            return Err(WorldStorageError::capacity(
                 "target journal replay limit exceeded".into(),
             ));
         }
@@ -85,7 +85,7 @@ impl SpilloverJournal {
             if journal.total >= MAX_STORED_SPILLOVER_WRITES
                 || *target_count >= MAX_GENERATED_SPILLOVER_WRITES
             {
-                return Err(WorldStorageError::Capacity(
+                return Err(WorldStorageError::capacity(
                     "stored spillover journal exceeds its limits".into(),
                 ));
             }
@@ -105,7 +105,7 @@ impl SpilloverJournal {
         entries: &[SpilloverJournalEntry],
     ) -> Result<HashMap<ChunkKey, usize>, WorldStorageError> {
         if entries.len() > MAX_GENERATED_SPILLOVER_WRITES {
-            return Err(WorldStorageError::Capacity(
+            return Err(WorldStorageError::capacity(
                 "spillover journal batch limit exceeded".into(),
             ));
         }
@@ -118,7 +118,7 @@ impl SpilloverJournal {
             decode(&key, &value)?;
             if let Some(existing) = db.get_at(&snapshot, &key).map_err(backend)? {
                 if existing != value {
-                    return Err(WorldStorageError::Corrupt(format!(
+                    return Err(WorldStorageError::corrupt(format!(
                         "spillover operation id reused with different payload: {:?}",
                         entry.operation_id
                     )));
@@ -139,7 +139,7 @@ impl SpilloverJournal {
                     > MAX_GENERATED_SPILLOVER_WRITES
             })
         {
-            return Err(WorldStorageError::Capacity(
+            return Err(WorldStorageError::capacity(
                 "spillover journal is full; generation deferred".into(),
             ));
         }
@@ -154,7 +154,7 @@ impl SpilloverJournal {
         acknowledgements: &[SpilloverOperationId],
     ) -> Result<usize, WorldStorageError> {
         if acknowledgements.len() > MAX_GENERATED_SPILLOVER_WRITES {
-            return Err(WorldStorageError::Capacity(
+            return Err(WorldStorageError::capacity(
                 "spillover acknowledgement limit exceeded".into(),
             ));
         }

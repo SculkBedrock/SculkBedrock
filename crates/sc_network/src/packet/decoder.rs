@@ -56,7 +56,7 @@ impl PackerDecoder {
         if let Some(encryption) = cipher {
             let temp = encryption
                 .decode(&packet_data[1..])
-                .map_err(|e| PacketEncryptionError::IoError(e))?;
+                .map_err(PacketEncryptionError::io)?;
             data = vec![0xfe];
             data.extend(temp);
         }
@@ -75,7 +75,7 @@ impl PackerDecoder {
                     // Zlib or Snappy compression.
                     compression
                         .decode(&data[2..])
-                        .map_err(|e| PacketEncryptionError::IoError(e))?
+                        .map_err(PacketEncryptionError::io)?
                 }
                 255 => {
                     // Uncompressed payload.
@@ -83,7 +83,9 @@ impl PackerDecoder {
                 }
                 _ => {
                     // Unsupported compression format.
-                    return Err(PacketEncryptionError::UnsupportedCompressor);
+                    return Err(PacketEncryptionError::unsupported_compressor(
+                        "unsupported compressor".into(),
+                    ));
                 }
             };
             // Rebuild the transport prefix.
@@ -94,7 +96,6 @@ impl PackerDecoder {
         if let Some(batch_plain) = data.get(1..) {
             dump::record_wire("in", None, "batch_plain", batch_plain, "uncompressed");
         }
-        Ok(T::read(&mut ByteReader::from(data))
-            .map_err(|e| PacketEncryptionError::PacketReadError(e))?)
+        Ok(T::read(&mut ByteReader::from(data)).map_err(PacketEncryptionError::packet_read)?)
     }
 }

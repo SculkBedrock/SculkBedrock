@@ -2,6 +2,7 @@
 name = "sc_vanilla_overworld"
 version = "0.1.0"
 edition = "2021"
+license = "LGPL-3.0-only"
 description = "sc_vanilla 主世界地形生成器（in-process Rust 插件：Java 版风格 Perlin 噪声地形，方块 id 来自核心调色板）"
 
 [lib]
@@ -17,4 +18,7 @@ sc_utils = { path = "../../../sc_utils" }
 sc_packloader = { path = "../../../sc_packloader" }
 sc_block = { path = "../../../sc_block" }
 sc_log = { path = "../../../sc_log" }
-log = "0.4"
+log.workspace = true
+
+[lints]
+workspace = true

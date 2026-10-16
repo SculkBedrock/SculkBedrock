@@ -650,7 +650,7 @@ async fn send_chunks_batch(
         };
         match executor.try_submit(world_id.clone(), provider.clone(), key, min_y, max_y) {
             Ok(receiver) => waiters.push((index, receiver)),
-            Err(ChunkSubmitError::Busy | ChunkSubmitError::TooManyWaiters) => {
+            Err(ChunkSubmitError::Busy { .. } | ChunkSubmitError::TooManyWaiters { .. }) => {
                 log::debug!(
                     "[chunk] executor saturated; defer ({},{}) until next reorder",
                     key.position.x,
@@ -658,7 +658,7 @@ async fn send_chunks_batch(
                 );
                 release_key(&view, epoch, &key);
             }
-            Err(ChunkSubmitError::Closed) => {
+            Err(ChunkSubmitError::Closed { .. }) => {
                 log::warn!(
                     "{}",
                     t_log!("console.chunk.executor_closed", pos = key.position)
@@ -785,7 +785,10 @@ async fn send_chunks_batch(
             };
             let mut ticket = match encoder.try_submit(cache_key.clone(), column.clone()) {
                 Ok(ticket) => ticket,
-                Err(ChunkEncodeSubmitError::Busy | ChunkEncodeSubmitError::TooManyWaiters) => {
+                Err(
+                    ChunkEncodeSubmitError::Busy { .. }
+                    | ChunkEncodeSubmitError::TooManyWaiters { .. },
+                ) => {
                     log::debug!(
                         "[chunk] encode queue saturated; defer ({},{}) until next reorder",
                         key.position.x,
@@ -794,7 +797,7 @@ async fn send_chunks_batch(
                     release_batch(&view, epoch, &pending[index..]);
                     return;
                 }
-                Err(ChunkEncodeSubmitError::Closed) => {
+                Err(ChunkEncodeSubmitError::Closed { .. }) => {
                     log::warn!(
                         "{}",
                         t_log!("console.chunk.encoder_closed", pos = key.position)
@@ -807,7 +810,7 @@ async fn send_chunks_batch(
                 biased;
                 result = ticket.wait() => match result {
                     Ok(result) => result,
-                    Err(ChunkEncodeWaitError::Closed) => {
+                    Err(ChunkEncodeWaitError::Closed { .. }) => {
                         log::warn!("{}", t_log!("console.chunk.encode_channel_closed", pos = key.position));
                         release_batch(&view, epoch, &pending[index..]);
                         return;
@@ -823,11 +826,11 @@ async fn send_chunks_batch(
             };
             let candidate = match shared_result.as_ref() {
                 Ok(candidate) => candidate.clone(),
-                Err(ChunkEncodeError::StaleGeneration) => {
+                Err(ChunkEncodeError::StaleGeneration { .. }) => {
                     release_key(&view, epoch, &key);
                     continue;
                 }
-                Err(ChunkEncodeError::InvalidBlockMapping(error)) => {
+                Err(ChunkEncodeError::InvalidBlockMapping { detail: error, .. }) => {
                     log::error!(
                         "{}",
                         t_log!(
@@ -840,7 +843,7 @@ async fn send_chunks_batch(
                     release_batch(&view, epoch, &pending[index..]);
                     return;
                 }
-                Err(ChunkEncodeError::WorkerPanicked(error)) => {
+                Err(ChunkEncodeError::WorkerPanicked { detail: error, .. }) => {
                     log::warn!(
                         "{}",
                         t_log!(
@@ -992,7 +995,7 @@ async fn send_chunks_batch(
                 release_batch(&view, epoch, &pending[index..]);
                 return;
             }
-            Err(TrySendPacketError::Busy) => {
+            Err(TrySendPacketError::Busy { .. }) => {
                 log::debug!(
                     "[chunk] outbound send slots saturated; defer ({},{}) until next reorder",
                     key.position.x,
@@ -1001,7 +1004,7 @@ async fn send_chunks_batch(
                 release_batch(&view, epoch, &pending[index..]);
                 return;
             }
-            Err(TrySendPacketError::Connection(error)) => {
+            Err(TrySendPacketError::Connection { source: error, .. }) => {
                 log::warn!(
                     "{}",
                     t_log!(

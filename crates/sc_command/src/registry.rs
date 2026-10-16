@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use sc_ecs::resource::Resource;
+use sc_error::{ScError, ScSite, capture_site};
 
 /// Bedrock command permission level, matching the permission string in `AvailableCommands`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -141,26 +142,69 @@ impl CommandDefinition {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, ScError)]
 pub enum CommandRegisterError {
-    DuplicateName(String),
-    DuplicateAlias(String),
+    /// Command name is already registered.
+    #[sc_error(code = "command.duplicate_name")]
+    DuplicateName {
+        /// Rejected command name.
+        name: String,
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+    /// Command alias is already registered.
+    #[sc_error(code = "command.duplicate_alias")]
+    DuplicateAlias {
+        /// Rejected command alias.
+        alias: String,
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+}
+
+impl CommandRegisterError {
+    /// Build a duplicate-name error, capturing the call site.
+    #[track_caller]
+    pub fn duplicate_name(name: String) -> Self {
+        let detail = format!("command name '{name}' already registered");
+        Self::DuplicateName {
+            name,
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build a duplicate-alias error, capturing the call site.
+    #[track_caller]
+    pub fn duplicate_alias(alias: String) -> Self {
+        let detail = format!("command alias '{alias}' already registered");
+        Self::DuplicateAlias {
+            alias,
+            detail,
+            site: capture_site(),
+        }
+    }
 }
 
 impl Display for CommandRegisterError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::DuplicateName(name) => {
-                write!(formatter, "command name '{name}' already registered")
+            Self::DuplicateName { detail, site, .. } => {
+                write!(formatter, "[command.duplicate_name] {detail} (at {site})")
             }
-            Self::DuplicateAlias(alias) => {
-                write!(formatter, "command alias '{alias}' already registered")
+            Self::DuplicateAlias { detail, site, .. } => {
+                write!(formatter, "[command.duplicate_alias] {detail} (at {site})")
             }
         }
     }
 }
 
 impl std::error::Error for CommandRegisterError {}
+
 
 #[derive(Resource, Clone, Default)]
 pub struct CommandRegistry {
@@ -179,11 +223,11 @@ impl CommandRegistry {
     pub fn register(&mut self, definition: CommandDefinition) -> Result<(), CommandRegisterError> {
         let name = definition.name.clone();
         if self.commands.contains_key(&name) || self.aliases.contains_key(&name) {
-            return Err(CommandRegisterError::DuplicateName(name));
+            return Err(CommandRegisterError::duplicate_name(name));
         }
         for alias in &definition.aliases {
             if self.commands.contains_key(alias) || self.aliases.contains_key(alias) {
-                return Err(CommandRegisterError::DuplicateAlias(alias.clone()));
+                return Err(CommandRegisterError::duplicate_alias(alias.clone()));
             }
         }
         for alias in &definition.aliases {

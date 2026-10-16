@@ -18,7 +18,9 @@
 use super::intent::player::PlayerMoveMode;
 use super::intent::{IntentReliability, NetworkIntent};
 use sc_ecs::resource::Resource;
+use sc_error::{ScError, ScSite, capture_site};
 use std::collections::{HashMap, VecDeque};
+use std::fmt::{Display, Formatter};
 
 /// Outbound intent queue (resource on the root world).
 ///
@@ -126,11 +128,17 @@ impl NetworkOutbox {
             match intent.reliability() {
                 IntentReliability::ReliableFact => {
                     self.fact_rejected = self.fact_rejected.saturating_add(1);
-                    Some(OutboxPushError::FactBudget)
+                    Some(OutboxPushError::fact_budget(format!(
+                        "reliable fact rejected: outbox fact budget exhausted (pending={})",
+                        self.entries.len()
+                    )))
                 }
                 IntentReliability::OverwritableState => {
                     self.state_rejected = self.state_rejected.saturating_add(1);
-                    Some(OutboxPushError::StateBudget)
+                    Some(OutboxPushError::state_budget(format!(
+                        "overwriteable state rejected: outbox state budget exhausted (pending={})",
+                        self.entries.len()
+                    )))
                 }
             }
         } else {
@@ -300,15 +308,61 @@ impl NetworkOutbox {
 }
 
 /// Outbox admission rejection cause (terminal receipt of push).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, ScError)]
 pub enum OutboxPushError {
-    /// Overwriteable state rejected: the queue is full with nothing to
-    /// evict. Callers may safely ignore; state regenerates next tick.
-    StateBudget,
-    /// Reliable fact rejected: all caps exhausted. Callers must roll
-    /// back, resync, or isolate explicitly, never silently drop.
-    FactBudget,
+    /// Overwriteable state rejected: the queue is full with nothing to evict.
+    #[sc_error(code = "game.outbox.state_budget")]
+    StateBudget {
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+    /// Reliable fact rejected: all caps exhausted.
+    #[sc_error(code = "game.outbox.fact_budget")]
+    FactBudget {
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
 }
+
+impl OutboxPushError {
+    /// Build an overwriteable-state rejection, capturing the call site.
+    #[track_caller]
+    pub fn state_budget(detail: String) -> Self {
+        Self::StateBudget {
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build a reliable-fact rejection, capturing the call site.
+    #[track_caller]
+    pub fn fact_budget(detail: String) -> Self {
+        Self::FactBudget {
+            detail,
+            site: capture_site(),
+        }
+    }
+}
+
+impl Display for OutboxPushError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StateBudget { detail, site } => {
+                write!(f, "[game.outbox.state_budget] {detail} (at {site})")
+            }
+            Self::FactBudget { detail, site } => {
+                write!(f, "[game.outbox.fact_budget] {detail} (at {site})")
+            }
+        }
+    }
+}
+
+impl std::error::Error for OutboxPushError {}
+
 
 /// Outbox admission counters (observability).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -445,7 +499,10 @@ mod tests {
         assert!(outbox.push(sound(2.0)).is_ok());
         // The third presentation cue is refused, not swapped for an older one:
         // the already-queued state stays the authoritative pending set.
-        assert_eq!(outbox.push(sound(3.0)), Err(OutboxPushError::StateBudget));
+        assert!(matches!(
+            outbox.push(sound(3.0)),
+            Err(OutboxPushError::StateBudget { .. })
+        ));
         assert_eq!(outbox.pending(), 2);
         let stats = outbox.admission_stats();
         assert_eq!(stats.state_rejected, 1);
@@ -476,15 +533,18 @@ mod tests {
         assert!(outbox.push(fact(1)).is_ok());
         assert!(outbox.push(fact(2)).is_ok());
         // State is refused at the soft budget...
-        assert_eq!(
+        assert!(matches!(
             outbox.push(state.clone()),
-            Err(OutboxPushError::StateBudget)
-        );
+            Err(OutboxPushError::StateBudget { .. })
+        ));
         // ...while facts still fit in the reserved headroom.
         assert!(outbox.push(fact(3)).is_ok());
         assert!(outbox.push(fact(4)).is_ok());
         // Hard fact budget exhausted: the caller receives an explicit receipt.
-        assert_eq!(outbox.push(fact(5)), Err(OutboxPushError::FactBudget));
+        assert!(matches!(
+            outbox.push(fact(5)),
+            Err(OutboxPushError::FactBudget { .. })
+        ));
         assert_eq!(outbox.admission_stats().fact_rejected, 1);
 
         let intents = outbox.drain();
@@ -505,7 +565,7 @@ mod tests {
         assert!(outbox.push(motion(1, 0.0)).is_ok());
         assert!(outbox.push(motion(2, 0.0)).is_ok());
         assert_eq!(outbox.estimated_bytes(), entry_bytes * 2);
-        assert_eq!(
+        assert!(matches!(
             outbox.push(NetworkIntent::PlayParticle(PlayParticle {
                 world_id: MinecraftWorldId::random(),
                 cue: ParticleCue::BlockBreak,
@@ -514,9 +574,12 @@ mod tests {
                 y: 0.0,
                 z: 0.0,
             })),
-            Err(OutboxPushError::StateBudget)
-        );
-        assert_eq!(outbox.push(fact(3)), Err(OutboxPushError::FactBudget));
+            Err(OutboxPushError::StateBudget { .. })
+        ));
+        assert!(matches!(
+            outbox.push(fact(3)),
+            Err(OutboxPushError::FactBudget { .. })
+        ));
     }
 
     #[test]
@@ -753,7 +816,10 @@ mod tests {
         assert!(outbox.push(sound(0.0)).is_ok());
         // The queue never evicts: the state budget refuses instead, so the
         // coalescing key of a queued intent must survive a full queue.
-        assert_eq!(outbox.push(sound(0.0)), Err(OutboxPushError::StateBudget));
+        assert!(matches!(
+            outbox.push(sound(0.0)),
+            Err(OutboxPushError::StateBudget { .. })
+        ));
         assert!(outbox.coalesced.contains_key(&CoalesceKey::EntityMotion(7)));
         assert!(outbox.push(motion(7, 2.0)).is_ok());
         assert!(outbox.push(motion(7, 3.0)).is_ok());

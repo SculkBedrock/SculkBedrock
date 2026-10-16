@@ -64,14 +64,17 @@ impl ResourceId {
 /// key isolates types correctly.
 pub fn cached_resource_id(layout: &str) -> ResourceId {
     use std::collections::HashMap;
-    use std::sync::{OnceLock, RwLock};
+    use std::sync::{OnceLock, PoisonError, RwLock};
     static CACHE: OnceLock<RwLock<HashMap<String, ResourceId>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| RwLock::new(HashMap::new()));
-    if let Some(id) = cache.read().unwrap().get(layout) {
+    if let Some(id) = cache.read().unwrap_or_else(PoisonError::into_inner).get(layout) {
         return *id;
     }
     let id = ResourceId::from_layout(layout);
-    cache.write().unwrap().insert(layout.to_string(), id);
+    cache
+        .write()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(layout.to_string(), id);
     id
 }
 
@@ -83,16 +86,20 @@ pub fn cached_resource_id(layout: &str) -> ResourceId {
 pub fn cached_resource_id_for<T: 'static>(build_layout: impl FnOnce() -> String) -> ResourceId {
     use std::any::TypeId;
     use std::collections::HashMap;
-    use std::sync::{OnceLock, RwLock};
+    use std::sync::{OnceLock, PoisonError, RwLock};
     static CACHE: OnceLock<RwLock<HashMap<TypeId, ResourceId>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| RwLock::new(HashMap::new()));
     let type_id = TypeId::of::<T>();
-    if let Some(id) = cache.read().unwrap().get(&type_id) {
+    if let Some(id) = cache
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&type_id)
+    {
         return *id;
     }
 
     let id = ResourceId::from_layout(&build_layout());
-    let mut cache = cache.write().unwrap();
+    let mut cache = cache.write().unwrap_or_else(PoisonError::into_inner);
     *cache.entry(type_id).or_insert(id)
 }
 

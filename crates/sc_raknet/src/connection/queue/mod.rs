@@ -11,6 +11,7 @@ use crate::protocol::RAKNET_HEADER_FRAME_OVERHEAD;
 use crate::server::current_epoch;
 use crate::utils::{add24, contains_inclusive24, forward_distance24, seq24};
 use log::trace;
+use sc_error::{ScError, ScSite, capture_site};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 
@@ -74,21 +75,141 @@ impl std::fmt::Display for RecoveryQueueFull {
     }
 }
 
-#[derive(Debug, Clone)]
+/// Queue insertion or retrieval failure.
+#[derive(Debug, Clone, ScError)]
+#[sc_error(bound = "E: ScError + 'static")]
 pub enum NetQueueError<E> {
     /// The insertion failed for any given reason.
-    InvalidInsertion,
+    #[sc_error(code = "raknet.queue.invalid_insertion")]
+    InvalidInsertion { detail: String, site: ScSite },
     /// The insertion failed and the reason is known.
-    InvalidInsertionKnown(String),
+    #[sc_error(code = "raknet.queue.invalid_insertion_known")]
+    InvalidInsertionKnown {
+        reason: String,
+        detail: String,
+        site: ScSite,
+    },
     /// The `Item` failed to be removed from the queue.
-    ItemDeletionFail,
+    #[sc_error(code = "raknet.queue.item_deletion_fail")]
+    ItemDeletionFail { detail: String, site: ScSite },
     /// The `Item` is invalid and can not be retrieved.
-    InvalidItem,
+    #[sc_error(code = "raknet.queue.invalid_item")]
+    InvalidItem { detail: String, site: ScSite },
     /// The queue is empty.
-    EmptyQueue,
+    #[sc_error(code = "raknet.queue.empty")]
+    EmptyQueue { detail: String, site: ScSite },
     /// The error is a custom error.
-    Other(E),
+    #[sc_error(code = "raknet.queue.other")]
+    Other {
+        source: E,
+        detail: String,
+        site: ScSite,
+    },
 }
+
+impl<E> NetQueueError<E> {
+    /// Build an insertion failure, capturing the call site.
+    #[track_caller]
+    pub fn invalid_insertion(detail: impl Into<String>) -> Self {
+        Self::InvalidInsertion {
+            detail: detail.into(),
+            site: capture_site(),
+        }
+    }
+
+    /// Build a known-reason insertion failure, capturing the call site.
+    #[track_caller]
+    pub fn invalid_insertion_known(reason: impl Into<String>) -> Self {
+        let reason = reason.into();
+        let detail = reason.clone();
+        Self::InvalidInsertionKnown {
+            reason,
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build an item-deletion failure, capturing the call site.
+    #[track_caller]
+    pub fn item_deletion_fail(detail: impl Into<String>) -> Self {
+        Self::ItemDeletionFail {
+            detail: detail.into(),
+            site: capture_site(),
+        }
+    }
+
+    /// Build an invalid-item error, capturing the call site.
+    #[track_caller]
+    pub fn invalid_item(detail: impl Into<String>) -> Self {
+        Self::InvalidItem {
+            detail: detail.into(),
+            site: capture_site(),
+        }
+    }
+
+    /// Build an empty-queue error, capturing the call site.
+    #[track_caller]
+    pub fn empty_queue(detail: impl Into<String>) -> Self {
+        Self::EmptyQueue {
+            detail: detail.into(),
+            site: capture_site(),
+        }
+    }
+
+    /// Build a custom error, capturing the call site.
+    #[track_caller]
+    pub fn other(source: E, detail: impl Into<String>) -> Self {
+        Self::Other {
+            source,
+            detail: detail.into(),
+            site: capture_site(),
+        }
+    }
+}
+
+impl<E> std::fmt::Display for NetQueueError<E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidInsertion { detail, site } => {
+                write!(formatter, "[raknet.queue.invalid_insertion] {detail} (at {site})")
+            }
+            Self::InvalidInsertionKnown { detail, site, .. } => {
+                write!(
+                    formatter,
+                    "[raknet.queue.invalid_insertion_known] {detail} (at {site})"
+                )
+            }
+            Self::ItemDeletionFail { detail, site } => {
+                write!(
+                    formatter,
+                    "[raknet.queue.item_deletion_fail] {detail} (at {site})"
+                )
+            }
+            Self::InvalidItem { detail, site } => {
+                write!(formatter, "[raknet.queue.invalid_item] {detail} (at {site})")
+            }
+            Self::EmptyQueue { detail, site } => {
+                write!(formatter, "[raknet.queue.empty] {detail} (at {site})")
+            }
+            Self::Other { detail, site, .. } => {
+                write!(formatter, "[raknet.queue.other] {detail} (at {site})")
+            }
+        }
+    }
+}
+
+impl<E> std::error::Error for NetQueueError<E>
+where
+    E: std::error::Error + 'static,
+{
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Other { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
 
 pub trait NetQueue<Item> {
     /// The `Item` of the queue.
@@ -326,13 +447,13 @@ where
         while self.queue.contains_key(&index) {
             index = seq24(index.wrapping_add(1));
             if index == start {
-                return Err(NetQueueError::InvalidInsertionKnown(
-                    "recovery queue key space exhausted".to_string(),
+                return Err(NetQueueError::invalid_insertion_known(
+                    "recovery queue key space exhausted",
                 ));
             }
         }
         self.insert_id(index, item)
-            .map_err(|full| NetQueueError::InvalidInsertionKnown(full.to_string()))?;
+            .map_err(|full| NetQueueError::invalid_insertion_known(full.to_string()))?;
         Ok(index)
     }
 
@@ -341,7 +462,9 @@ where
             self.queued_bytes = self.queued_bytes.saturating_sub(self.item_bytes(&item));
             Ok(item)
         } else {
-            Err(NetQueueError::ItemDeletionFail)
+            Err(NetQueueError::item_deletion_fail(
+                "Queue item deletion failed",
+            ))
         }
     }
 
@@ -349,7 +472,9 @@ where
         if let Some((_, item)) = self.queue.get(&key) {
             Ok(item)
         } else {
-            Err(NetQueueError::ItemDeletionFail)
+            Err(NetQueueError::item_deletion_fail(
+                "Queue item deletion failed",
+            ))
         }
     }
 
@@ -610,14 +735,14 @@ impl FragmentQueue {
     pub fn insert(&mut self, fragment: Frame) -> Result<(u32, u32), FragmentQueueError> {
         if let Some(meta) = fragment.fragment_meta.clone() {
             if meta.size == 0 || meta.size > MAX_FRAGS {
-                return Err(FragmentQueueError::TooManyFragments);
+                return Err(FragmentQueueError::too_many_fragments());
             }
             return if let Some((size, frames)) = self.fragments.get_mut(&meta.id) {
                 // check if the frame index is out of bounds
                 // todo: Check if == or >, I think it's > but I'm not sure.
                 // todo: This is because the index starts at 0 and the size starts at 1.
                 if meta.index >= *size {
-                    return Err(FragmentQueueError::FrameIndexOutOfBounds);
+                    return Err(FragmentQueueError::frame_index_out_of_bounds());
                 }
                 // the frame exists, and we have parts, check if we have this particular frame already.
                 if frames.iter().any(|f| {
@@ -626,9 +751,9 @@ impl FragmentQueue {
                         .is_some_and(|fragment| fragment.index == meta.index)
                 }) {
                     // We already have this frame! Do not replace it!!
-                    Err(FragmentQueueError::FrameExists)
+                    Err(FragmentQueueError::frame_exists())
                 } else if self.fragment_frames >= MAX_FRAGMENT_FRAMES {
-                    Err(FragmentQueueError::QueueFull)
+                    Err(FragmentQueueError::queue_full())
                 } else {
                     frames.push(fragment);
                     self.fragment_frames += 1;
@@ -638,7 +763,7 @@ impl FragmentQueue {
                 if self.fragments.len() >= MAX_FRAGMENT_SETS
                     || self.fragment_frames >= MAX_FRAGMENT_FRAMES
                 {
-                    return Err(FragmentQueueError::QueueFull);
+                    return Err(FragmentQueueError::queue_full());
                 }
                 // We don't already have this fragment index!
                 let (size, mut frames) = (meta.size, Vec::<Frame>::new());
@@ -650,17 +775,17 @@ impl FragmentQueue {
             };
         }
 
-        Err(FragmentQueueError::FrameNotFragmented)
+        Err(FragmentQueueError::frame_not_fragmented())
     }
 
     /// Attempts to collect all fragments from a given fragment id.
     /// Will fail if not all fragments are specified.
     pub fn collect(&mut self, id: u16) -> Result<Vec<u8>, FragmentQueueError> {
         let Some((size, frames)) = self.fragments.get_mut(&id) else {
-            return Err(FragmentQueueError::FragmentInvalid);
+            return Err(FragmentQueueError::fragment_invalid());
         };
         if *size != frames.len() as u32 {
-            return Err(FragmentQueueError::FragmentsMissing);
+            return Err(FragmentQueueError::fragments_missing());
         }
 
         frames.sort_by(|a, b| {
@@ -696,7 +821,7 @@ impl FragmentQueue {
             if frames.len() > MAX_FRAGMENT_FRAMES
                 || (self.fragments.len() >= MAX_FRAGMENT_SETS && !self.fragments.contains_key(&id))
             {
-                return Err(FragmentQueueError::QueueFull);
+                return Err(FragmentQueueError::queue_full());
             }
             if let Some((_, old_frames)) = self.fragments.remove(&id) {
                 self.fragment_frames = self.fragment_frames.saturating_sub(old_frames.len());
@@ -706,16 +831,16 @@ impl FragmentQueue {
             return Ok(id);
         }
 
-        Err(FragmentQueueError::DoesNotNeedSplit)
+        Err(FragmentQueueError::does_not_need_split())
     }
 
     pub fn split(buffer: &[u8], id: u16, mtu: u16) -> Result<Vec<Frame>, FragmentQueueError> {
         let Some(max_mtu) = mtu.checked_sub(RAKNET_HEADER_FRAME_OVERHEAD) else {
-            return Err(FragmentQueueError::DoesNotNeedSplit);
+            return Err(FragmentQueueError::does_not_need_split());
         };
 
         if max_mtu == 0 {
-            return Err(FragmentQueueError::DoesNotNeedSplit);
+            return Err(FragmentQueueError::does_not_need_split());
         }
 
         if buffer.len() > max_mtu.into() {
@@ -724,7 +849,7 @@ impl FragmentQueue {
                 .map(|c| c.to_vec())
                 .collect::<Vec<Vec<u8>>>();
             if splits.len() > MAX_FRAGS as usize {
-                return Err(FragmentQueueError::TooManyFragments);
+                return Err(FragmentQueueError::too_many_fragments());
             }
             let mut frames: Vec<Frame> = Vec::new();
             let mut index: u32 = 0;
@@ -745,7 +870,7 @@ impl FragmentQueue {
             return Ok(frames);
         }
 
-        Err(FragmentQueueError::DoesNotNeedSplit)
+        Err(FragmentQueueError::does_not_need_split())
     }
 
     pub fn get(&self, id: &u16) -> Result<&(u32, Vec<Frame>), FragmentQueueError> {
@@ -753,7 +878,7 @@ impl FragmentQueue {
             return Ok(v);
         }
 
-        Err(FragmentQueueError::FragmentInvalid)
+        Err(FragmentQueueError::fragment_invalid())
     }
 
     pub fn get_mut(&mut self, id: &u16) -> Result<&mut (u32, Vec<Frame>), FragmentQueueError> {
@@ -761,7 +886,7 @@ impl FragmentQueue {
             return Ok(v);
         }
 
-        Err(FragmentQueueError::FragmentInvalid)
+        Err(FragmentQueueError::fragment_invalid())
     }
 
     pub fn take(&mut self, id: u16) -> Result<(u32, Vec<Frame>), FragmentQueueError> {
@@ -769,7 +894,7 @@ impl FragmentQueue {
             self.fragment_frames = self.fragment_frames.saturating_sub(frames.len());
             return Ok((size, frames));
         }
-        Err(FragmentQueueError::FragmentInvalid)
+        Err(FragmentQueueError::fragment_invalid())
     }
 
     pub fn remove(&mut self, id: &u16) -> bool {
@@ -790,38 +915,160 @@ impl FragmentQueue {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// Fragment reassembly failure.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, ScError)]
 pub enum FragmentQueueError {
-    FrameExists,
-    FrameNotFragmented,
-    DoesNotNeedSplit,
-    FragmentInvalid,
-    FragmentsMissing,
-    FrameIndexOutOfBounds,
-    TooManyFragments,
-    QueueFull,
+    /// A fragment with this index was already received.
+    #[sc_error(code = "raknet.fragment.frame_exists")]
+    FrameExists { detail: String, site: ScSite },
+    /// The frame carries no fragment metadata.
+    #[sc_error(code = "raknet.fragment.frame_not_fragmented")]
+    FrameNotFragmented { detail: String, site: ScSite },
+    /// The buffer fits in one datagram.
+    #[sc_error(code = "raknet.fragment.does_not_need_split")]
+    DoesNotNeedSplit { detail: String, site: ScSite },
+    /// The fragment set id is unknown.
+    #[sc_error(code = "raknet.fragment.fragment_invalid")]
+    FragmentInvalid { detail: String, site: ScSite },
+    /// Not all fragments of the set arrived yet.
+    #[sc_error(code = "raknet.fragment.fragments_missing")]
+    FragmentsMissing { detail: String, site: ScSite },
+    /// The fragment index is outside the set size.
+    #[sc_error(code = "raknet.fragment.frame_index_out_of_bounds")]
+    FrameIndexOutOfBounds { detail: String, site: ScSite },
+    /// The buffer needs more fragments than allowed.
+    #[sc_error(code = "raknet.fragment.too_many_fragments")]
+    TooManyFragments { detail: String, site: ScSite },
+    /// No more fragment sets can be buffered.
+    #[sc_error(code = "raknet.fragment.queue_full")]
+    QueueFull { detail: String, site: ScSite },
+}
+
+impl FragmentQueueError {
+    /// Build a frame-exists error, capturing the call site.
+    #[track_caller]
+    pub fn frame_exists() -> Self {
+        Self::FrameExists {
+            detail: "Frame already exists".to_string(),
+            site: capture_site(),
+        }
+    }
+
+    /// Build a frame-not-fragmented error, capturing the call site.
+    #[track_caller]
+    pub fn frame_not_fragmented() -> Self {
+        Self::FrameNotFragmented {
+            detail: "Frame is not fragmented".to_string(),
+            site: capture_site(),
+        }
+    }
+
+    /// Build a does-not-need-split error, capturing the call site.
+    #[track_caller]
+    pub fn does_not_need_split() -> Self {
+        Self::DoesNotNeedSplit {
+            detail: "Frame does not need to be split".to_string(),
+            site: capture_site(),
+        }
+    }
+
+    /// Build a fragment-invalid error, capturing the call site.
+    #[track_caller]
+    pub fn fragment_invalid() -> Self {
+        Self::FragmentInvalid {
+            detail: "Fragment is invalid".to_string(),
+            site: capture_site(),
+        }
+    }
+
+    /// Build a fragments-missing error, capturing the call site.
+    #[track_caller]
+    pub fn fragments_missing() -> Self {
+        Self::FragmentsMissing {
+            detail: "Fragments are missing".to_string(),
+            site: capture_site(),
+        }
+    }
+
+    /// Build a frame-index-out-of-bounds error, capturing the call site.
+    #[track_caller]
+    pub fn frame_index_out_of_bounds() -> Self {
+        Self::FrameIndexOutOfBounds {
+            detail: "Frame index is out of bounds".to_string(),
+            site: capture_site(),
+        }
+    }
+
+    /// Build a too-many-fragments error, capturing the call site.
+    #[track_caller]
+    pub fn too_many_fragments() -> Self {
+        Self::TooManyFragments {
+            detail: "Too many fragments".to_string(),
+            site: capture_site(),
+        }
+    }
+
+    /// Build a queue-full error, capturing the call site.
+    #[track_caller]
+    pub fn queue_full() -> Self {
+        Self::QueueFull {
+            detail: "Fragment queue is full".to_string(),
+            site: capture_site(),
+        }
+    }
 }
 
 impl std::fmt::Display for FragmentQueueError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                FragmentQueueError::FrameExists => "Frame already exists",
-                FragmentQueueError::FrameNotFragmented => "Frame is not fragmented",
-                FragmentQueueError::DoesNotNeedSplit => "Frame does not need to be split",
-                FragmentQueueError::FragmentInvalid => "Fragment is invalid",
-                FragmentQueueError::FragmentsMissing => "Fragments are missing",
-                FragmentQueueError::FrameIndexOutOfBounds => "Frame index is out of bounds",
-                FragmentQueueError::TooManyFragments => "Too many fragments",
-                FragmentQueueError::QueueFull => "Fragment queue is full",
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::FrameExists { detail, site } => {
+                write!(formatter, "[raknet.fragment.frame_exists] {detail} (at {site})")
             }
-        )
+            Self::FrameNotFragmented { detail, site } => {
+                write!(
+                    formatter,
+                    "[raknet.fragment.frame_not_fragmented] {detail} (at {site})"
+                )
+            }
+            Self::DoesNotNeedSplit { detail, site } => {
+                write!(
+                    formatter,
+                    "[raknet.fragment.does_not_need_split] {detail} (at {site})"
+                )
+            }
+            Self::FragmentInvalid { detail, site } => {
+                write!(
+                    formatter,
+                    "[raknet.fragment.fragment_invalid] {detail} (at {site})"
+                )
+            }
+            Self::FragmentsMissing { detail, site } => {
+                write!(
+                    formatter,
+                    "[raknet.fragment.fragments_missing] {detail} (at {site})"
+                )
+            }
+            Self::FrameIndexOutOfBounds { detail, site } => {
+                write!(
+                    formatter,
+                    "[raknet.fragment.frame_index_out_of_bounds] {detail} (at {site})"
+                )
+            }
+            Self::TooManyFragments { detail, site } => {
+                write!(
+                    formatter,
+                    "[raknet.fragment.too_many_fragments] {detail} (at {site})"
+                )
+            }
+            Self::QueueFull { detail, site } => {
+                write!(formatter, "[raknet.fragment.queue_full] {detail} (at {site})")
+            }
+        }
     }
 }
 
 impl std::error::Error for FragmentQueueError {}
+
 
 #[cfg(test)]
 mod bounded_queue_tests {

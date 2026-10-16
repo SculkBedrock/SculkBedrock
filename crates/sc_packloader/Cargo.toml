@@ -3,8 +3,10 @@ name = "sc_packloader"
 version = "0.1.0"
 edition = "2021"
 
+license = "LGPL-3.0-only"
 [dependencies]
 sc_ecs = { path = "../sc_ecs" }
+sc_error = { path = "../sc_error" }
 sc_utils = { path = "../sc_utils" }
 sc_binary = { path = "../sc_binary" }
 sc_nbt = { path = "../sc_nbt" }
@@ -13,10 +15,13 @@ sc_plugin = { path = "../sc_plugin" }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 serde-inline-default = "=1.0.2"
-uuid = { version = "1.11.0", features = ["v4"] }
+uuid.workspace = true
 zip = "=8.6.0"
-log = "0.4.22"
+log.workspace = true
 json_comments = "0.2.2"
 chrono = "=0.4.45"
-sha2 = "0.10.8"
-parking_lot = { version = "0.12", features = ["arc_lock", "send_guard"] }
+sha2.workspace = true
+parking_lot.workspace = true
+
+[lints]
+workspace = true

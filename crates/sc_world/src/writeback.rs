@@ -4,7 +4,6 @@
 //! Worker threads only call the existing storage interface; they never clear
 //! dirty state or mutate a `ChunkColumn`.
 
-use std::any::Any;
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -707,7 +706,7 @@ fn writeback_worker(
             Ok(result) => result,
             Err(payload) => Err(format!(
                 "writeback worker panicked: {}",
-                panic_message(payload.as_ref())
+                sc_async::panic_message(payload.as_ref())
             )),
         };
         drop(storage);
@@ -723,14 +722,6 @@ fn writeback_worker(
             return;
         }
     }
-}
-
-fn panic_message(payload: &(dyn Any + Send)) -> String {
-    payload
-        .downcast_ref::<&str>()
-        .map(|message| (*message).to_string())
-        .or_else(|| payload.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "non-string panic payload".to_string())
 }
 
 #[cfg(test)]
@@ -790,7 +781,7 @@ mod tests {
         }
 
         fn save_chunk(&self, _key: ChunkKey, _chunk: &Chunk) -> Result<(), WorldStorageError> {
-            Err(WorldStorageError::Backend(
+            Err(WorldStorageError::backend(
                 "writeback unexpectedly used borrowed save".into(),
             ))
         }
@@ -1239,7 +1230,7 @@ mod tests {
         }
 
         fn save_chunk(&self, _key: ChunkKey, _chunk: &Chunk) -> Result<(), WorldStorageError> {
-            Err(WorldStorageError::Backend(
+            Err(WorldStorageError::backend(
                 "writeback unexpectedly used the borrowed storage path".into(),
             ))
         }
@@ -1294,14 +1285,14 @@ mod tests {
         fn save_chunk(&self, _key: ChunkKey, chunk: &Chunk) -> Result<(), WorldStorageError> {
             let value = chunk
                 .block_at_layer(0, 1, -60, 2)
-                .ok_or_else(|| WorldStorageError::Backend("snapshot missing test block".into()))?;
+                .ok_or_else(|| WorldStorageError::backend("snapshot missing test block".into()))?;
             self.started
                 .send(value)
-                .map_err(|error| WorldStorageError::Backend(error.to_string()))?;
+                .map_err(|error| WorldStorageError::backend(error.to_string()))?;
             self.release
                 .lock()
                 .recv()
-                .map_err(|error| WorldStorageError::Backend(error.to_string()))?;
+                .map_err(|error| WorldStorageError::backend(error.to_string()))?;
             Ok(())
         }
     }

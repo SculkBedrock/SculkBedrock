@@ -146,7 +146,7 @@ const MAX_PALETTE: u32 = SUBCHUNK_VOLUME as u32;
 const COPY_PREVIOUS_HEADER: u8 = 0xFF;
 
 fn corrupt(message: impl Into<String>) -> WorldStorageError {
-    WorldStorageError::Corrupt(message.into())
+    WorldStorageError::corrupt(message.into())
 }
 
 fn read_error(context: &str, error: std::io::Error) -> WorldStorageError {
@@ -299,10 +299,10 @@ pub fn parse_subchunk(bytes: &[u8], key_y: i8) -> Result<SubChunk, WorldStorageE
             })
         }
         // 0 and 2..=7 are pre-1.13 block-id/metadata formats.
-        version if version <= 7 => Err(WorldStorageError::Unsupported(format!(
+        version if version <= 7 => Err(WorldStorageError::unsupported(format!(
             "legacy subchunk format version {version}"
         ))),
-        version => Err(WorldStorageError::Unsupported(format!(
+        version => Err(WorldStorageError::unsupported(format!(
             "unknown subchunk format version {version}"
         ))),
     }
@@ -453,7 +453,7 @@ pub fn encode_data_3d(
     section_count: usize,
 ) -> Result<Vec<u8>, WorldStorageError> {
     if section_count == 0 || sections.len() != section_count {
-        return Err(WorldStorageError::Unsupported(format!(
+        return Err(WorldStorageError::unsupported(format!(
             "Data3D requires exactly {section_count} biome sections, got {}",
             sections.len()
         )));
@@ -497,7 +497,7 @@ fn write_biome_storage(
         }
         PalettedBiomeStorage::Paletted { palette, words } => {
             if palette.is_empty() || palette.len() > MAX_PALETTE as usize {
-                return Err(WorldStorageError::Unsupported(format!(
+                return Err(WorldStorageError::unsupported(format!(
                     "biome palette size {} is out of range",
                     palette.len()
                 )));
@@ -509,7 +509,7 @@ fn write_biome_storage(
                 return Err(corrupt("biome storage words do not match palette"));
             }
             let disk_bits = persistent_bits(palette.len()).ok_or_else(|| {
-                WorldStorageError::Unsupported(format!(
+                WorldStorageError::unsupported(format!(
                     "biome palette size {} exceeds persistent bit-width",
                     palette.len()
                 ))
@@ -612,7 +612,7 @@ fn encode_block_storage_persistent(
             let entry = BlockStateDictionary::global()
                 .get(runtime_id.0)
                 .ok_or_else(|| {
-                    WorldStorageError::Unsupported(format!(
+                    WorldStorageError::unsupported(format!(
                         "hash 0x{:08X} 不在自举字典，无法写回（先读后写）",
                         runtime_id.0
                     ))
@@ -621,12 +621,12 @@ fn encode_block_storage_persistent(
         }
         PalettedBlockStorage::Paletted { palette, words } => {
             if palette.is_empty() {
-                return Err(WorldStorageError::Unsupported(
+                return Err(WorldStorageError::unsupported(
                     "empty palette cannot be persisted".to_string(),
                 ));
             }
             let bits = persistent_bits(palette.len()).ok_or_else(|| {
-                WorldStorageError::Unsupported(format!(
+                WorldStorageError::unsupported(format!(
                     "palette 大小 {} 超出持久化位宽上限（>16 位）",
                     palette.len()
                 ))
@@ -649,7 +649,7 @@ fn encode_block_storage_persistent(
                 let entry = BlockStateDictionary::global()
                     .get(runtime_id.0)
                     .ok_or_else(|| {
-                        WorldStorageError::Unsupported(format!(
+                        WorldStorageError::unsupported(format!(
                             "hash 0x{:08X} 不在自举字典，无法写回（先读后写）",
                             runtime_id.0
                         ))
@@ -888,7 +888,7 @@ mod tests {
     fn legacy_subchunk_version_is_unsupported_not_corrupt() {
         let bytes = vec![0u8, 0, 0];
         match parse_subchunk(&bytes, 0) {
-            Err(WorldStorageError::Unsupported(_)) => {}
+            Err(WorldStorageError::Unsupported { .. }) => {}
             other => panic!("expected Unsupported, got {other:?}"),
         }
     }

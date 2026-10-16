@@ -209,16 +209,13 @@ pub(crate) async fn receive_packet(world: World, entity: EntityId) {
                     );
                 }
             }
-            Err(PlayerConnectionError::RecvError(_)) => {
+            Err(PlayerConnectionError::RecvError { .. }) => {
                 debug!(
                     "Connection({}) >> Closed",
                     to_address_token(connection.connection.address)
                 );
                 let _ = connection
-                    .disconnect(
-                        &t!("console.connection.undefined_redstone"),
-                        true,
-                    )
+                    .disconnect(&t!("console.connection.undefined_redstone"), true)
                     .await;
                 return;
             }

@@ -58,7 +58,7 @@ fn await_reply<T>(
     what: &str,
 ) -> Result<T, WorldStorageError> {
     receiver.recv_timeout(DB_REQUEST_TIMEOUT).map_err(|error| {
-        WorldStorageError::Backend(format!(
+        WorldStorageError::backend(format!(
             "leveldb {what} did not complete within {}s: {error}",
             DB_REQUEST_TIMEOUT.as_secs()
         ))
@@ -202,7 +202,7 @@ impl LevelDbWorldStorage {
                     Ok(db) => db,
                     Err(status) => {
                         let _ = startup_sender
-                            .send(Err(WorldStorageError::Backend(status.to_string())));
+                            .send(Err(WorldStorageError::backend(status.to_string())));
                         return;
                     }
                 };
@@ -282,7 +282,7 @@ impl LevelDbWorldStorage {
                 // tables) are only durable once the parent directory syncs.
                 env::fsync_dir_best_effort(&db_path);
             })
-            .map_err(WorldStorageError::Io)?;
+            .map_err(WorldStorageError::io)?;
 
         match startup_receiver.recv() {
             Ok(Ok(())) => Ok(Self {
@@ -295,7 +295,7 @@ impl LevelDbWorldStorage {
             }
             Err(_) => {
                 let _ = thread.join();
-                Err(WorldStorageError::Backend(
+                Err(WorldStorageError::backend(
                     "leveldb thread died during open".into(),
                 ))
             }
@@ -308,13 +308,13 @@ impl LevelDbWorldStorage {
             let sender = self
                 .sender
                 .lock()
-                .map_err(|_| WorldStorageError::Backend("leveldb sender poisoned".to_string()))?;
+                .map_err(|_| WorldStorageError::backend("leveldb sender poisoned".to_string()))?;
             sender
                 .send(Request::LoadChunk {
                     key,
                     reply: reply_sender,
                 })
-                .map_err(|_| WorldStorageError::Backend("leveldb thread is gone".to_string()))?;
+                .map_err(|_| WorldStorageError::backend("leveldb thread is gone".to_string()))?;
         }
         await_reply(&reply_receiver, "request")
     }
@@ -328,13 +328,13 @@ impl LevelDbWorldStorage {
             let sender = self
                 .sender
                 .lock()
-                .map_err(|_| WorldStorageError::Backend("leveldb sender poisoned".to_string()))?;
+                .map_err(|_| WorldStorageError::backend("leveldb sender poisoned".to_string()))?;
             sender
                 .send(Request::LoadSpilloverJournal {
                     key,
                     reply: reply_sender,
                 })
-                .map_err(|_| WorldStorageError::Backend("leveldb thread is gone".to_string()))?;
+                .map_err(|_| WorldStorageError::backend("leveldb thread is gone".to_string()))?;
         }
         await_reply(&reply_receiver, "request")
     }
@@ -351,13 +351,13 @@ impl LevelDbWorldStorage {
             let sender = self
                 .sender
                 .lock()
-                .map_err(|_| WorldStorageError::Backend("leveldb sender poisoned".to_string()))?;
+                .map_err(|_| WorldStorageError::backend("leveldb sender poisoned".to_string()))?;
             sender
                 .send(Request::AppendSpilloverJournal {
                     entries: entries.to_vec(),
                     reply: reply_sender,
                 })
-                .map_err(|_| WorldStorageError::Backend("leveldb thread is gone".to_string()))?;
+                .map_err(|_| WorldStorageError::backend("leveldb thread is gone".to_string()))?;
         }
         await_reply(&reply_receiver, "request")
     }
@@ -406,7 +406,7 @@ impl LevelDbWorldStorage {
             let sender = self
                 .sender
                 .lock()
-                .map_err(|_| WorldStorageError::Backend("leveldb sender poisoned".to_string()))?;
+                .map_err(|_| WorldStorageError::backend("leveldb sender poisoned".to_string()))?;
             sender
                 .send(Request::WriteChunk {
                     key,
@@ -417,7 +417,7 @@ impl LevelDbWorldStorage {
                     spillover_acks: spillover_acks.to_vec(),
                     reply: reply_sender,
                 })
-                .map_err(|_| WorldStorageError::Backend("leveldb thread is gone".to_string()))?;
+                .map_err(|_| WorldStorageError::backend("leveldb thread is gone".to_string()))?;
         }
         await_reply(&reply_receiver, "request")
     }
@@ -435,9 +435,9 @@ impl WorldStorage for LevelDbWorldStorage {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .lock()
-            .map_err(|_| WorldStorageError::Backend("leveldb sender poisoned".into()))?
+            .map_err(|_| WorldStorageError::backend("leveldb sender poisoned".into()))?
             .send(Request::LoadChunkWithSpillover { key, reply })
-            .map_err(|_| WorldStorageError::Backend("leveldb thread is gone".into()))?;
+            .map_err(|_| WorldStorageError::backend("leveldb thread is gone".into()))?;
         await_reply(&receiver, "request")
     }
 
@@ -450,14 +450,14 @@ impl WorldStorage for LevelDbWorldStorage {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .lock()
-            .map_err(|_| WorldStorageError::Backend("leveldb sender poisoned".into()))?
+            .map_err(|_| WorldStorageError::backend("leveldb sender poisoned".into()))?
             .send(Request::CommitGeneration {
                 key,
                 chunk,
                 outgoing: outgoing.to_vec(),
                 reply,
             })
-            .map_err(|_| WorldStorageError::Backend("leveldb thread is gone".into()))?;
+            .map_err(|_| WorldStorageError::backend("leveldb thread is gone".into()))?;
         await_reply(&receiver, "request")
     }
 
@@ -558,7 +558,7 @@ fn load_chunk_blocking(db: &mut DB, key: ChunkKey) -> Result<Option<Chunk>, Worl
         let subchunk = match record {
             Some(bytes) => match parse_subchunk(&bytes, y) {
                 Ok(subchunk) => subchunk,
-                Err(WorldStorageError::Unsupported(message)) => {
+                Err(WorldStorageError::Unsupported { detail: message, .. }) => {
                     warn!(
                         "{}",
                         t_log!(
@@ -570,8 +570,8 @@ fn load_chunk_blocking(db: &mut DB, key: ChunkKey) -> Result<Option<Chunk>, Worl
                     );
                     SubChunk::empty_network(SubChunkIndex::new(y))
                 }
-                Err(WorldStorageError::Corrupt(message)) => {
-                    return Err(WorldStorageError::Corrupt(format!(
+                Err(WorldStorageError::Corrupt { detail: message, .. }) => {
+                    return Err(WorldStorageError::corrupt(format!(
                         "chunk {} subchunk {y}: {message}",
                         key.position
                     )));
@@ -665,7 +665,7 @@ fn append_spillover_journal_blocking(
     let additions = journal.prepare_append(db, &mut batch, entries)?;
     if !additions.is_empty() {
         db.write(batch, true).map_err(|status| {
-            WorldStorageError::Backend(format!("spillover journal write: {status}"))
+            WorldStorageError::backend(format!("spillover journal write: {status}"))
         })?;
         journal.committed(
             additions,
@@ -686,24 +686,24 @@ fn commit_generation_blocking(
     let snapshot = db.get_snapshot();
     let exists = db
         .get_at(&snapshot, &chunk_record_key(key, TAG_CHUNK_VERSION, None))
-        .map_err(|status| WorldStorageError::Backend(status.to_string()))?
+        .map_err(|status| WorldStorageError::backend(status.to_string()))?
         .or(db
             .get_at(
                 &snapshot,
                 &chunk_record_key(key, TAG_LEGACY_CHUNK_VERSION, None),
             )
-            .map_err(|status| WorldStorageError::Backend(status.to_string()))?)
+            .map_err(|status| WorldStorageError::backend(status.to_string()))?)
         .is_some();
     let source = if exists {
         load_chunk_blocking(db, key)?.ok_or_else(|| {
-            WorldStorageError::Corrupt("committed generation source is missing".into())
+            WorldStorageError::corrupt("committed generation source is missing".into())
         })?
     } else {
         if outgoing
             .iter()
             .any(|entry| entry.operation_id.source != key)
         {
-            return Err(WorldStorageError::Corrupt(
+            return Err(WorldStorageError::corrupt(
                 "spillover source identity mismatch".into(),
             ));
         }
@@ -771,7 +771,7 @@ fn write_chunk_blocking(
                 NbtWriter::from_writer(&mut writer)
                     .write::<BedrockLocalNbt>(entity)
                     .map_err(|error| {
-                        WorldStorageError::Corrupt(format!("block entity NBT encode: {error}"))
+                        WorldStorageError::corrupt(format!("block entity NBT encode: {error}"))
                     })?;
             }
             let bytes = writer.as_slice().to_vec();
@@ -803,7 +803,7 @@ fn write_chunk_blocking(
 
     db.write(batch, sync || !spillover_acks.is_empty())
         .map_err(|status| {
-            WorldStorageError::Backend(format!("leveldb write chunk batch: {status}"))
+            WorldStorageError::backend(format!("leveldb write chunk batch: {status}"))
         })?;
     journal.committed(additions, key, removed);
     Ok(())
@@ -834,7 +834,7 @@ fn replace_heightmap_prefix(
         return Ok(false);
     };
     if record.len() < 512 {
-        return Err(WorldStorageError::Corrupt(format!(
+        return Err(WorldStorageError::corrupt(format!(
             "biome record tag {tag:#x} is shorter than the 512-byte heightmap prefix"
         )));
     }
@@ -851,7 +851,7 @@ fn heightmap_prefix_for_write(
     for tag in [TAG_DATA_3D, TAG_DATA_2D] {
         if let Some(record) = db.get(&chunk_record_key(key, tag, None)) {
             let Some(prefix) = record.get(..512) else {
-                return Err(WorldStorageError::Corrupt(format!(
+                return Err(WorldStorageError::corrupt(format!(
                     "biome record tag {tag:#x} is shorter than the 512-byte heightmap prefix"
                 )));
             };
@@ -865,7 +865,7 @@ fn heightmap_prefix_for_write(
         .as_ref()
         .map(|heightmap| **heightmap)
         .ok_or_else(|| {
-            WorldStorageError::Unsupported(
+            WorldStorageError::unsupported(
                 "cannot persist dirty Data3D biomes without a heightmap snapshot".into(),
             )
         })
@@ -971,7 +971,7 @@ mod journal_tests {
                 Chunk::empty_overworld(source.position),
                 &[first, conflict]
             ),
-            Err(WorldStorageError::Corrupt(_))
+            Err(WorldStorageError::Corrupt { .. })
         ));
         assert!(load_chunk_blocking(&mut db, source).unwrap().is_none());
         assert!(journal::read_target(&mut db, target).unwrap().is_empty());

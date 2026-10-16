@@ -1,0 +1,13 @@
+[package]
+name = "sc_error"
+version = "0.1.0"
+edition = "2021"
+license = "LGPL-3.0-only"
+description = "Shared error primitives: stable code, English detail, call site"
+
+[dependencies]
+thiserror.workspace = true
+sc_error_macros = { path = "sc_error_macros" }
+
+[lints]
+workspace = true

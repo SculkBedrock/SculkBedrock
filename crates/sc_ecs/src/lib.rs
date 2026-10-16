@@ -16,7 +16,7 @@ pub mod entity;
 pub mod event;
 pub mod intern;
 pub mod local_manager;
-pub mod r#macro;
+pub mod macros;
 pub mod params;
 pub mod region;
 pub mod resource;

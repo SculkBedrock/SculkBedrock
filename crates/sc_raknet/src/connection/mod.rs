@@ -35,17 +35,59 @@ use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use sc_binary::interfaces::{Reader, Writer};
 use sc_ecs::component::Component;
+use sc_error::{ScError, ScSite, capture_site};
 use sc_log::t_log;
 
 /// Shared count window for game-layer outbound commands and reserved
 /// packet admission. Capacity bounds command count, not bytes.
 const OUTBOUND_CHANNEL_CAPACITY: usize = 256;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Outbound slot admission failure.
+#[derive(Clone, Debug, Eq, PartialEq, ScError)]
 pub enum OutboundAdmissionError {
-    Busy,
-    Closed,
+    /// No outbound slot is available.
+    #[sc_error(code = "raknet.outbound.busy")]
+    Busy { detail: String, site: ScSite },
+    /// The outbound channel is closed.
+    #[sc_error(code = "raknet.outbound.closed")]
+    Closed { detail: String, site: ScSite },
 }
+
+impl OutboundAdmissionError {
+    /// Build a busy error, capturing the call site.
+    #[track_caller]
+    pub fn busy(detail: impl Into<String>) -> Self {
+        Self::Busy {
+            detail: detail.into(),
+            site: capture_site(),
+        }
+    }
+
+    /// Build a closed error, capturing the call site.
+    #[track_caller]
+    pub fn closed(detail: impl Into<String>) -> Self {
+        Self::Closed {
+            detail: detail.into(),
+            site: capture_site(),
+        }
+    }
+}
+
+impl Display for OutboundAdmissionError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Busy { detail, site } => {
+                write!(f, "[raknet.outbound.busy] {detail} (at {site})")
+            }
+            Self::Closed { detail, site } => {
+                write!(f, "[raknet.outbound.closed] {detail} (at {site})")
+            }
+        }
+    }
+}
+
+impl Error for OutboundAdmissionError {}
+
 
 #[derive(Clone, Debug)]
 struct OutboundSlotBudget {
@@ -63,7 +105,7 @@ impl OutboundSlotBudget {
         let permit = Arc::clone(&self.semaphore)
             .acquire_owned()
             .await
-            .map_err(|_| SendQueueError::SendError)?;
+            .map_err(|_| SendQueueError::send_error("Send error"))?;
         Ok(OutboundSlotPermit {
             budget: Arc::clone(&self.semaphore),
             _permit: permit,
@@ -76,8 +118,12 @@ impl OutboundSlotBudget {
             Arc::clone(&self.semaphore)
                 .try_acquire_owned()
                 .map_err(|error| match error {
-                    TryAcquireError::NoPermits => OutboundAdmissionError::Busy,
-                    TryAcquireError::Closed => OutboundAdmissionError::Closed,
+                    TryAcquireError::NoPermits => {
+                        OutboundAdmissionError::busy("Outbound channel is busy")
+                    }
+                    TryAcquireError::Closed => {
+                        OutboundAdmissionError::closed("Outbound channel is closed")
+                    }
                 })?;
         Ok(OutboundSlotPermit {
             budget: Arc::clone(&self.semaphore),
@@ -121,18 +167,37 @@ const PRIORITY_CHANNEL_CAPACITY: usize = 64;
 /// Debug interval (seconds) for net_recv health summaries.
 const RECV_HEALTH_LOG_INTERVAL_SECS: u64 = 10;
 
-#[derive(Debug)]
+/// Inbound game-layer receive failure.
+#[derive(Debug, ScError)]
 pub enum RecvError {
-    Closed,
+    /// The game-layer channel is closed.
+    #[sc_error(code = "raknet.recv.closed")]
+    Closed { detail: String, site: ScSite },
+}
+
+impl RecvError {
+    /// Build a closed error, capturing the call site.
+    #[track_caller]
+    pub fn closed(detail: impl Into<String>) -> Self {
+        Self::Closed {
+            detail: detail.into(),
+            site: capture_site(),
+        }
+    }
 }
 
 impl Display for RecvError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        match self {
+            Self::Closed { detail, site } => {
+                write!(f, "[raknet.recv.closed] {detail} (at {site})")
+            }
+        }
     }
 }
 
 impl Error for RecvError {}
+
 
 #[derive(Debug, Clone, Copy)]
 pub struct ConnMeta {
@@ -208,7 +273,7 @@ impl KeepaliveChannel {
     pub(crate) fn send(&self, packet: RakPacket) -> Result<(), SendQueueError> {
         let buf = packet
             .write_to_bytes()
-            .map_err(|_| SendQueueError::ParseError)?;
+            .map_err(|_| SendQueueError::parse_error("Parse error"))?;
 
         let frame = Frame::new(Reliability::Unreliable, Some(buf.as_slice()));
         let sequence = seq24(self.datagram_seq.fetch_add(1, Ordering::Relaxed));
@@ -220,7 +285,7 @@ impl KeepaliveChannel {
 
         let bytes = pk
             .write_to_bytes()
-            .map_err(|_| SendQueueError::ParseError)?;
+            .map_err(|_| SendQueueError::parse_error("Parse error"))?;
         let wire = bytes.as_slice();
         crate::dump::record("out", self.address, wire, "datagram");
 
@@ -230,7 +295,7 @@ impl KeepaliveChannel {
                 to_address_token(self.address),
                 e
             );
-            return Err(SendQueueError::SendError);
+            return Err(SendQueueError::send_error("Send error"));
         }
         Ok(())
     }
@@ -1248,7 +1313,7 @@ impl Connection {
         self.internal_net_recv
             .recv()
             .await
-            .map_err(|_| RecvError::Closed)
+            .map_err(|_| RecvError::closed("Connection is closed"))
     }
 
     pub async fn is_closed(&self) -> bool {
@@ -1302,7 +1367,7 @@ impl Connection {
         permit: OutboundSlotPermit,
     ) -> Result<(), SendQueueError> {
         if !Arc::ptr_eq(&self.outbound_slots.semaphore, &permit.budget) {
-            return Err(SendQueueError::SendError);
+            return Err(SendQueueError::send_error("Send error"));
         }
         let cmd = QueuedOutboundCommand {
             command: OutboundCommand::Send { bytes, immediate },
@@ -1310,7 +1375,7 @@ impl Connection {
         };
         self.outbound_tx
             .try_send(cmd)
-            .map_err(|_| SendQueueError::SendError)
+            .map_err(|_| SendQueueError::send_error("Send error"))
     }
 
     pub async fn close(&self) {
@@ -1783,7 +1848,7 @@ mod outbound_slot_tests {
         let second = budget.try_acquire().expect("second slot");
         assert!(matches!(
             budget.try_acquire(),
-            Err(OutboundAdmissionError::Busy)
+            Err(OutboundAdmissionError::Busy { .. })
         ));
 
         drop(first);
@@ -1799,7 +1864,7 @@ mod outbound_slot_tests {
         };
         assert!(matches!(
             budget.try_acquire(),
-            Err(OutboundAdmissionError::Busy)
+            Err(OutboundAdmissionError::Busy { .. })
         ));
         assert_eq!(guards_dropped.load(Ordering::Relaxed), 0);
 

@@ -26,25 +26,46 @@ use p384::ecdh::diffie_hellman;
 use p384::pkcs8::{DecodePublicKey, EncodePrivateKey, EncodePublicKey};
 use p384::{PublicKey, SecretKey};
 use rand::rngs::OsRng;
+use sc_error::{capture_site, ScError, ScSite};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt::{Display, Formatter};
 
-#[derive(Debug)]
+#[derive(Debug, ScError)]
 pub enum EncryptionError {
-    /// Invalid key length (must be 32 bytes).
-    InvalidKeyLength,
+    /// Invalid key length.
+    #[sc_error(code = "network.encryption.invalid_key")]
+    InvalidKeyLength {
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+}
+
+impl EncryptionError {
+    /// Build an invalid-key-length error, capturing the call site.
+    #[track_caller]
+    pub fn invalid_key_length(detail: String) -> Self {
+        Self::InvalidKeyLength {
+            detail,
+            site: capture_site(),
+        }
+    }
 }
 
 impl Display for EncryptionError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            EncryptionError::InvalidKeyLength => write!(f, "invalid key length"),
+            Self::InvalidKeyLength { detail, site } => {
+                write!(f, "[network.encryption.invalid_key] {detail} (at {site})")
+            }
         }
     }
 }
 
 impl std::error::Error for EncryptionError {}
+
 
 pub struct MinecraftEncryption;
 
@@ -221,7 +242,7 @@ impl StreamKind {
         let key: &[u8; 32] = secret_key
             .get(..32)
             .and_then(|k| k.try_into().ok())
-            .ok_or(EncryptionError::InvalidKeyLength)?;
+            .ok_or_else(|| EncryptionError::invalid_key_length("invalid key length".into()))?;
         if protocol_version < 428 {
             // CFB8 uses a 16-byte IV: key[..16].
             let iv: [u8; 16] = key[..16].try_into().unwrap();

@@ -3,6 +3,7 @@ name = "sc_bootstrap"
 version = "0.1.0"
 edition = "2021"
 
+license = "LGPL-3.0-only"
 [dependencies]
 sc_ecs = { path = "../sc_ecs" }
 sc_utils = { path = "../sc_utils" }
@@ -19,9 +20,9 @@ sc_item = { path = "../sc_item" }
 anyhow = "=1.0.104"
 pretty_env_logger = "=0.5.0"
 log = "=0.4.34"
-chrono = "0.4"
-serde_json = "1.0"
-libc = "0.2"
+chrono.workspace = true
+serde_json.workspace = true
+libc.workspace = true
 ureq = "3"
 sc_nbt = { path = "../sc_nbt" }
 sc_plugin_api = { path = "../sc_plugin_api" }
@@ -30,3 +31,6 @@ sc_recipe = { path = "../sc_recipe" }
 
 [dev-dependencies]
 zip = "=8.6.0"
+
+[lints]
+workspace = true

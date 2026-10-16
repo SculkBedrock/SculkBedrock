@@ -25,6 +25,7 @@ use tokio::task::JoinHandle;
 use sc_binary::interfaces::{Reader, Writer};
 use sc_binary::ByteReader;
 use sc_ecs::resource::Resource;
+use sc_error::{ScError, ScSite, capture_site};
 use sc_utils::game::structs::motd::Motd;
 
 pub(crate) type Session = (ConnMeta, Sender<Vec<u8>>);
@@ -116,34 +117,134 @@ impl Display for SCSocketAddr<'_> {
     }
 }
 
-#[derive(Debug)]
+/// Listener bind failure.
+#[derive(Debug, ScError)]
 pub enum ListenerError {
-    InvalidAddress(String),
-    UdpSocketError(io::Error),
+    /// The listen address is not a valid socket address.
+    #[sc_error(code = "raknet.listener.invalid_address")]
+    InvalidAddress {
+        address: String,
+        detail: String,
+        site: ScSite,
+    },
+    /// The UDP socket could not be bound.
+    #[sc_error(code = "raknet.listener.udp_socket_error")]
+    UdpSocketError {
+        source: io::Error,
+        detail: String,
+        site: ScSite,
+    },
+}
+
+impl ListenerError {
+    /// Build an invalid-address error, capturing the call site.
+    #[track_caller]
+    pub fn invalid_address(address: impl Into<String>) -> Self {
+        let address = address.into();
+        let detail = format!("Invalid address: {address}");
+        Self::InvalidAddress {
+            address,
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build a UDP-socket error, capturing the call site.
+    #[track_caller]
+    pub fn udp_socket_error(source: io::Error) -> Self {
+        let detail = source.to_string();
+        Self::UdpSocketError {
+            source,
+            detail,
+            site: capture_site(),
+        }
+    }
 }
 
 impl Display for ListenerError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        match self {
+            Self::InvalidAddress { detail, site, .. } => {
+                write!(f, "[raknet.listener.invalid_address] {detail} (at {site})")
+            }
+            Self::UdpSocketError { detail, site, .. } => {
+                write!(f, "[raknet.listener.udp_socket_error] {detail} (at {site})")
+            }
+        }
     }
 }
 
-impl Error for ListenerError {}
+impl Error for ListenerError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::UdpSocketError { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
 
-#[derive(Debug)]
+
+/// Server lifecycle failure.
+#[derive(Debug, ScError)]
 pub enum ServerError {
-    AlreadyOnline,
-    NotListening,
-    Killed,
+    /// The server is already online.
+    #[sc_error(code = "raknet.server.already_online")]
+    AlreadyOnline { detail: String, site: ScSite },
+    /// The server is not listening.
+    #[sc_error(code = "raknet.server.not_listening")]
+    NotListening { detail: String, site: ScSite },
+    /// The server task was killed.
+    #[sc_error(code = "raknet.server.killed")]
+    Killed { detail: String, site: ScSite },
+}
+
+impl ServerError {
+    /// Build an already-online error, capturing the call site.
+    #[track_caller]
+    pub fn already_online() -> Self {
+        Self::AlreadyOnline {
+            detail: "Server is already online".to_string(),
+            site: capture_site(),
+        }
+    }
+
+    /// Build a not-listening error, capturing the call site.
+    #[track_caller]
+    pub fn not_listening() -> Self {
+        Self::NotListening {
+            detail: "Server is not listening".to_string(),
+            site: capture_site(),
+        }
+    }
+
+    /// Build a killed error, capturing the call site.
+    #[track_caller]
+    pub fn killed() -> Self {
+        Self::Killed {
+            detail: "Server was killed".to_string(),
+            site: capture_site(),
+        }
+    }
 }
 
 impl Display for ServerError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        match self {
+            Self::AlreadyOnline { detail, site } => {
+                write!(f, "[raknet.server.already_online] {detail} (at {site})")
+            }
+            Self::NotListening { detail, site } => {
+                write!(f, "[raknet.server.not_listening] {detail} (at {site})")
+            }
+            Self::Killed { detail, site } => {
+                write!(f, "[raknet.server.killed] {detail} (at {site})")
+            }
+        }
     }
 }
 
 impl Error for ServerError {}
+
 
 #[derive(Resource, Clone)]
 pub struct Listener {
@@ -170,11 +271,11 @@ impl Listener {
         let a_string = format!("{}", address);
         let address = address
             .to_socket_addr()
-            .ok_or(ListenerError::InvalidAddress(a_string))?;
+            .ok_or_else(|| ListenerError::invalid_address(a_string))?;
 
         let udp_socket = UdpSocket::bind(address)
             .await
-            .map_err(|e| ListenerError::UdpSocketError(e))?;
+            .map_err(|e| ListenerError::udp_socket_error(e))?;
         let guid = motd.read().server_guid;
 
         let (sender, receiver) = async_channel::bounded(MAX_PENDING_CONNECTIONS);
@@ -195,7 +296,7 @@ impl Listener {
 
     pub async fn start(&self) -> Result<(), ServerError> {
         if self.serving.load(Ordering::Acquire) {
-            return Err(ServerError::AlreadyOnline);
+            return Err(ServerError::already_online());
         }
 
         let socket = self
@@ -203,7 +304,7 @@ impl Listener {
             .read()
             .as_ref()
             .cloned()
-            .ok_or(ServerError::NotListening)?;
+            .ok_or_else(|| ServerError::not_listening())?;
         let connections = self.connections.clone();
         let connection_sender = self.connection_sender.clone();
         let closer = self.closer.clone();
@@ -546,12 +647,12 @@ impl Listener {
 
     pub async fn accept(&self) -> Result<Connection, ServerError> {
         if !self.serving.load(Ordering::Acquire) {
-            Err(ServerError::NotListening)
+            Err(ServerError::not_listening())
         } else {
             self.connection_receiver
                 .recv()
                 .await
-                .map_err(|_| ServerError::Killed)
+                .map_err(|_| ServerError::killed())
         }
     }
 

@@ -14,6 +14,7 @@ use sc_ecs::app::plugin::Plugin;
 use sc_ecs::app::App;
 use sc_ecs::params::resource::ResMut;
 use sc_ecs::world::World;
+use sc_error::{ScError, ScSite, capture_site};
 use sc_log::{t, t_log};
 use sc_utils::schedule::SCPreLoad;
 use serde::Deserialize;
@@ -27,7 +28,7 @@ pub mod definitions;
 pub mod entity;
 pub mod ident;
 pub mod item;
-pub mod r#macro;
+pub mod macros;
 pub mod pack;
 pub mod pack_loader;
 pub mod recipe_source;
@@ -45,18 +46,45 @@ types_export![
     MinecraftBiomeSpawner = "minecraft:biome",
 ];
 
-#[derive(Debug)]
+#[derive(Debug, ScError)]
 pub enum PackLoaderError {
-    VersionPackNotFound(Cow<'static, str>),
+    /// Required version pack is missing.
+    #[sc_error(code = "packloader.version_pack_not_found")]
+    VersionPackNotFound {
+        /// Missing pack name.
+        name: Cow<'static, str>,
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+}
+
+impl PackLoaderError {
+    /// Build a missing-pack error, capturing the call site.
+    #[track_caller]
+    pub fn version_pack_not_found(name: Cow<'static, str>) -> Self {
+        let detail = format!("version pack '{name}' not found");
+        Self::VersionPackNotFound {
+            name,
+            detail,
+            site: capture_site(),
+        }
+    }
 }
 
 impl Display for PackLoaderError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        match self {
+            Self::VersionPackNotFound { detail, site, .. } => {
+                write!(f, "[packloader.version_pack_not_found] {detail} (at {site})")
+            }
+        }
     }
 }
 
 impl Error for PackLoaderError {}
+
 
 pub struct SCPackLoaderPlugin;
 

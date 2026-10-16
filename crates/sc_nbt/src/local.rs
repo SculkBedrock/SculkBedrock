@@ -204,7 +204,7 @@ impl BedrockLocalNbt {
             NbtValue::Double(v) => writer.write_f64_le(*v),
             NbtValue::ByteArray(v) => {
                 writer.write_i32_le(v.len() as i32)?;
-                writer.write_raw(bytemuck_slice(v))
+                write_i8_slice_raw(writer, v)
             }
             NbtValue::String(v) => Self::write_string(writer, v),
             NbtValue::List(v) => Self::write_list(writer, v),
@@ -285,11 +285,17 @@ impl NbtWriteTrait for BedrockLocalNbt {
     }
 }
 
-/// Reinterpret an i8 slice as a u8 slice (NBT byte arrays share the layout; zero-copy).
+/// Write an `i8` slice with the exact bytes of its `u8` reinterpretation.
+///
+/// `i8`/`u8` share value bytes, so writing each element preserves the wire
+/// encoding of the previous `unsafe { from_raw_parts }` cast without aliasing
+/// a borrowed slice.
 #[inline]
-fn bytemuck_slice(v: &[i8]) -> &[u8] {
-    // SAFETY: i8/u8 are both 1 byte with identical layout; only the type label differs.
-    unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len()) }
+fn write_i8_slice_raw(writer: &mut ByteWriter, values: &[i8]) -> io::Result<()> {
+    for value in values {
+        writer.write_i8(*value)?;
+    }
+    Ok(())
 }
 
 pub struct JavaLocalNbt;
@@ -429,7 +435,7 @@ impl JavaLocalNbt {
             NbtValue::Double(v) => writer.write_f64(*v),
             NbtValue::ByteArray(v) => {
                 writer.write_i32(v.len() as i32)?;
-                writer.write_raw(bytemuck_slice(v))
+                write_i8_slice_raw(writer, v)
             }
             NbtValue::String(v) => Self::write_string(writer, v),
             NbtValue::List(v) => Self::write_list(writer, v),

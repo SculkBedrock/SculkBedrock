@@ -63,6 +63,7 @@ impl<Marker, T> Plugins<Marker> for T where T: sealed::Plugins<Marker> {}
 mod sealed {
     use crate::app::plugin::Plugin;
     use crate::app::{App, AppError};
+    use crate::impl_plugins_tuples;
     use sc_ecs_macros::all_tuples;
 
     pub trait Plugins<Marker> {
@@ -83,22 +84,6 @@ mod sealed {
                 panic!(
                     "Error adding plugin {plugin_name}: : plugin was already added in application"
                 )
-            }
-        }
-    }
-
-    macro_rules! impl_plugins_tuples {
-        ($(($param: ident, $plugins: ident)),*) => {
-            impl<$($param, $plugins),*> Plugins<(PluginsTupleMarker, $($param,)*)> for ($($plugins,)*)
-            where
-                $($plugins: Plugins<$param>),*
-            {
-                #[allow(non_snake_case, unused_variables)]
-                #[track_caller]
-                fn add_to_app(self, app: &App) {
-                    let ($($plugins,)*) = self;
-                    $($plugins.add_to_app(app);)*
-                }
             }
         }
     }

@@ -102,13 +102,9 @@ impl BedrockNetworkNbt {
     #[inline]
     fn write_i8_array(writer: &mut ByteWriter, array: &Vec<i8>) -> io::Result<()> {
         writer.write_var_i32(array.len() as i32)?;
-        writer.write(
-            array
-                .iter()
-                .map(|x| *x as u8)
-                .collect::<Vec<u8>>()
-                .as_slice(),
-        )?;
+        for value in array {
+            writer.write_i8(*value)?;
+        }
         Ok(())
     }
 
@@ -172,7 +168,12 @@ impl BedrockNetworkNbt {
             writer.write_var_i32(0)?;
             return Ok(());
         }
-        let tag = vec.first().unwrap().tag();
+        let tag = vec
+            .first()
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "NBT list is empty")
+            })?
+            .tag();
         if !vec.iter().all(|x| x.tag() == tag) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,

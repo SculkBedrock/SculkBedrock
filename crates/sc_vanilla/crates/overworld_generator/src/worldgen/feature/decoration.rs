@@ -540,97 +540,8 @@ pub trait SurfaceGenerateFeature: CountGenerateFeature {
 }
 
 // ---------------------------------------------------------------------------
-// Shared template macros.
+// Shared impl template: `crate::impl_feature!(disc|surface|count, ...)`.
 // ---------------------------------------------------------------------------
-
-/// `GroupedDiscFeature` subclass template: `apply` calls `count_apply`, 
-/// `populate` calls `disc_populate`, base/random come from disc overrides.
-macro_rules! impl_disc_feature {
-    ($ty:ty, $name:expr) => {
-        impl GenerateFeature for $ty {
-            fn apply(&self, ctx: &mut ChunkGenerateContext<'_>) {
-                self.count_apply(ctx);
-            }
-            fn name(&self) -> &'static str {
-                $name
-            }
-        }
-        impl CountGenerateFeature for $ty {
-            fn get_base(&self) -> i32 {
-                self.disc_base()
-            }
-            fn get_random(&self) -> i32 {
-                self.disc_random()
-            }
-            fn populate(
-                &self,
-                ctx: &mut ChunkGenerateContext<'_>,
-                random: &mut dyn RandomSourceProvider,
-            ) {
-                self.disc_populate(ctx, random);
-            }
-        }
-    };
-}
-
-/// `SurfaceGenerateFeature` subclass template. 
-/// `populate` → `surface_populate`.
-macro_rules! impl_surface_feature {
-    ($ty:ty, $name:expr) => {
-        impl GenerateFeature for $ty {
-            fn apply(&self, ctx: &mut ChunkGenerateContext<'_>) {
-                self.count_apply(ctx);
-            }
-            fn name(&self) -> &'static str {
-                $name
-            }
-        }
-        impl CountGenerateFeature for $ty {
-            fn get_base(&self) -> i32 {
-                self.surface_base()
-            }
-            fn get_random(&self) -> i32 {
-                self.surface_random()
-            }
-            fn populate(
-                &self,
-                ctx: &mut ChunkGenerateContext<'_>,
-                random: &mut dyn RandomSourceProvider,
-            ) {
-                self.surface_populate(ctx, random);
-            }
-        }
-    };
-}
-
-/// Template for `CountGenerateFeature` subclasses with custom populate.
-macro_rules! impl_count_feature {
-    ($ty:ty, $name:expr) => {
-        impl GenerateFeature for $ty {
-            fn apply(&self, ctx: &mut ChunkGenerateContext<'_>) {
-                self.count_apply(ctx);
-            }
-            fn name(&self) -> &'static str {
-                $name
-            }
-        }
-        impl CountGenerateFeature for $ty {
-            fn get_base(&self) -> i32 {
-                self.count_base()
-            }
-            fn get_random(&self) -> i32 {
-                self.count_random()
-            }
-            fn populate(
-                &self,
-                ctx: &mut ChunkGenerateContext<'_>,
-                random: &mut dyn RandomSourceProvider,
-            ) {
-                self.count_populate(ctx, random);
-            }
-        }
-    };
-}
 
 /// Biome-id list check.
 fn biome_in(biome_id: i32, list: &[i32]) -> bool {
@@ -1076,7 +987,7 @@ impl ScatterRedMushroomFeature {
     }
 }
 
-impl_disc_feature!(
+crate::impl_feature!(disc, 
     ScatterRedMushroomFeature,
     "minecraft:scatter_red_mushroom_feature"
 );
@@ -1158,7 +1069,7 @@ impl ScatterBrownMushroomFeature {
     }
 }
 
-impl_disc_feature!(
+crate::impl_feature!(disc, 
     ScatterBrownMushroomFeature,
     "minecraft:scatter_brown_mushroom_feature"
 );
@@ -1236,7 +1147,7 @@ impl ScatterDryGrassFeature {
     }
 }
 
-impl_disc_feature!(
+crate::impl_feature!(disc, 
     ScatterDryGrassFeature,
     "minecraft:scatter_dry_grass_feature"
 );
@@ -1292,7 +1203,7 @@ impl SwampFlowerFeature {
     }
 }
 
-impl_disc_feature!(SwampFlowerFeature, "minecraft:scatter_swamp_flower_feature");
+crate::impl_feature!(disc, SwampFlowerFeature, "minecraft:scatter_swamp_flower_feature");
 
 impl GroupedDiscFeature for SwampFlowerFeature {
     fn source_block(&self, _random: &mut dyn RandomSourceProvider) -> BlockRuntimeId {
@@ -1332,7 +1243,7 @@ impl DeadBushFeature {
     }
 }
 
-impl_disc_feature!(DeadBushFeature, "minecraft:dead_bush_feature");
+crate::impl_feature!(disc, DeadBushFeature, "minecraft:dead_bush_feature");
 
 impl GroupedDiscFeature for DeadBushFeature {
     fn source_block(&self, _random: &mut dyn RandomSourceProvider) -> BlockRuntimeId {
@@ -1383,7 +1294,7 @@ impl ScatterSweetBerryBushFeature {
     }
 }
 
-impl_surface_feature!(
+crate::impl_feature!(surface, 
     ScatterSweetBerryBushFeature,
     "minecraft:scatter_sweet_berry_bush_feature"
 );
@@ -1428,7 +1339,7 @@ impl TallGrassGenerateFeature {
     }
 }
 
-impl_surface_feature!(
+crate::impl_feature!(surface, 
     TallGrassGenerateFeature,
     "minecraft:grass_double_plant_patch_feature"
 );
@@ -1477,7 +1388,7 @@ impl TallFernPatchFeature {
     }
 }
 
-impl_surface_feature!(
+crate::impl_feature!(surface, 
     TallFernPatchFeature,
     "minecraft:fern_double_plant_patch_feature"
 );
@@ -1525,7 +1436,7 @@ impl TaigaGrassFeature {
     }
 }
 
-impl_surface_feature!(TaigaGrassFeature, "minecraft:taiga_tall_grass_feature");
+crate::impl_feature!(surface, TaigaGrassFeature, "minecraft:taiga_tall_grass_feature");
 
 impl SurfaceGenerateFeature for TaigaGrassFeature {
     /// Java L16-18: `random.setSeed(x + y + z).nextInt(7) == 0 ? SHORT_GRASS : FERN`
@@ -1577,7 +1488,7 @@ impl JungleGrassFeature {
     }
 }
 
-impl_surface_feature!(JungleGrassFeature, "minecraft:jungle_tall_grass_feature");
+crate::impl_feature!(surface, JungleGrassFeature, "minecraft:jungle_tall_grass_feature");
 
 impl SurfaceGenerateFeature for JungleGrassFeature {
     /// Java L16-18: `random.nextInt(7) == 0 ? FERN : SHORT_GRASS`.
@@ -1625,7 +1536,7 @@ impl BushFeature {
     }
 }
 
-impl_surface_feature!(BushFeature, "minecraft:scatter_bush_feature");
+crate::impl_feature!(surface, BushFeature, "minecraft:scatter_bush_feature");
 
 impl SurfaceGenerateFeature for BushFeature {
     fn place(
@@ -1667,7 +1578,7 @@ impl PumpkinGenerateFeature {
     }
 }
 
-impl_surface_feature!(PumpkinGenerateFeature, "minecraft:pumpkin_feature");
+crate::impl_feature!(surface, PumpkinGenerateFeature, "minecraft:pumpkin_feature");
 
 impl SurfaceGenerateFeature for PumpkinGenerateFeature {
     fn place(
@@ -1788,7 +1699,7 @@ impl ScatterOverworldFlowerFeature {
     }
 }
 
-impl_count_feature!(
+crate::impl_feature!(count, 
     ScatterOverworldFlowerFeature,
     "minecraft:scatter_overworld_flower_feature"
 );
@@ -1867,7 +1778,7 @@ impl ScatterPlainsFlowerFeature {
     }
 }
 
-impl_count_feature!(
+crate::impl_feature!(count, 
     ScatterPlainsFlowerFeature,
     "minecraft:scatter_plains_flower_feature"
 );
@@ -1945,7 +1856,7 @@ impl SunflowerDoublePlantPatchFeature {
     }
 }
 
-impl_count_feature!(
+crate::impl_feature!(count, 
     SunflowerDoublePlantPatchFeature,
     "minecraft:sunflower_double_plant_patch_feature"
 );
@@ -2029,7 +1940,7 @@ impl TallGrassPatchFeature {
     }
 }
 
-impl_count_feature!(
+crate::impl_feature!(count, 
     TallGrassPatchFeature,
     "minecraft:scatter_tall_grass_feature"
 );
@@ -2122,7 +2033,7 @@ impl DesertCactusFeature {
     }
 }
 
-impl_count_feature!(
+crate::impl_feature!(count, 
     DesertCactusFeature,
     "minecraft:desert_after_surface_cactus_feature_rules"
 );
@@ -2170,7 +2081,7 @@ impl WaterlilyFeature {
     }
 }
 
-impl_count_feature!(
+crate::impl_feature!(count, 
     WaterlilyFeature,
     "minecraft:fixup_waterlily_position_feature"
 );

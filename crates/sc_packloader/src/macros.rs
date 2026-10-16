@@ -113,6 +113,38 @@ macro_rules! components_export {
 }
 
 #[macro_export]
+macro_rules! define_ident {
+    // Single string-variant ident (item, entity): default is the empty string.
+    ($enum_name:ident, $variant:ident) => {
+        #[derive(::serde::Deserialize, Debug, Clone)]
+        #[serde(untagged)]
+        pub enum $enum_name {
+            $variant(String),
+        }
+        impl Default for $enum_name {
+            fn default() -> Self {
+                Self::$variant(String::new())
+            }
+        }
+    };
+    // String-variant plus structured-variant ident (block):
+    // `default = "..."` is the fallback name used by `Default`.
+    ($enum_name:ident, $variant:ident, $structured_variant:ident($structured_ty:ty), default = $default:expr) => {
+        #[derive(::serde::Deserialize, Debug, Clone)]
+        #[serde(untagged)]
+        pub enum $enum_name {
+            $variant(String),
+            $structured_variant($structured_ty),
+        }
+        impl Default for $enum_name {
+            fn default() -> Self {
+                Self::$variant($default.to_string())
+            }
+        }
+    };
+}
+
+#[macro_export]
 macro_rules! types_export {
     ($struct_name:ident, $enum_name:ident, $($name:ident = $alias:expr,)*) => {
         // Main struct definition.

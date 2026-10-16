@@ -1,4 +1,21 @@
 #[macro_export]
+macro_rules! impl_plugins_tuples {
+    ($(($param: ident, $plugins: ident)),*) => {
+        impl<$($param, $plugins),*> Plugins<(PluginsTupleMarker, $($param,)*)> for ($($plugins,)*)
+        where
+            $($plugins: Plugins<$param>),*
+        {
+            #[allow(non_snake_case, unused_variables)]
+            #[track_caller]
+            fn add_to_app(self, app: &App) {
+                let ($($plugins,)*) = self;
+                $($plugins.add_to_app(app);)*
+            }
+        }
+    }
+}
+
+#[macro_export]
 macro_rules! impl_system_function {
     ($(($P:ident, $p:ident)),*) => {
         impl<F, $($P: SystemParam),*> SystemFunction<fn($($P),*)> for F

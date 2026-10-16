@@ -81,7 +81,7 @@ impl DirectoryWorld {
                             error = error
                         )
                     );
-                    return Err(WorldDataReaderError::IOError(std::io::Error::other(
+                    return Err(WorldDataReaderError::io(std::io::Error::other(
                         format!("cannot open world {world_name} database: {error}"),
                     )));
                 }

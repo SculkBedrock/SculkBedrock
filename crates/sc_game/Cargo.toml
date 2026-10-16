@@ -2,6 +2,7 @@
 name = "sc_game"
 version = "0.1.0"
 edition = "2021"
+license = "LGPL-3.0-only"
 description = "游戏逻辑域：多 World ECS 架构（WorldHub/CrossWorldBus/NetworkOutbox），与网络域隔离"
 
 # 依赖方向：sc_game → (sc_world, sc_entity, sc_block) → sc_ecs/sc_utils
@@ -18,14 +19,18 @@ sc_packloader = { path = "../sc_packloader" }
 sc_eventbus = { path = "../sc_eventbus" }
 sc_log = { path = "../sc_log" }
 sc_recipe = { path = "../sc_recipe" }
-log = "0.4"
+log.workspace = true
 rand = "0.8.5"
 sc_game_macros = { path = "sc_game_macros" }
-parking_lot = { version = "0.12", features = ["arc_lock", "send_guard"] }
-async-trait = "0.1"
+parking_lot.workspace = true
+async-trait.workspace = true
+sc_error = { path = "../sc_error" }
 
 # 仅测试用：从方块 JSON 字节编译快照，验证破坏时长确实由 JSON 数据驱动。
 # 不进入生产依赖图（生产方向仍是 sc_game → sc_block → sc_packloader）。
 [dev-dependencies]
 sc_packloader = { path = "../sc_packloader" }
-serde_json = "1.0.133"
+serde_json.workspace = true
+
+[lints]
+workspace = true

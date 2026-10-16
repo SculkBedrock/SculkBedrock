@@ -104,7 +104,10 @@ mod tests {
         assert!(matches!(original.get("age"), Some(NbtValue::Int(3))));
         assert!(matches!(clone.get("age"), Some(NbtValue::Int(4))));
 
-        *clone.get_mut("name").expect("name") = NbtValue::String("birch".into());
+        *clone
+            .get_mut("name")
+            .ok_or("missing compound entry: name")
+            .unwrap() = NbtValue::String("birch".into());
         assert!(matches!(
             original.get("name"),
             Some(NbtValue::String(name)) if name == "oak"

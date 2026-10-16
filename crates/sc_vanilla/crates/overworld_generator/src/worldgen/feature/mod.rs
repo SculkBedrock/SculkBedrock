@@ -7,6 +7,121 @@
 //! | [`ore`] | Ore generator features and all concrete ore features |
 //! | [`object`] | Object/grid/tree generator features |
 
+/// Shared feature-impl template (unifies the former six `impl_*_feature!`
+/// macros: `object`/`grid`/`legacy` call `*_apply` directly, while
+/// `disc`/`surface`/`count` additionally wire `CountGenerateFeature`).
+///
+/// Call sites pass the family as the first argument, e.g.
+/// `crate::impl_feature!(object, MyFeature, "minecraft:my_feature")`.
+#[macro_export]
+macro_rules! impl_feature {
+    (object, $ty:ty, $name:expr) => {
+        impl GenerateFeature for $ty {
+            fn apply(&self, ctx: &mut ChunkGenerateContext<'_>) {
+                self.object_apply(ctx);
+            }
+            fn name(&self) -> &'static str {
+                $name
+            }
+        }
+    };
+    (grid, $ty:ty, $name:expr) => {
+        impl GenerateFeature for $ty {
+            fn apply(&self, ctx: &mut ChunkGenerateContext<'_>) {
+                self.grid_apply(ctx);
+            }
+            fn name(&self) -> &'static str {
+                $name
+            }
+        }
+    };
+    (legacy, $ty:ty, $name:expr) => {
+        impl GenerateFeature for $ty {
+            fn apply(&self, ctx: &mut ChunkGenerateContext<'_>) {
+                self.legacy_apply(ctx);
+            }
+            fn name(&self) -> &'static str {
+                $name
+            }
+        }
+    };
+    (disc, $ty:ty, $name:expr) => {
+        impl GenerateFeature for $ty {
+            fn apply(&self, ctx: &mut ChunkGenerateContext<'_>) {
+                self.count_apply(ctx);
+            }
+            fn name(&self) -> &'static str {
+                $name
+            }
+        }
+        impl CountGenerateFeature for $ty {
+            fn get_base(&self) -> i32 {
+                self.disc_base()
+            }
+            fn get_random(&self) -> i32 {
+                self.disc_random()
+            }
+            fn populate(
+                &self,
+                ctx: &mut ChunkGenerateContext<'_>,
+                random: &mut dyn RandomSourceProvider,
+            ) {
+                self.disc_populate(ctx, random);
+            }
+        }
+    };
+    (surface, $ty:ty, $name:expr) => {
+        impl GenerateFeature for $ty {
+            fn apply(&self, ctx: &mut ChunkGenerateContext<'_>) {
+                self.count_apply(ctx);
+            }
+            fn name(&self) -> &'static str {
+                $name
+            }
+        }
+        impl CountGenerateFeature for $ty {
+            fn get_base(&self) -> i32 {
+                self.surface_base()
+            }
+            fn get_random(&self) -> i32 {
+                self.surface_random()
+            }
+            fn populate(
+                &self,
+                ctx: &mut ChunkGenerateContext<'_>,
+                random: &mut dyn RandomSourceProvider,
+            ) {
+                self.surface_populate(ctx, random);
+            }
+        }
+    };
+    (count, $ty:ty, $name:expr) => {
+        impl GenerateFeature for $ty {
+            fn apply(&self, ctx: &mut ChunkGenerateContext<'_>) {
+                self.count_apply(ctx);
+            }
+            fn name(&self) -> &'static str {
+                $name
+            }
+        }
+        impl CountGenerateFeature for $ty {
+            fn get_base(&self) -> i32 {
+                self.count_base()
+            }
+            fn get_random(&self) -> i32 {
+                self.count_random()
+            }
+            fn populate(
+                &self,
+                ctx: &mut ChunkGenerateContext<'_>,
+                random: &mut dyn RandomSourceProvider,
+            ) {
+                self.count_populate(ctx, random);
+            }
+        }
+    };
+}
+
 pub mod decoration;
 pub mod legacy_tree;
 pub mod object;

@@ -3,6 +3,7 @@ name = "vanilla_command"
 version = "0.1.0"
 edition = "2021"
 
+license = "LGPL-3.0-only"
 [lib]
 crate-type = ["cdylib"]
 
@@ -12,4 +13,7 @@ sc_ecs = { path = "../../../sc_ecs" }
 sc_command = { path = "../../../sc_command" }
 sc_utils = { path = "../../../sc_utils" }
 sc_log = { path = "../../../sc_log" }
-log = "0.4.22"
+log.workspace = true
+
+[lints]
+workspace = true

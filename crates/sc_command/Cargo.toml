@@ -3,9 +3,14 @@ name = "sc_command"
 version = "0.1.0"
 edition = "2021"
 
+license = "LGPL-3.0-only"
 [dependencies]
 sc_ecs = { path = "../sc_ecs" }
+sc_error = { path = "../sc_error" }
 sc_utils = { path = "../sc_utils" }
 sc_log = { path = "../sc_log" }
-log = "0.4.22"
-uuid = { version = "1.10.0", features = ["v4"] }
+log.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

@@ -13,6 +13,7 @@
 //! threads; callers then write back dirty chunks.
 
 use std::collections::{HashMap, VecDeque};
+use std::fmt::Display;
 use std::io;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc;
@@ -26,22 +27,91 @@ use tokio::sync::oneshot;
 
 use crate::manager::MinecraftWorldId;
 use crate::storage::{ChunkColumn, ChunkKey, WorldChunkProvider, WorldStorageError};
+use sc_error::{ScError, ScSite, capture_site};
 use sc_log::t_log;
 
 /// Result of one chunk load/generate job.
 pub type ChunkLoadOutcome = Result<Option<Arc<ChunkColumn>>, WorldStorageError>;
 
 /// Synchronous admission result for a chunk load/generation request.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, ScError)]
 pub enum ChunkSubmitError {
-    /// The bounded worker queue is full or this key is in failure backoff.
-    /// Retry later without blocking the caller.
-    Busy,
-    /// The executor is shutting down or its worker channel is closed.
-    Closed,
-    /// This chunk already has the maximum number of coalesced consumers.
-    TooManyWaiters,
+    /// Bounded worker queue full or key in failure backoff; retry later.
+    #[sc_error(code = "world.executor.busy")]
+    Busy {
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+    /// Executor is shutting down or its worker channel is closed.
+    #[sc_error(code = "world.executor.closed")]
+    Closed {
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+    /// Chunk already has the maximum number of coalesced consumers.
+    #[sc_error(code = "world.executor.too_many_waiters")]
+    TooManyWaiters {
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
 }
+
+impl ChunkSubmitError {
+    /// Build a queue-pressure rejection, capturing the call site.
+    #[track_caller]
+    pub fn busy(detail: String) -> Self {
+        Self::Busy {
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build a shutdown rejection, capturing the call site.
+    #[track_caller]
+    pub fn closed(detail: String) -> Self {
+        Self::Closed {
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build a waiter-limit rejection, capturing the call site.
+    #[track_caller]
+    pub fn too_many_waiters(detail: String) -> Self {
+        Self::TooManyWaiters {
+            detail,
+            site: capture_site(),
+        }
+    }
+}
+
+impl Display for ChunkSubmitError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Busy { detail, site } => {
+                write!(formatter, "[world.executor.busy] {detail} (at {site})")
+            }
+            Self::Closed { detail, site } => {
+                write!(formatter, "[world.executor.closed] {detail} (at {site})")
+            }
+            Self::TooManyWaiters { detail, site } => {
+                write!(
+                    formatter,
+                    "[world.executor.too_many_waiters] {detail} (at {site})"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ChunkSubmitError {}
+
 
 /// Dedup key: chunk ownership `(saved world, chunk coords)`. Different worlds never coalesce
 /// even with equal dimension+coords (same semantics as the `LevelChunkCache` world-isolation key).
@@ -240,7 +310,9 @@ impl WorldChunkExecutor {
             // before enforcing the per-key consumer bound.
             waiters.retain(|waiter| !waiter.is_closed());
             if waiters.len() >= Self::MAX_WAITERS_PER_CHUNK {
-                return Err(ChunkSubmitError::TooManyWaiters);
+                return Err(ChunkSubmitError::too_many_waiters(
+                    "chunk already has the maximum number of coalesced waiters".to_string(),
+                ));
             }
             waiters.push(tx);
             return Ok(rx);
@@ -252,7 +324,9 @@ impl WorldChunkExecutor {
             .lock()
             .is_blocked(&dedupe_key, Instant::now())
         {
-            return Err(ChunkSubmitError::Busy);
+            return Err(ChunkSubmitError::busy(
+                "chunk load is in failure backoff; retry later".to_string(),
+            ));
         }
 
         inflight.insert(dedupe_key.clone(), vec![tx]);
@@ -273,11 +347,15 @@ impl WorldChunkExecutor {
             Some(Ok(())) => Ok(rx),
             Some(Err(mpsc::TrySendError::Full(_))) => {
                 inflight.remove(&dedupe_key);
-                Err(ChunkSubmitError::Busy)
+                Err(ChunkSubmitError::busy(
+                    "chunk worker queue is full; retry later".to_string(),
+                ))
             }
             Some(Err(mpsc::TrySendError::Disconnected(_))) | None => {
                 inflight.remove(&dedupe_key);
-                Err(ChunkSubmitError::Closed)
+                Err(ChunkSubmitError::closed(
+                    "chunk executor is shutting down".to_string(),
+                ))
             }
         }
     }
@@ -345,11 +423,7 @@ fn worker_loop(
             })) {
                 Ok(outcome) => outcome,
                 Err(payload) => {
-                    let reason = payload
-                        .downcast_ref::<&str>()
-                        .map(|message| (*message).to_string())
-                        .or_else(|| payload.downcast_ref::<String>().cloned())
-                        .unwrap_or_else(|| "non-string panic payload".to_string());
+                    let reason = sc_async::panic_message(payload.as_ref());
                     log::error!(
                         "{}",
                         t_log!(
@@ -359,7 +433,7 @@ fn worker_loop(
                             reason = reason
                         )
                     );
-                    Err(WorldStorageError::Backend(format!(
+                    Err(WorldStorageError::backend(format!(
                         "chunk load worker panicked: {reason}"
                     )))
                 }
@@ -474,7 +548,7 @@ mod tests {
                 self.release
                     .lock()
                     .recv()
-                    .map_err(|error| WorldStorageError::Backend(error.to_string()))?;
+                    .map_err(|error| WorldStorageError::backend(error.to_string()))?;
             }
             Ok(Some(Chunk::empty(
                 request.key.position,
@@ -505,7 +579,7 @@ mod tests {
         assert_eq!(executor.in_flight(), 0);
         assert!(matches!(
             executor.try_submit(world.clone(), provider.clone(), key, -64, 319),
-            Err(ChunkSubmitError::Busy)
+            Err(ChunkSubmitError::Busy { .. })
         ));
 
         let second_key = ChunkKey::new(0, ChunkPosition::new(13, -4));
@@ -613,7 +687,7 @@ mod tests {
         );
         assert!(matches!(
             executor.try_submit(world.clone(), provider.clone(), rejected_key, -64, 319),
-            Err(ChunkSubmitError::Busy),
+            Err(ChunkSubmitError::Busy { .. }),
         ));
         let mut legacy_receiver = executor.submit(
             world,
@@ -666,7 +740,7 @@ mod tests {
         }
         assert!(matches!(
             executor.try_submit(world.clone(), provider.clone(), key, -64, 319),
-            Err(ChunkSubmitError::TooManyWaiters),
+            Err(ChunkSubmitError::TooManyWaiters { .. }),
         ));
         release_tx.send(()).expect("release generator");
         for receiver in receivers {
@@ -681,7 +755,7 @@ mod tests {
                 -64,
                 319,
             ),
-            Err(ChunkSubmitError::Closed),
+            Err(ChunkSubmitError::Closed { .. }),
         ));
     }
 
@@ -734,7 +808,7 @@ mod tests {
     impl WorldStorage for FailOnceStorage {
         fn load_chunk(&self, key: ChunkKey) -> Result<Option<Chunk>, WorldStorageError> {
             if !self.failed.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                return Err(WorldStorageError::Backend(
+                return Err(WorldStorageError::backend(
                     "transient leveldb failure".into(),
                 ));
             }
@@ -798,7 +872,7 @@ mod tests {
         // cooldown so an invalid/transient chunk cannot spin every tick.
         assert!(matches!(
             executor.try_submit(world.clone(), provider.clone(), key, -64, 319),
-            Err(ChunkSubmitError::Busy)
+            Err(ChunkSubmitError::Busy { .. })
         ));
         std::thread::sleep(INITIAL_FAILURE_BACKOFF + Duration::from_millis(10));
         let outcome = futures_block_on(

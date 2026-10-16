@@ -11,6 +11,7 @@ members = [
     "crates/sc_raknet",
     "crates/sc_binary",
     "crates/sc_binary/sc_binary_macros",
+    "crates/sc_block",
     "crates/sc_utils",
     "crates/sc_log",
     "crates/sc_nbt",
@@ -24,7 +25,6 @@ members = [
     "crates/sc_nbt/sc_nbt_macros",
     "crates/sc_command",
     "crates/sc_item",
-    "crates/sc_molang",
     "crates/sc_plugin",
     "crates/sc_plugin/sc_plugin_macros",
     "crates/sc_vanilla/crates/vanilla_command",
@@ -37,4 +37,37 @@ members = [
     "crates/sc_plugin_api",
     "crates/sc_vanilla/crates/overworld_generator",
     "crates/sc_vanilla/crates/overworld_generator_host",
+    "crates/sc_error",
+    "crates/sc_error/sc_error_macros",
 ]
+
+[workspace.dependencies]
+tokio = { version = "1.43.0" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0" }
+uuid = { version = "1.10.0", features = ["v4"] }
+log = { version = "0.4" }
+chrono = { version = "0.4" }
+parking_lot = { version = "0.12", features = ["arc_lock", "send_guard"] }
+bytes = { version = "1.4.0" }
+flate2 = { version = "1.0" }
+sha2 = { version = "0.10.8" }
+lazy_static = { version = "1.5.0" }
+async-trait = { version = "0.1" }
+ahash = { version = "0.8" }
+libc = { version = "0.2" }
+proc-macro2 = { version = "1.0" }
+quote = { version = "1.0" }
+syn = { version = "2.0", features = ["full"] }
+proc-macro-crate = { version = "3.1.0" }
+thiserror = { version = "2.0" }
+
+[workspace.lints.rust]
+unsafe_code = "allow"
+missing_docs = "allow"
+[workspace.lints.clippy]
+len_without_is_empty = "warn"
+too_many_arguments = "warn"
+large_enum_variant = "warn"
+needless_borrow = "warn"
+redundant_clone = "warn"

@@ -161,6 +161,11 @@ impl<E: Event> Events<E> {
         self.old_events.len() + self.new_events.len()
     }
 
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn oldest_event_count(&self) -> usize {
         self.old_events
             .start_event_count

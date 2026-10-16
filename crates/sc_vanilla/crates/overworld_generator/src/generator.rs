@@ -170,7 +170,7 @@ impl WorldGenerator for NormalGenerator {
         run_stages(&self.stages, 0, "finished", &mut ctx);
 
         if ctx.spillover_overflowed() {
-            return Err(WorldStorageError::Capacity(format!(
+            return Err(WorldStorageError::capacity(format!(
                 "worldgen spillover exceeded the bounded {}-write result",
                 max_spillover_writes
             )));

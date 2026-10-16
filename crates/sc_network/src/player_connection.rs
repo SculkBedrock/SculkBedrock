@@ -21,6 +21,7 @@ use parking_lot::RwLock;
 use sc_ecs::component::Component;
 use sc_ecs::entity::EntityId;
 use sc_ecs::world::World;
+use sc_error::{capture_site, ScError, ScSite};
 use sc_eventbus::SCSendEvent;
 use sc_raknet::connection::queue::SendQueueError;
 use sc_raknet::connection::{Connection, RecvError};
@@ -60,22 +61,75 @@ pub enum PacketSendOutcome {
     BudgetDeferred,
 }
 
-#[derive(Debug)]
+#[derive(Debug, ScError)]
 pub enum TrySendPacketError {
-    Busy,
-    Connection(PlayerConnectionError),
+    /// Outbound command slots are busy.
+    #[sc_error(code = "network.connection.send_busy")]
+    Busy {
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+    /// Connection failed.
+    #[sc_error(code = "network.connection.send")]
+    Connection {
+        /// Underlying connection error.
+        source: PlayerConnectionError,
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+}
+
+impl TrySendPacketError {
+    /// Build a busy error, capturing the call site.
+    #[track_caller]
+    pub fn busy(detail: String) -> Self {
+        Self::Busy {
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build a connection error, capturing the call site.
+    #[track_caller]
+    pub fn connection(source: PlayerConnectionError) -> Self {
+        let detail = source.to_string();
+        Self::Connection {
+            source,
+            detail,
+            site: capture_site(),
+        }
+    }
 }
 
 impl Display for TrySendPacketError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Busy => formatter.write_str("outbound command slots busy"),
-            Self::Connection(error) => Display::fmt(error, formatter),
+            Self::Busy { detail, site } => {
+                write!(
+                    formatter,
+                    "[network.connection.send_busy] {detail} (at {site})"
+                )
+            }
+            Self::Connection { detail, site, .. } => {
+                write!(formatter, "[network.connection.send] {detail} (at {site})")
+            }
         }
     }
 }
 
-impl Error for TrySendPacketError {}
+impl Error for TrySendPacketError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Connection { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
 
 impl PlayerConnectionStatus {
     /// Chunk phase: the client has finished the before-spawn registry exchange
@@ -107,26 +161,174 @@ impl PlayerConnectionStatus {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, ScError)]
 pub enum PlayerConnectionError {
-    EncryptionInitError(EncryptionError),
-    RecvError(RecvError),
-    EncryptionError(PacketEncryptionError),
-    SendQueueError(SendQueueError),
-    PacketNotQueued(PacketSendOutcome),
-    /// A hard context change (teleport / dimension / world) landed while this
-    /// packet was being prepared. The packet is dropped **before** a cipher
-    /// counter is consumed, so no sequence gap is created (§11.4 point 2).
-    StaleContext,
+    /// Encryption initialization failed.
+    #[sc_error(code = "network.connection.encryption_init")]
+    EncryptionInitError {
+        /// Underlying encryption error.
+        source: EncryptionError,
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+    /// Receive failed.
+    #[sc_error(code = "network.connection.recv")]
+    RecvError {
+        /// Underlying receive error.
+        source: RecvError,
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+    /// Packet crypto failed.
+    #[sc_error(code = "network.connection.encryption")]
+    EncryptionError {
+        /// Underlying packet encryption error.
+        source: PacketEncryptionError,
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+    /// Send queue failed.
+    #[sc_error(code = "network.connection.send_queue")]
+    SendQueueError {
+        /// Underlying send queue error.
+        source: SendQueueError,
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+    /// Packet was not queued.
+    #[sc_error(code = "network.connection.not_queued")]
+    PacketNotQueued {
+        /// Send outcome that refused queueing.
+        outcome: PacketSendOutcome,
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+    /// Hard delivery context changed during preparation.
+    #[sc_error(code = "network.connection.stale_context")]
+    StaleContext {
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+}
+
+impl PlayerConnectionError {
+    /// Build an encryption-init error, capturing the call site.
+    #[track_caller]
+    pub fn encryption_init(source: EncryptionError) -> Self {
+        let detail = source.to_string();
+        Self::EncryptionInitError {
+            source,
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build a receive error, capturing the call site.
+    #[track_caller]
+    pub fn recv(source: RecvError) -> Self {
+        let detail = source.to_string();
+        Self::RecvError {
+            source,
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build an encryption error, capturing the call site.
+    #[track_caller]
+    pub fn encryption(source: PacketEncryptionError) -> Self {
+        let detail = source.to_string();
+        Self::EncryptionError {
+            source,
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build a send-queue error, capturing the call site.
+    #[track_caller]
+    pub fn send_queue(source: SendQueueError) -> Self {
+        let detail = source.to_string();
+        Self::SendQueueError {
+            source,
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build a not-queued error, capturing the call site.
+    #[track_caller]
+    pub fn not_queued(outcome: PacketSendOutcome) -> Self {
+        let detail = format!("packet not queued: {outcome:?}");
+        Self::PacketNotQueued {
+            outcome,
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build a stale-context error, capturing the call site.
+    #[track_caller]
+    pub fn stale_context(detail: String) -> Self {
+        Self::StaleContext {
+            detail,
+            site: capture_site(),
+        }
+    }
 }
 
 impl Display for PlayerConnectionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        match self {
+            Self::EncryptionInitError { detail, site, .. } => {
+                write!(
+                    f,
+                    "[network.connection.encryption_init] {detail} (at {site})"
+                )
+            }
+            Self::RecvError { detail, site, .. } => {
+                write!(f, "[network.connection.recv] {detail} (at {site})")
+            }
+            Self::EncryptionError { detail, site, .. } => {
+                write!(f, "[network.connection.encryption] {detail} (at {site})")
+            }
+            Self::SendQueueError { detail, site, .. } => {
+                write!(f, "[network.connection.send_queue] {detail} (at {site})")
+            }
+            Self::PacketNotQueued { detail, site, .. } => {
+                write!(f, "[network.connection.not_queued] {detail} (at {site})")
+            }
+            Self::StaleContext { detail, site } => {
+                write!(f, "[network.connection.stale_context] {detail} (at {site})")
+            }
+        }
     }
 }
 
-impl Error for PlayerConnectionError {}
+impl Error for PlayerConnectionError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::EncryptionInitError { source, .. } => Some(source),
+            Self::RecvError { source, .. } => Some(source),
+            Self::EncryptionError { source, .. } => Some(source),
+            Self::SendQueueError { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
 
 #[derive(Component, Clone)]
 pub struct PlayerConnection {
@@ -253,9 +455,9 @@ impl PlayerConnection {
         // Build send/recv cipher states independently: the send counter belongs
         // to SendCipher and the receive counter to RecvCipher.
         let send = SendCipher::new(secret_key.clone(), self.get_protocol_version())
-            .map_err(PlayerConnectionError::EncryptionInitError)?;
+            .map_err(PlayerConnectionError::encryption_init)?;
         let recv = RecvCipher::new(secret_key, self.get_protocol_version())
-            .map_err(PlayerConnectionError::EncryptionInitError)?;
+            .map_err(PlayerConnectionError::encryption_init)?;
         *self.send_cipher.write() = Some(send);
         *self.recv_cipher.write() = Some(recv);
         Ok(())
@@ -266,7 +468,7 @@ impl PlayerConnection {
             .connection
             .recv()
             .await
-            .map_err(|e| PlayerConnectionError::RecvError(e))?;
+            .map_err(PlayerConnectionError::recv)?;
         // Decrypt + decompress + parse is a synchronous CPU critical section:
         // the lock is released at the end of the block and never held across await.
         let batch = {
@@ -275,7 +477,7 @@ impl PlayerConnection {
                 self.decoder
                     .read()
                     .decode(packet_data, cipher.as_mut())
-                    .map_err(|e| PlayerConnectionError::EncryptionError(e))
+                    .map_err(PlayerConnectionError::encryption)
             })?
         };
         crate::packet::dump::record_batch("in", Some(self.entity), "minecraft", &batch);
@@ -318,7 +520,7 @@ impl PlayerConnection {
             .connection
             .reserve_outbound_slot()
             .await
-            .map_err(PlayerConnectionError::SendQueueError)?;
+            .map_err(PlayerConnectionError::send_queue)?;
 
         self.send_packet_with_reserved_outcome(packet, immediate, packet_id, permit, barrier)
             .await
@@ -348,7 +550,7 @@ impl PlayerConnection {
             .connection
             .reserve_outbound_slot()
             .await
-            .map_err(PlayerConnectionError::SendQueueError)?;
+            .map_err(PlayerConnectionError::send_queue)?;
         self.prepare_packet_and_admit(packet, immediate, packet_id, permit, barrier, admit)
             .await
     }
@@ -411,10 +613,12 @@ impl PlayerConnection {
             self.connection
                 .try_reserve_outbound_slot()
                 .map_err(|error| match error {
-                    sc_raknet::connection::OutboundAdmissionError::Busy => TrySendPacketError::Busy,
-                    sc_raknet::connection::OutboundAdmissionError::Closed => {
-                        TrySendPacketError::Connection(PlayerConnectionError::SendQueueError(
-                            SendQueueError::SendError,
+                    sc_raknet::connection::OutboundAdmissionError::Busy { .. } => {
+                        TrySendPacketError::busy("outbound command slots busy".into())
+                    }
+                    sc_raknet::connection::OutboundAdmissionError::Closed { .. } => {
+                        TrySendPacketError::connection(PlayerConnectionError::send_queue(
+                            SendQueueError::send_error("Send error"),
                         ))
                     }
                 })?;
@@ -423,7 +627,7 @@ impl PlayerConnection {
         let packet_id = known_packet_id.unwrap_or_else(|| packet.clone().to_packets().id());
         self.prepare_packet_and_admit(packet, immediate, packet_id, permit, barrier, admit)
             .await
-            .map_err(TrySendPacketError::Connection)
+            .map_err(TrySendPacketError::connection)
     }
 
     async fn send_packet_with_reserved_outcome<
@@ -525,7 +729,7 @@ impl PlayerConnection {
                 self.encoder
                     .read()
                     .prepare(batch)
-                    .map_err(PlayerConnectionError::EncryptionError)
+                    .map_err(PlayerConnectionError::encryption)
             })?;
         let mut trace = None;
         let result = admit(plain, permit, &mut trace);
@@ -567,8 +771,8 @@ impl PlayerConnection {
     ) -> Result<(), PlayerConnectionError> {
         let mut cipher = self.send_cipher.write();
         if self.outbound_failed.load(Ordering::Acquire) {
-            return Err(PlayerConnectionError::SendQueueError(
-                SendQueueError::SendError,
+            return Err(PlayerConnectionError::send_queue(
+                SendQueueError::send_error("Send error"),
             ));
         }
         let bytes = PackerEncoder::finish(plain, cipher.as_mut());
@@ -581,11 +785,11 @@ impl PlayerConnection {
         if result.is_err() {
             self.outbound_failed.store(true, Ordering::Release);
         }
-        result.map_err(PlayerConnectionError::SendQueueError)
+        result.map_err(PlayerConnectionError::send_queue)
     }
 
     fn close_on_admission_failure<T>(&self, result: &Result<T, PlayerConnectionError>) {
-        if matches!(result, Err(PlayerConnectionError::SendQueueError(_)))
+        if matches!(result, Err(PlayerConnectionError::SendQueueError { .. }))
             && !self.outbound_cleanup_scheduled.swap(true, Ordering::AcqRel)
         {
             // A consumed cipher counter cannot be retried or skipped. Closing
@@ -616,7 +820,7 @@ impl PlayerConnection {
             .connection
             .reserve_outbound_slot()
             .await
-            .map_err(PlayerConnectionError::SendQueueError)?;
+            .map_err(PlayerConnectionError::send_queue)?;
         self.send_batch_with_permit(packet, immediate, permit, barrier)
             .await
     }
@@ -648,7 +852,7 @@ impl PlayerConnection {
                 self.encoder
                     .read()
                     .prepare(packet)
-                    .map_err(PlayerConnectionError::EncryptionError)
+                    .map_err(PlayerConnectionError::encryption)
             })?;
         let mut trace = None;
         let result = self.admit_prepared(plain, immediate, permit, &mut trace);
@@ -680,8 +884,8 @@ impl PlayerConnection {
     ) -> Result<(), PlayerConnectionError> {
         let packet_bytes = packet.as_slice();
         if packet_bytes.len() < 2 {
-            return Err(PlayerConnectionError::EncryptionError(
-                PacketEncryptionError::IoError(std::io::Error::other(
+            return Err(PlayerConnectionError::encryption(
+                PacketEncryptionError::io(std::io::Error::other(
                     "raw packet missing u16 packet id",
                 )),
             ));
@@ -701,12 +905,12 @@ impl PlayerConnection {
             .connection
             .reserve_outbound_slot()
             .await
-            .map_err(PlayerConnectionError::SendQueueError)?;
+            .map_err(PlayerConnectionError::send_queue)?;
         let plain = self
             .encoder
             .read()
             .prepare(RawBatchPacket::single(packet))
-            .map_err(PlayerConnectionError::EncryptionError)?;
+            .map_err(PlayerConnectionError::encryption)?;
         let mut trace = None;
         let result = self.admit_prepared(plain, immediate, permit, &mut trace);
         self.close_on_admission_failure(&result);

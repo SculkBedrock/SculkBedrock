@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use sc_binary::ByteReader;
+use sc_error::{ScError, ScSite, capture_site};
 use zip::read::ZipFile;
 use zip::result::{ZipError, ZipResult};
 use zip::ZipArchive;
@@ -77,22 +78,150 @@ impl Drop for LoadedHostPlugin {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, ScError)]
 pub enum SCPluginLoaderError {
-    ZipError(ZipError),
-    IoError(Error),
-    LibError(libloading::Error),
-    SerdeError(serde_json::Error),
-    InvalidHostPluginAbi(u32),
+    /// Zip archive failure.
+    #[sc_error(code = "plugin.loader.zip")]
+    ZipError {
+        /// Underlying zip error.
+        source: ZipError,
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+    /// File I/O failure.
+    #[sc_error(code = "plugin.loader.io")]
+    IoError {
+        /// Underlying I/O error.
+        source: Error,
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+    /// Dynamic library failure.
+    #[sc_error(code = "plugin.loader.lib")]
+    LibError {
+        /// Underlying library error.
+        source: libloading::Error,
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+    /// Manifest JSON failure.
+    #[sc_error(code = "plugin.loader.serde")]
+    SerdeError {
+        /// Underlying JSON error.
+        source: serde_json::Error,
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+    /// Host plugin ABI mismatch.
+    #[sc_error(code = "plugin.loader.invalid_abi")]
+    InvalidHostPluginAbi {
+        /// Reported ABI version.
+        abi: u32,
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+}
+
+impl SCPluginLoaderError {
+    /// Build a zip error, capturing the call site.
+    #[track_caller]
+    pub fn zip_error(source: ZipError) -> Self {
+        let detail = source.to_string();
+        Self::ZipError {
+            source,
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build an I/O error, capturing the call site.
+    #[track_caller]
+    pub fn io_error(source: Error) -> Self {
+        let detail = source.to_string();
+        Self::IoError {
+            source,
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build a library error, capturing the call site.
+    #[track_caller]
+    pub fn lib_error(source: libloading::Error) -> Self {
+        let detail = source.to_string();
+        Self::LibError {
+            source,
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build a manifest JSON error, capturing the call site.
+    #[track_caller]
+    pub fn serde_error(source: serde_json::Error) -> Self {
+        let detail = source.to_string();
+        Self::SerdeError {
+            source,
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build an ABI mismatch error, capturing the call site.
+    #[track_caller]
+    pub fn invalid_host_plugin_abi(abi: u32) -> Self {
+        Self::InvalidHostPluginAbi {
+            abi,
+            detail: format!("unsupported host plugin ABI version {abi}"),
+            site: capture_site(),
+        }
+    }
 }
 
 impl Display for SCPluginLoaderError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        match self {
+            Self::ZipError { detail, site, .. } => {
+                write!(f, "[plugin.loader.zip] {detail} (at {site})")
+            }
+            Self::IoError { detail, site, .. } => {
+                write!(f, "[plugin.loader.io] {detail} (at {site})")
+            }
+            Self::LibError { detail, site, .. } => {
+                write!(f, "[plugin.loader.lib] {detail} (at {site})")
+            }
+            Self::SerdeError { detail, site, .. } => {
+                write!(f, "[plugin.loader.serde] {detail} (at {site})")
+            }
+            Self::InvalidHostPluginAbi { detail, site, .. } => {
+                write!(f, "[plugin.loader.invalid_abi] {detail} (at {site})")
+            }
+        }
     }
 }
 
-impl std::error::Error for SCPluginLoaderError {}
+impl std::error::Error for SCPluginLoaderError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ZipError { source, .. } => Some(source),
+            Self::IoError { source, .. } => Some(source),
+            Self::LibError { source, .. } => Some(source),
+            Self::SerdeError { source, .. } => Some(source),
+            Self::InvalidHostPluginAbi { .. } => None,
+        }
+    }
+}
+
 
 #[allow(improper_ctypes_definitions)]
 type CreateRustPluginFn = unsafe extern "C" fn() -> Box<dyn SCPlugin>;
@@ -105,14 +234,14 @@ impl SCPluginLoader {
         bytes: B,
     ) -> Result<SCPluginManifest, SCPluginLoaderError> {
         let mut zip = ZipArchive::new(ByteReader::from(bytes.as_ref()))
-            .map_err(|e| SCPluginLoaderError::ZipError(e))?;
+            .map_err(|e| SCPluginLoaderError::zip_error(e))?;
         let mut file = get_file_by_name(&mut zip, "manifest.json")
-            .map_err(|e| SCPluginLoaderError::ZipError(e))?;
+            .map_err(|e| SCPluginLoaderError::zip_error(e))?;
         let mut buffer = String::new();
         file.read_to_string(&mut buffer)
-            .map_err(|e| SCPluginLoaderError::IoError(e))?;
+            .map_err(|e| SCPluginLoaderError::io_error(e))?;
         serde_json::from_str::<SCPluginManifest>(&buffer)
-            .map_err(|e| SCPluginLoaderError::SerdeError(e))
+            .map_err(|e| SCPluginLoaderError::serde_error(e))
     }
 
     /// Loads a **host ABI** plugin (the path for version-pack plugins): zip -> plugin.so ->
@@ -125,7 +254,7 @@ impl SCPluginLoader {
         manifest: SCPluginManifest,
     ) -> Result<SCPluginBoxer, SCPluginLoaderError> {
         let mut zip = ZipArchive::new(ByteReader::from(bytes.as_ref()))
-            .map_err(|e| SCPluginLoaderError::ZipError(e))?;
+            .map_err(|e| SCPluginLoaderError::zip_error(e))?;
         #[cfg(target_os = "windows")]
         let path = "plugin.dll";
         #[cfg(target_os = "linux")]
@@ -133,13 +262,13 @@ impl SCPluginLoader {
         #[cfg(target_os = "macos")]
         let path = "plugin.dylib";
         let mut file =
-            get_file_by_name(&mut zip, path).map_err(|e| SCPluginLoaderError::ZipError(e))?;
+            get_file_by_name(&mut zip, path).map_err(|e| SCPluginLoaderError::zip_error(e))?;
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer)
-            .map_err(|e| SCPluginLoaderError::IoError(e))?;
+            .map_err(|e| SCPluginLoaderError::io_error(e))?;
 
         let dir_path = std::env::temp_dir().join("sc_plugins");
-        std::fs::create_dir_all(&dir_path).map_err(|e| SCPluginLoaderError::IoError(e))?;
+        std::fs::create_dir_all(&dir_path).map_err(|e| SCPluginLoaderError::io_error(e))?;
         let mut hasher = DefaultHasher::new();
         buffer.hash(&mut hasher);
         let unique = hasher.finish();
@@ -160,13 +289,13 @@ impl SCPluginLoader {
             std::process::id()
         );
         let file_path = dir_path.join(file_name);
-        std::fs::write(&file_path, &buffer).map_err(|e| SCPluginLoaderError::IoError(e))?;
+        std::fs::write(&file_path, &buffer).map_err(|e| SCPluginLoaderError::io_error(e))?;
 
         let lib = match unsafe { libloading::Library::new(&file_path) } {
             Ok(lib) => Arc::new(lib),
             Err(error) => {
                 let _ = std::fs::remove_file(&file_path);
-                return Err(SCPluginLoaderError::LibError(error));
+                return Err(SCPluginLoaderError::lib_error(error));
             }
         };
         // Inject the log bridge (optional symbol exported via declare_log_bridge!).
@@ -191,7 +320,7 @@ impl SCPluginLoader {
                 Err(error) => {
                     drop(lib);
                     let _ = std::fs::remove_file(&file_path);
-                    return Err(SCPluginLoaderError::LibError(error));
+                    return Err(SCPluginLoaderError::lib_error(error));
                 }
             };
         let plugin = unsafe { get_plugin() };
@@ -205,7 +334,7 @@ impl SCPluginLoader {
         api: &sc_plugin_api::HostApiV1,
     ) -> Result<LoadedHostPlugin, SCPluginLoaderError> {
         let mut zip = ZipArchive::new(ByteReader::from(bytes.as_ref()))
-            .map_err(|e| SCPluginLoaderError::ZipError(e))?;
+            .map_err(|e| SCPluginLoaderError::zip_error(e))?;
         #[cfg(target_os = "windows")]
         let path = "plugin.dll";
         #[cfg(target_os = "linux")]
@@ -213,14 +342,14 @@ impl SCPluginLoader {
         #[cfg(target_os = "macos")]
         let path = "plugin.dylib";
         let mut file =
-            get_file_by_name(&mut zip, path).map_err(|e| SCPluginLoaderError::ZipError(e))?;
+            get_file_by_name(&mut zip, path).map_err(|e| SCPluginLoaderError::zip_error(e))?;
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer)
-            .map_err(|e| SCPluginLoaderError::IoError(e))?;
+            .map_err(|e| SCPluginLoaderError::io_error(e))?;
 
         // The host side provides the temp dir (SCTempDir); here the file lands in the system temp dir.
         let dir_path = std::env::temp_dir().join("sc_plugins");
-        std::fs::create_dir_all(&dir_path).map_err(|e| SCPluginLoaderError::IoError(e))?;
+        std::fs::create_dir_all(&dir_path).map_err(|e| SCPluginLoaderError::io_error(e))?;
         let mut hasher = DefaultHasher::new();
         buffer.hash(&mut hasher);
         let unique = hasher.finish();
@@ -241,13 +370,13 @@ impl SCPluginLoader {
             std::process::id()
         );
         let file_path = dir_path.join(file_name);
-        std::fs::write(&file_path, &buffer).map_err(|e| SCPluginLoaderError::IoError(e))?;
+        std::fs::write(&file_path, &buffer).map_err(|e| SCPluginLoaderError::io_error(e))?;
 
         let lib = match unsafe { libloading::Library::new(&file_path) } {
             Ok(lib) => Arc::new(lib),
             Err(error) => {
                 let _ = std::fs::remove_file(&file_path);
-                return Err(SCPluginLoaderError::LibError(error));
+                return Err(SCPluginLoaderError::lib_error(error));
             }
         };
         let get_host_plugin: libloading::Symbol<sc_plugin_api::CreateHostPluginFn> =
@@ -256,14 +385,14 @@ impl SCPluginLoader {
                 Err(error) => {
                     drop(lib);
                     let _ = std::fs::remove_file(&file_path);
-                    return Err(SCPluginLoaderError::LibError(error));
+                    return Err(SCPluginLoaderError::lib_error(error));
                 }
             };
         let plugin = unsafe { get_host_plugin() };
         if plugin.abi_version != sc_plugin_api::HOST_PLUGIN_ABI_V1 {
             drop(lib);
             let _ = std::fs::remove_file(&file_path);
-            return Err(SCPluginLoaderError::InvalidHostPluginAbi(
+            return Err(SCPluginLoaderError::invalid_host_plugin_abi(
                 plugin.abi_version,
             ));
         }

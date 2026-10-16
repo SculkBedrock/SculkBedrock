@@ -3,8 +3,10 @@ name = "sc_plugin"
 version = "0.1.0"
 edition = "2021"
 
+license = "LGPL-3.0-only"
 [dependencies]
 sc_ecs = { path = "../sc_ecs" }
+sc_error = { path = "../sc_error" }
 sc_plugin_api = { path = "../sc_plugin_api" }
 sc_log = { path = "../sc_log" }
 sc_binary = { path = "../sc_binary" }
@@ -14,5 +16,8 @@ libloading = "=0.9.0"
 zip = "=8.6.0"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
-log = "0.4.22"
+log.workspace = true
 chrono = "=0.4.45"
+
+[lints]
+workspace = true

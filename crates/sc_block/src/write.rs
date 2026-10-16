@@ -499,11 +499,11 @@ pub fn poll_block_change_loads(world: World, pending: ResMut<PendingBlockChangeL
                     entry.receiver = Some(receiver);
                     remaining.push(entry);
                 }
-                Err(ChunkSubmitError::Busy | ChunkSubmitError::TooManyWaiters) => {
+                Err(ChunkSubmitError::Busy { .. } | ChunkSubmitError::TooManyWaiters { .. }) => {
                     entry.defer_after_busy(now);
                     remaining.push(entry);
                 }
-                Err(ChunkSubmitError::Closed) => {
+                Err(ChunkSubmitError::Closed { .. }) => {
                     warn!(
                         "block change #{}: chunk executor is closed",
                         entry.request_id
@@ -656,11 +656,11 @@ pub fn apply_block_changes(
         );
         let receiver = match submission {
             Ok(receiver) => Some(receiver),
-            Err(ChunkSubmitError::Busy | ChunkSubmitError::TooManyWaiters) => {
+            Err(ChunkSubmitError::Busy { .. } | ChunkSubmitError::TooManyWaiters { .. }) => {
                 log::debug!("block change #{request_id}: executor busy; queueing bounded retry");
                 None
             }
-            Err(ChunkSubmitError::Closed) => {
+            Err(ChunkSubmitError::Closed { .. }) => {
                 warn!("{}", t_log!("console.block.executor_closed", request = request_id));
                 send_change_result(&world, request_id, false);
                 continue;

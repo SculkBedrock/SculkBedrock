@@ -18,7 +18,7 @@ const MAX_CLONE_ESTIMATE_LIST_DEPTH: usize = 128;
 
 pub mod compound;
 pub mod local;
-mod r#macro;
+mod macros;
 pub mod network;
 pub mod reader;
 #[cfg(test)]
@@ -226,8 +226,8 @@ impl SCNBTServer for Server {
         // Create a default record when none is found.
         let now_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+            .map(|elapsed| elapsed.as_secs() as i64)
+            .unwrap_or(0);
         let mut nbt = CompoundNbt::new(None);
         nbt.insert("firstPlayed", NbtValue::Long(now_time)) // First play timestamp
             .insert("lastPlayed", NbtValue::Long(now_time)) // Last play timestamp

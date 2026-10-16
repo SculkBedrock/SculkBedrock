@@ -2,7 +2,9 @@
 name = "sc_plugin_api"
 version = "0.1.0"
 edition = "2021"
+license = "LGPL-3.0-only"
 description = "版本包动态插件宿主 ABI（C-ABI 稳定接口，零依赖；插件不得链接 sc_* 核心，避免与宿主重复实例化导致段错误）"
 
-[lib]
-crate-type = ["rlib"]
+
+[lints]
+workspace = true

@@ -3,7 +3,11 @@ name = "sc_async"
 version = "0.1.0"
 edition = "2021"
 
+license = "LGPL-3.0-only"
 [dependencies]
-tokio = { version = "1.43.0", features = ["rt", "rt-multi-thread", "sync", "macros", "io-util", "time"] }
-parking_lot = { version = "0.12", features = ["arc_lock", "send_guard"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "macros", "io-util", "time"] }
+parking_lot.workspace = true
 lazy_static = "=1.5.1"
+
+[lints]
+workspace = true

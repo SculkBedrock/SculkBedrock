@@ -15,6 +15,7 @@ use std::thread;
 
 use parking_lot::Mutex;
 use sc_ecs::resource::Resource;
+use sc_error::{capture_site, ScError, ScSite};
 use sc_world::chunk_view::{CachedChunk, ChunkCacheKey};
 use sc_world::storage::ChunkColumn;
 use tokio::sync::watch;
@@ -24,36 +25,214 @@ use crate::protocol::server::chunk::LevelChunk;
 const JOB_QUEUE_CAPACITY: usize = 128;
 const MAX_WAITERS_PER_KEY: usize = 64;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, ScError)]
 pub enum ChunkEncodeError {
-    StaleGeneration,
-    InvalidBlockMapping(String),
-    WorkerPanicked(String),
+    /// Chunk changed during encoding.
+    #[sc_error(code = "network.chunk.stale_generation")]
+    StaleGeneration {
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+    /// Block mapping is invalid.
+    #[sc_error(code = "network.chunk.invalid_block_mapping")]
+    InvalidBlockMapping {
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+    /// Encoding worker panicked.
+    #[sc_error(code = "network.chunk.worker_panicked")]
+    WorkerPanicked {
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+}
+
+impl ChunkEncodeError {
+    /// Build a stale-generation error, capturing the call site.
+    #[track_caller]
+    pub fn stale_generation(detail: String) -> Self {
+        Self::StaleGeneration {
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build an invalid-block-mapping error, capturing the call site.
+    #[track_caller]
+    pub fn invalid_block_mapping(detail: String) -> Self {
+        Self::InvalidBlockMapping {
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build a worker-panicked error, capturing the call site.
+    #[track_caller]
+    pub fn worker_panicked(detail: String) -> Self {
+        Self::WorkerPanicked {
+            detail,
+            site: capture_site(),
+        }
+    }
 }
 
 impl std::fmt::Display for ChunkEncodeError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::StaleGeneration => formatter.write_str("chunk changed during encoding"),
-            Self::InvalidBlockMapping(message) => formatter.write_str(message),
-            Self::WorkerPanicked(message) => {
-                write!(formatter, "encoding worker panicked: {message}")
+            Self::StaleGeneration { detail, site } => {
+                write!(
+                    formatter,
+                    "[network.chunk.stale_generation] {detail} (at {site})"
+                )
+            }
+            Self::InvalidBlockMapping { detail, site } => {
+                write!(
+                    formatter,
+                    "[network.chunk.invalid_block_mapping] {detail} (at {site})"
+                )
+            }
+            Self::WorkerPanicked { detail, site } => {
+                write!(
+                    formatter,
+                    "[network.chunk.worker_panicked] {detail} (at {site})"
+                )
             }
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+impl std::error::Error for ChunkEncodeError {}
+
+
+#[derive(Clone, Debug, Eq, PartialEq, ScError)]
 pub enum ChunkEncodeSubmitError {
-    Busy,
-    Closed,
-    TooManyWaiters,
+    /// Encode queue is busy.
+    #[sc_error(code = "network.chunk.submit_busy")]
+    Busy {
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+    /// Encoder is closed.
+    #[sc_error(code = "network.chunk.submit_closed")]
+    Closed {
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+    /// Too many encode waiters.
+    #[sc_error(code = "network.chunk.submit_too_many_waiters")]
+    TooManyWaiters {
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ChunkEncodeWaitError {
-    Closed,
+impl ChunkEncodeSubmitError {
+    /// Build a busy error, capturing the call site.
+    #[track_caller]
+    pub fn busy(detail: String) -> Self {
+        Self::Busy {
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build a closed error, capturing the call site.
+    #[track_caller]
+    pub fn closed(detail: String) -> Self {
+        Self::Closed {
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build a too-many-waiters error, capturing the call site.
+    #[track_caller]
+    pub fn too_many_waiters(detail: String) -> Self {
+        Self::TooManyWaiters {
+            detail,
+            site: capture_site(),
+        }
+    }
 }
+
+impl std::fmt::Display for ChunkEncodeSubmitError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Busy { detail, site } => {
+                write!(
+                    formatter,
+                    "[network.chunk.submit_busy] {detail} (at {site})"
+                )
+            }
+            Self::Closed { detail, site } => {
+                write!(
+                    formatter,
+                    "[network.chunk.submit_closed] {detail} (at {site})"
+                )
+            }
+            Self::TooManyWaiters { detail, site } => {
+                write!(
+                    formatter,
+                    "[network.chunk.submit_too_many_waiters] {detail} (at {site})"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ChunkEncodeSubmitError {}
+
+
+#[derive(Clone, Debug, Eq, PartialEq, ScError)]
+pub enum ChunkEncodeWaitError {
+    /// Encode channel is closed.
+    #[sc_error(code = "network.chunk.wait_closed")]
+    Closed {
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+}
+
+impl ChunkEncodeWaitError {
+    /// Build a closed error, capturing the call site.
+    #[track_caller]
+    pub fn closed(detail: String) -> Self {
+        Self::Closed {
+            detail,
+            site: capture_site(),
+        }
+    }
+}
+
+impl std::fmt::Display for ChunkEncodeWaitError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Closed { detail, site } => {
+                write!(
+                    formatter,
+                    "[network.chunk.wait_closed] {detail} (at {site})"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ChunkEncodeWaitError {}
+
 
 pub type ChunkEncodeResult = Result<Arc<CachedChunk>, ChunkEncodeError>;
 type SharedChunkEncodeResult = Arc<ChunkEncodeResult>;
@@ -103,7 +282,7 @@ impl ChunkEncodeTicket {
             self.receiver
                 .changed()
                 .await
-                .map_err(|_| ChunkEncodeWaitError::Closed)?;
+                .map_err(|_| ChunkEncodeWaitError::closed("chunk encode channel closed".into()))?;
         }
     }
 }
@@ -182,7 +361,9 @@ impl ChunkEncodeExecutor {
             let current = entry.waiters.fetch_add(1, Ordering::AcqRel);
             if current >= MAX_WAITERS_PER_KEY {
                 entry.waiters.fetch_sub(1, Ordering::AcqRel);
-                return Err(ChunkEncodeSubmitError::TooManyWaiters);
+                return Err(ChunkEncodeSubmitError::too_many_waiters(
+                    "too many chunk encode waiters".into(),
+                ));
             }
             let receiver = entry.result.subscribe();
             return Ok(ChunkEncodeTicket { entry, receiver });
@@ -210,12 +391,16 @@ impl ChunkEncodeExecutor {
             Some(Err(mpsc::TrySendError::Full(_))) => {
                 inflight.remove(&key);
                 entry.waiters.store(0, Ordering::Release);
-                Err(ChunkEncodeSubmitError::Busy)
+                Err(ChunkEncodeSubmitError::busy(
+                    "chunk encode queue busy".into(),
+                ))
             }
             Some(Err(mpsc::TrySendError::Disconnected(_))) | None => {
                 inflight.remove(&key);
                 entry.waiters.store(0, Ordering::Release);
-                Err(ChunkEncodeSubmitError::Closed)
+                Err(ChunkEncodeSubmitError::closed(
+                    "chunk encode executor closed".into(),
+                ))
             }
         }
     }
@@ -263,7 +448,7 @@ fn worker_loop(receiver: Arc<Mutex<mpsc::Receiver<EncodeJob>>>, inflight: Arc<Mu
 
         let result = match catch_unwind(AssertUnwindSafe(|| encode(&job))) {
             Ok(result) => result,
-            Err(payload) => Err(ChunkEncodeError::WorkerPanicked(panic_message(
+            Err(payload) => Err(ChunkEncodeError::worker_panicked(panic_message(
                 payload.as_ref(),
             ))),
         };
@@ -275,12 +460,16 @@ fn encode(job: &EncodeJob) -> Result<Arc<CachedChunk>, ChunkEncodeError> {
     let chunk = job.column.read();
     let generation = job.column.generation();
     if generation != job.key.generation || job.column.incarnation() != job.key.incarnation {
-        return Err(ChunkEncodeError::StaleGeneration);
+        return Err(ChunkEncodeError::stale_generation(
+            "chunk changed during encoding".into(),
+        ));
     }
     let packet = LevelChunk::from_chunk(&chunk)
-        .map_err(|error| ChunkEncodeError::InvalidBlockMapping(error.to_string()))?;
+        .map_err(|error| ChunkEncodeError::invalid_block_mapping(error.to_string()))?;
     if job.column.generation() != generation {
-        return Err(ChunkEncodeError::StaleGeneration);
+        return Err(ChunkEncodeError::stale_generation(
+            "chunk changed during encoding".into(),
+        ));
     }
     Ok(Arc::new(CachedChunk {
         payload: Arc::new(packet.payload),
@@ -377,7 +566,7 @@ mod tests {
         }
         assert!(matches!(
             executor.try_submit(key, column),
-            Err(ChunkEncodeSubmitError::TooManyWaiters),
+            Err(ChunkEncodeSubmitError::TooManyWaiters { .. }),
         ));
         drop(tickets);
         executor.shutdown();
@@ -409,7 +598,7 @@ mod tests {
 
         assert!(matches!(
             encode(&job),
-            Err(ChunkEncodeError::StaleGeneration)
+            Err(ChunkEncodeError::StaleGeneration { .. })
         ));
         executor.shutdown();
     }

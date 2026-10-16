@@ -255,7 +255,7 @@ impl App {
 
     #[inline]
     pub fn plugins_state(&self) -> PluginsState {
-        let overall_plugins_state = match self.plugins_state.read().clone() {
+        let overall_plugins_state = match *self.plugins_state.read() {
             PluginsState::Adding => {
                 let mut state = PluginsState::Ready;
                 let plugins = self.plugin_registry.read();

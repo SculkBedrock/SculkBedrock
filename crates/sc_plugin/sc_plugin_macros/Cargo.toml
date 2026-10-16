@@ -3,11 +3,15 @@ name = "sc_plugin_macros"
 version = "0.1.0"
 edition = "2021"
 
+license = "LGPL-3.0-only"
 [lib]
 proc-macro = true
 
 [dependencies]
-proc-macro2 = "*"
-quote = "*"
-syn = "*"
+proc-macro2.workspace = true
+quote.workspace = true
+syn.workspace = true
 proc-macro-crate = "3.1.0"
+
+[lints]
+workspace = true

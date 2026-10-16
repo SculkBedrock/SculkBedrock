@@ -136,6 +136,10 @@ impl DropReceipts {
     pub fn len(&self) -> usize {
         self.seen.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.seen.is_empty()
+    }
 }
 
 /// Creative-mode breaks drop nothing (and sound no differently).

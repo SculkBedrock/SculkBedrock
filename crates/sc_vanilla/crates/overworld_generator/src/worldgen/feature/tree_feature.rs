@@ -62,48 +62,6 @@ use crate::worldgen::feature::tree::{
 use crate::worldgen::feature::GenerateFeature;
 use crate::worldgen::random::{RandomSourceProvider, Xoroshiro128};
 
-/// Shared template for `ObjectGeneratorFeature` subclasses: `apply` calls `object_apply`.
-macro_rules! impl_object_feature {
-    ($ty:ty, $name:expr) => {
-        impl GenerateFeature for $ty {
-            fn apply(&self, ctx: &mut ChunkGenerateContext<'_>) {
-                self.object_apply(ctx);
-            }
-            fn name(&self) -> &'static str {
-                $name
-            }
-        }
-    };
-}
-
-/// Shared template for `GriddedFeature` subclasses: `apply` calls `grid_apply`.
-macro_rules! impl_grid_feature {
-    ($ty:ty, $name:expr) => {
-        impl GenerateFeature for $ty {
-            fn apply(&self, ctx: &mut ChunkGenerateContext<'_>) {
-                self.grid_apply(ctx);
-            }
-            fn name(&self) -> &'static str {
-                $name
-            }
-        }
-    };
-}
-
-/// Shared template for `LegacyTreeGeneratorFeature` subclasses: `apply` calls `legacy_apply`.
-macro_rules! impl_legacy_feature {
-    ($ty:ty, $name:expr) => {
-        impl GenerateFeature for $ty {
-            fn apply(&self, ctx: &mut ChunkGenerateContext<'_>) {
-                self.legacy_apply(ctx);
-            }
-            fn name(&self) -> &'static str {
-                $name
-            }
-        }
-    };
-}
-
 /// 1% fallen-tree roll.
 fn fallen_roll(random: &mut Xoroshiro128) -> bool {
     random.next_int_max(100) == 0
@@ -124,7 +82,7 @@ impl BambooJungleTreeFeature {
     }
 }
 
-impl_object_feature!(
+crate::impl_feature!(object, 
     BambooJungleTreeFeature,
     "minecraft:bamboo_jungle_surface_trees_feature"
 );
@@ -167,7 +125,7 @@ impl CherryTreeFeature {
     }
 }
 
-impl_object_feature!(
+crate::impl_feature!(object, 
     CherryTreeFeature,
     "minecraft:cherry_grove_after_surface_cherry_tree_feature_rules"
 );
@@ -205,7 +163,7 @@ impl IceSurfaceTreeFeature {
     }
 }
 
-impl_object_feature!(IceSurfaceTreeFeature, "minecraft:ice_surface_trees_feature");
+crate::impl_feature!(object, IceSurfaceTreeFeature, "minecraft:ice_surface_trees_feature");
 
 impl ObjectGeneratorFeature for IceSurfaceTreeFeature {
     fn get_generator(&self, random: &mut Xoroshiro128) -> Box<dyn ObjectGenerator> {
@@ -240,7 +198,7 @@ impl JungleBushFeature {
     }
 }
 
-impl_object_feature!(JungleBushFeature, "minecraft:jungle_bush");
+crate::impl_feature!(object, JungleBushFeature, "minecraft:jungle_bush");
 
 impl ObjectGeneratorFeature for JungleBushFeature {
     fn get_generator(&self, _random: &mut Xoroshiro128) -> Box<dyn ObjectGenerator> {
@@ -267,7 +225,7 @@ impl JungleEdgeTreeFeature {
     }
 }
 
-impl_object_feature!(
+crate::impl_feature!(object, 
     JungleEdgeTreeFeature,
     "minecraft:legacy:jungle_edge_tree_feature"
 );
@@ -314,7 +272,7 @@ impl MangroveTreeFeature {
     }
 }
 
-impl_object_feature!(
+crate::impl_feature!(object, 
     MangroveTreeFeature,
     "minecraft:mangrove_swamp_mangrove_tree_feature"
 );
@@ -356,7 +314,7 @@ impl PaleGardenTreeFeature {
     }
 }
 
-impl_object_feature!(
+crate::impl_feature!(object, 
     PaleGardenTreeFeature,
     "minecraft:random_pale_oak_tree_feature"
 );
@@ -396,7 +354,7 @@ impl RoofedForestTreeFeature {
     }
 }
 
-impl_object_feature!(
+crate::impl_feature!(object, 
     RoofedForestTreeFeature,
     "minecraft:roofed_forest_tree_feature_rules"
 );
@@ -436,7 +394,7 @@ impl SavannaTreeFeature {
     }
 }
 
-impl_object_feature!(
+crate::impl_feature!(object, 
     SavannaTreeFeature,
     "minecraft:savanna_surface_trees_feature"
 );
@@ -482,7 +440,7 @@ impl SavannaMutatedTreeFeature {
     }
 }
 
-impl_object_feature!(
+crate::impl_feature!(object, 
     SavannaMutatedTreeFeature,
     "minecraft:savanna_mutated_surface_trees_feature"
 );
@@ -532,7 +490,7 @@ impl SwampTreeFeature {
     }
 }
 
-impl_object_feature!(SwampTreeFeature, "minecraft:swamp_oak_tree_feature");
+crate::impl_feature!(object, SwampTreeFeature, "minecraft:swamp_oak_tree_feature");
 
 impl ObjectGeneratorFeature for SwampTreeFeature {
     fn get_generator(&self, _random: &mut Xoroshiro128) -> Box<dyn ObjectGenerator> {
@@ -577,7 +535,7 @@ impl BirchForestMutatedTreeFeature {
     }
 }
 
-impl_grid_feature!(
+crate::impl_feature!(grid, 
     BirchForestMutatedTreeFeature,
     "minecraft:legacy:birch_forest_mutated_tree_feature"
 );
@@ -691,7 +649,7 @@ impl JungleTreeFeature {
     }
 }
 
-impl_grid_feature!(JungleTreeFeature, "minecraft:jungle_surface_trees_feature");
+crate::impl_feature!(grid, JungleTreeFeature, "minecraft:jungle_surface_trees_feature");
 
 impl ObjectGeneratorFeature for JungleTreeFeature {
     fn get_generator(&self, random: &mut Xoroshiro128) -> Box<dyn ObjectGenerator> {
@@ -742,7 +700,7 @@ impl MegaTaigaTreeFeature {
     }
 }
 
-impl_grid_feature!(
+crate::impl_feature!(grid, 
     MegaTaigaTreeFeature,
     "minecraft:mega_taiga_surface_trees_feature"
 );
@@ -858,7 +816,7 @@ impl BirchForestTreeFeature {
     }
 }
 
-impl_legacy_feature!(
+crate::impl_feature!(legacy, 
     BirchForestTreeFeature,
     "minecraft:birch_forest_surface_trees_feature"
 );
@@ -911,7 +869,7 @@ impl FlowerForestTreeFeature {
     }
 }
 
-impl_legacy_feature!(
+crate::impl_feature!(legacy, 
     FlowerForestTreeFeature,
     "minecraft:flower_forest_surface_trees_feature"
 );
@@ -969,7 +927,7 @@ impl ForestTreeFeature {
     }
 }
 
-impl_legacy_feature!(ForestTreeFeature, "minecraft:forest_surface_trees_feature");
+crate::impl_feature!(legacy, ForestTreeFeature, "minecraft:forest_surface_trees_feature");
 
 impl LegacyTreeGeneratorFeature for ForestTreeFeature {
     fn get_generator(&self, random: &mut Xoroshiro128) -> Option<Box<dyn ObjectGenerator>> {
@@ -1029,7 +987,7 @@ impl MeadowTreeFeature {
     }
 }
 
-impl_legacy_feature!(MeadowTreeFeature, "minecraft:meadow_surface_trees_feature");
+crate::impl_feature!(legacy, MeadowTreeFeature, "minecraft:meadow_surface_trees_feature");
 
 impl LegacyTreeGeneratorFeature for MeadowTreeFeature {
     fn get_generator(&self, random: &mut Xoroshiro128) -> Option<Box<dyn ObjectGenerator>> {
@@ -1080,7 +1038,7 @@ impl MesaTreeFeature {
     }
 }
 
-impl_legacy_feature!(MesaTreeFeature, "minecraft:mesa_tree_feature");
+crate::impl_feature!(legacy, MesaTreeFeature, "minecraft:mesa_tree_feature");
 
 impl LegacyTreeGeneratorFeature for MesaTreeFeature {
     fn get_generator(&self, random: &mut Xoroshiro128) -> Option<Box<dyn ObjectGenerator>> {
@@ -1115,7 +1073,7 @@ impl PlainsTreeFeature {
     }
 }
 
-impl_legacy_feature!(PlainsTreeFeature, "minecraft:plains_surface_trees_feature");
+crate::impl_feature!(legacy, PlainsTreeFeature, "minecraft:plains_surface_trees_feature");
 
 impl LegacyTreeGeneratorFeature for PlainsTreeFeature {
     fn get_generator(&self, random: &mut Xoroshiro128) -> Option<Box<dyn ObjectGenerator>> {

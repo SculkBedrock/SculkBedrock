@@ -1,9 +1,12 @@
-﻿[package]
+[package]
 name = "sc_eventbus"
 version = "0.1.0"
 edition = "2021"
 
+license = "LGPL-3.0-only"
 [dependencies]
 sc_ecs = { path = "../sc_ecs" }
 sc_eventbus_macros = { path = "sc_eventbus_macros" }
-tokio = { version = "1.43.0", features = ["full"] }
+
+[lints]
+workspace = true

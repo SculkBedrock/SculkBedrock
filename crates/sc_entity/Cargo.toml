@@ -3,9 +3,13 @@ name = "sc_entity"
 version = "0.1.0"
 edition = "2021"
 
+license = "LGPL-3.0-only"
 [dependencies]
 sc_ecs = { path = "../sc_ecs" }
 sc_packloader = { path = "../sc_packloader" }
 sc_utils = { path = "../sc_utils" }
 sc_nbt = { path = "../sc_nbt" }
-parking_lot = { version = "0.12", features = ["arc_lock", "send_guard"] }
+parking_lot.workspace = true
+
+[lints]
+workspace = true

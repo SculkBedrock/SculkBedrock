@@ -3,22 +3,28 @@ name = "sc_world"
 version = "0.1.0"
 edition = "2021"
 
+license = "LGPL-3.0-only"
 [dependencies]
-parking_lot = { version = "0.12", features = ["arc_lock", "send_guard"] }
+sc_async = { path = "../sc_async" }
+sc_error = { path = "../sc_error" }
+parking_lot.workspace = true
 sc_ecs = { path = "../sc_ecs" }
 sc_nbt = { path = "../sc_nbt" }
 sc_utils = { path = "../sc_utils" }
 sc_log = { path = "../sc_log" }
 sc_binary = { path = "../sc_binary" }
 zip = "=8.6.0"
-serde = "1.0"
+serde.workspace = true
 serde-inline-default = "0.2"
-serde_json = "1.0.120"
-chrono = "0.4"
-uuid = { version = "1.10.0", features = ["v4"] }
-log = "0.4.22"
+serde_json.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+log.workspace = true
 rusty-leveldb = "3"
 crc = "3.2"
-flate2 = "1.0"
-ahash = "0.8"
-tokio = { version = "1.43.0", features = ["sync"] }
+flate2.workspace = true
+ahash.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+
+[lints]
+workspace = true

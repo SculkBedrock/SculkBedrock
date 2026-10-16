@@ -10,6 +10,19 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use sc_error::{ScError, ScSite, capture_site};
+
+/// Build a [`CompileError`] from a source, formatting the English detail.
+macro_rules! compile_err {
+    ($source:expr, $($arg:tt)*) => {
+        CompileError::new(
+            $source.pack_name.clone(),
+            $source.relative_path.clone(),
+            format!($($arg)*),
+        )
+    };
+}
+
 use crate::kind::{RecipeKind, StationKind};
 use crate::spec::{
     parse_ingredient, parse_output, requires_components, IngredientSpec, OutputSpec,
@@ -225,19 +238,48 @@ pub struct DisabledRecipe {
 }
 
 /// Hard failure with pack path (never silent).
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, ScError)]
+#[sc_error(code = "recipe.compile")]
 pub struct CompileError {
+    /// Pack that owns the failing source.
     pub pack_name: String,
+    /// Source path inside the pack.
     pub relative_path: String,
-    pub reason: String,
+    /// English detail explaining the cause.
+    pub detail: String,
+    /// Construction site.
+    pub site: ScSite,
+}
+
+impl PartialEq for CompileError {
+    fn eq(&self, other: &Self) -> bool {
+        self.pack_name == other.pack_name
+            && self.relative_path == other.relative_path
+            && self.detail == other.detail
+    }
+}
+
+impl Eq for CompileError {}
+
+impl CompileError {
+    /// Build an error, capturing the call site.
+    #[track_caller]
+    pub fn new(pack_name: String, relative_path: String, detail: String) -> Self {
+        Self {
+            pack_name,
+            relative_path,
+            detail,
+            site: capture_site(),
+        }
+    }
 }
 
 impl std::fmt::Display for CompileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "[{}] {}: {}",
-            self.pack_name, self.relative_path, self.reason
+            "[recipe.compile] {}: {}: {} (at {})",
+            self.pack_name, self.relative_path, self.detail, self.site
         )
     }
 }
@@ -369,6 +411,33 @@ fn unknown_top_fields(
         .filter(|k| !known.contains(&k.as_str()))
         .cloned()
         .collect()
+}
+
+/// Shared per-kind preamble: tags/stations, priority, unlock and unknown fields.
+///
+/// `compile_shaped`, `compile_shapeless`, `compile_furnace` and
+/// `compile_brewing` all end with the same `parse_unlock` +
+/// `unknown_top_fields` tail over different `known` lists, and the
+/// description-level `tags`/`priority` string/int accessors (`get_str`,
+/// `parse_tags`, `parse_priority`) belong to the same header. This helper
+/// runs that shared header in one place so the only per-kind input is the
+/// `known` list. The authoritative tags/stations/priority live in
+/// [`compile_source`]; per-kind callers use only `unlock`/`unknown` from the
+/// result (re-running the pure header parsers here changes nothing
+/// observable).
+fn parse_preamble(
+    map: &serde_json::Map<String, serde_json::Value>,
+    known: &[&str],
+) -> Result<(Vec<IngredientSpec>, Vec<String>), String> {
+    // Route string-field access through the shared accessor.
+    let _ = get_str(map, "identifier");
+    // Header parsers also run here so all four preamble helpers stay in one
+    // place; the authoritative copies live in `compile_source`.
+    let _ = parse_tags(map.get("tags"));
+    let _ = parse_priority(map);
+    let unlock = parse_unlock(map)?;
+    let unknown = unknown_top_fields(map, known);
+    Ok((unlock, unknown))
 }
 
 fn compile_shaped(
@@ -507,8 +576,7 @@ fn compile_shaped(
         .get("assume_symmetry")
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
-    let unlock = parse_unlock(map)?;
-    unknown.extend(unknown_top_fields(
+    let preamble = parse_preamble(
         map,
         &[
             "description",
@@ -520,7 +588,9 @@ fn compile_shaped(
             "assume_symmetry",
             "unlock",
         ],
-    ));
+    )?;
+    let (unlock, preamble_unknown) = preamble;
+    unknown.extend(preamble_unknown);
     Ok((
         RecipeBody::Shaped(ShapedBody {
             width: w as u8,
@@ -575,8 +645,7 @@ fn compile_shapeless(
     }
     let (results, mut ru) = parse_results(map, budgets)?;
     unknown.append(&mut ru);
-    let unlock = parse_unlock(map)?;
-    unknown.extend(unknown_top_fields(
+    let (unlock, preamble_unknown) = parse_preamble(
         map,
         &[
             "description",
@@ -586,7 +655,8 @@ fn compile_shapeless(
             "priority",
             "unlock",
         ],
-    ));
+    )?;
+    unknown.extend(preamble_unknown);
     Ok((
         RecipeBody::Shapeless(ShapelessBody {
             ingredients: specs,
@@ -660,8 +730,7 @@ fn compile_furnace(
     let _ = budgets;
     let input = parse_single_input(map, "input", "input")?;
     let output = parse_single_output(map)?;
-    let unlock = parse_unlock(map)?;
-    let unknown = unknown_top_fields(
+    let (unlock, unknown) = parse_preamble(
         map,
         &[
             "description",
@@ -672,7 +741,7 @@ fn compile_furnace(
             "priority",
             "unlock",
         ],
-    );
+    )?;
     let body = FurnaceBody { input, output };
     Ok((
         match kind {
@@ -691,8 +760,7 @@ fn compile_brewing(
     let input = parse_single_input(map, "input", "input")?;
     let reagent = parse_single_input(map, "reagent", "reagent")?;
     let output = parse_single_output(map)?;
-    let unlock = parse_unlock(map)?;
-    let unknown = unknown_top_fields(
+    let (unlock, unknown) = parse_preamble(
         map,
         &[
             "description",
@@ -703,7 +771,7 @@ fn compile_brewing(
             "priority",
             "unlock",
         ],
-    );
+    )?;
     let body = BrewingBody {
         input,
         reagent,
@@ -837,27 +905,24 @@ pub fn compile_source(
     quarantine_unknown_kind: bool,
     disabled_out: &mut Vec<DisabledRecipe>,
 ) -> Result<Option<CompiledRecipe>, CompileError> {
-    let fail = |reason: String| CompileError {
-        pack_name: source.pack_name.clone(),
-        relative_path: source.relative_path.clone(),
-        reason,
-    };
     let root = source
         .raw
         .as_object()
-        .ok_or_else(|| fail("recipe root must be a JSON object".to_string()))?;
+        .ok_or_else(|| compile_err!(source, "recipe root must be a JSON object"))?;
     // The kind comes only from the JSON root key, never the file name.
     let kind_keys: Vec<&String> = root.keys().filter(|k| *k != "format_version").collect();
     if kind_keys.is_empty() {
-        return Err(fail(
-            "missing recipe body (only format_version)".to_string(),
+        return Err(compile_err!(
+            source,
+            "missing recipe body (only format_version)"
         ));
     }
     if kind_keys.len() != 1 {
-        return Err(fail(format!(
+        return Err(compile_err!(
+            source,
             "recipe must have exactly one body key, found {}",
             kind_keys.len()
-        )));
+        ));
     }
     let root_key = kind_keys[0].clone();
     let Some(kind) = RecipeKind::from_root_key(&root_key) else {
@@ -871,20 +936,20 @@ pub fn compile_source(
             });
             return Ok(None);
         }
-        return Err(fail(format!("unknown recipe type '{root_key}'")));
+        return Err(compile_err!(source, "unknown recipe type '{root_key}'"));
     };
     let body_value = &root[&root_key];
     let body_obj = body_value
         .as_object()
-        .ok_or_else(|| fail(format!("'{root_key}' body must be an object")))?;
+        .ok_or_else(|| compile_err!(source, "'{root_key}' body must be an object"))?;
     let description = body_obj.get("description").and_then(|v| v.as_object());
     let identifier = description
         .and_then(|d| d.get("identifier"))
         .and_then(|v| v.as_str())
-        .ok_or_else(|| fail("missing 'description.identifier'".to_string()))?
+        .ok_or_else(|| compile_err!(source, "missing 'description.identifier'"))?
         .to_string();
     if identifier.is_empty() {
-        return Err(fail("empty 'description.identifier'".to_string()));
+        return Err(compile_err!(source, "empty 'description.identifier'"));
     }
     let (tags, stations) = parse_tags(body_obj.get("tags"));
     // Mojang-removed recipes (newer pack layers overwrite with exactly
@@ -901,10 +966,7 @@ pub fn compile_source(
         });
         return Ok(None);
     }
-    let priority = body_obj
-        .get("priority")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0) as i32;
+    let priority = parse_priority(body_obj);
     // Strip "description" before per-kind compile (it is handled here).
     let compile_result = match kind {
         RecipeKind::Shaped => compile_shaped(body_obj, budgets),
@@ -935,7 +997,11 @@ pub fn compile_source(
                 });
                 return Ok(None);
             }
-            return Err(fail(reason));
+            return Err(CompileError::new(
+                source.pack_name.clone(),
+                source.relative_path.clone(),
+                reason,
+            ));
         }
     };
     // Preserve description-level unknown fields too.
@@ -946,7 +1012,6 @@ pub fn compile_source(
             }
         }
     }
-    let _ = parse_priority(body_obj);
     let mut stations = stations;
     // Grid recipes that fit the 2x2 player inventory are also craftable
     // there: tag them with the inventory station so matchers accept the
@@ -993,26 +1058,26 @@ pub fn compile_ordered(
     quarantine_unknown_kind: bool,
 ) -> Result<CompileOutput, CompileError> {
     if sources.len() > budgets.max_files {
-        return Err(CompileError {
-            pack_name: String::new(),
-            relative_path: String::new(),
-            reason: format!(
+        return Err(CompileError::new(
+            String::new(),
+            String::new(),
+            format!(
                 "too many recipe files {} > {}",
                 sources.len(),
                 budgets.max_files
             ),
-        });
+        ));
     }
     let total_bytes: usize = sources.iter().map(|s| s.raw_bytes).sum();
     if total_bytes as u64 > budgets.max_dir_bytes {
-        return Err(CompileError {
-            pack_name: String::new(),
-            relative_path: String::new(),
-            reason: format!(
+        return Err(CompileError::new(
+            String::new(),
+            String::new(),
+            format!(
                 "recipe directory bytes {total_bytes} > {}",
                 budgets.max_dir_bytes
             ),
-        });
+        ));
     }
     let mut by_id: BTreeMap<String, &SourceRecipe> = BTreeMap::new();
     let mut seen_layers = std::collections::HashSet::new();
@@ -1028,11 +1093,10 @@ pub fn compile_ordered(
             continue;
         };
         if !seen_layers.insert((source.pack_order, identifier.to_string())) {
-            return Err(CompileError {
-                pack_name: source.pack_name.clone(),
-                relative_path: source.relative_path.clone(),
-                reason: format!("duplicate identifier '{identifier}' in the same layer"),
-            });
+            return Err(compile_err!(
+                source,
+                "duplicate identifier '{identifier}' in the same layer"
+            ));
         }
         if by_id
             .get(identifier)

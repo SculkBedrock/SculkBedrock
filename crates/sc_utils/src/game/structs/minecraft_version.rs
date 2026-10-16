@@ -1,22 +1,119 @@
+use sc_error::{ScError, ScSite, capture_site};
 use serde::Deserialize;
 use std::fmt::{Debug, Display, Formatter};
 use std::num::ParseIntError;
 use std::str::FromStr;
 
-#[derive(Debug)]
+#[derive(Debug, ScError)]
 pub enum MinecraftVersionError {
-    UnknownVersionString(String),
-    UnknownVersionVec(Vec<u8>),
-    ParseIntError(ParseIntError),
+    /// Unrecognized version string.
+    #[sc_error(code = "utils.version.unknown_version_string")]
+    UnknownVersionString {
+        /// Rejected version string.
+        value: String,
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+    /// Unrecognized version byte vector.
+    #[sc_error(code = "utils.version.unknown_version_vec")]
+    UnknownVersionVec {
+        /// Rejected version bytes.
+        value: Vec<u8>,
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+    /// Version component is not a number.
+    #[sc_error(code = "utils.version.parse_int")]
+    ParseIntError {
+        /// Underlying parse error.
+        source: ParseIntError,
+        /// English detail explaining the cause.
+        detail: String,
+        /// Construction site.
+        site: ScSite,
+    },
+}
+
+impl MinecraftVersionError {
+    /// Build an unknown-string error, capturing the call site.
+    #[track_caller]
+    pub fn unknown_version_string(value: String) -> Self {
+        let detail = format!("unknown version string '{value}'");
+        Self::UnknownVersionString {
+            value,
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build an unknown-bytes error, capturing the call site.
+    #[track_caller]
+    pub fn unknown_version_vec(value: Vec<u8>) -> Self {
+        let detail = format!(
+            "unknown version with {} parts, expected 2 or 3",
+            value.len()
+        );
+        Self::UnknownVersionVec {
+            value,
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build a component-parse error, capturing the call site.
+    #[track_caller]
+    pub fn parse_int(source: ParseIntError) -> Self {
+        let detail = source.to_string();
+        Self::ParseIntError {
+            source,
+            detail,
+            site: capture_site(),
+        }
+    }
 }
 
 impl Display for MinecraftVersionError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        match self {
+            Self::UnknownVersionString { detail, site, .. } => {
+                write!(
+                    f,
+                    "[utils.version.unknown_version_string] {detail} (at {site})"
+                )
+            }
+            Self::UnknownVersionVec { detail, site, .. } => {
+                write!(
+                    f,
+                    "[utils.version.unknown_version_vec] {detail} (at {site})"
+                )
+            }
+            Self::ParseIntError { detail, site, .. } => {
+                write!(f, "[utils.version.parse_int] {detail} (at {site})")
+            }
+        }
     }
 }
 
-impl std::error::Error for MinecraftVersionError {}
+impl std::error::Error for MinecraftVersionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ParseIntError { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+
+impl From<ParseIntError> for MinecraftVersionError {
+    #[track_caller]
+    fn from(error: ParseIntError) -> Self {
+        Self::parse_int(error)
+    }
+}
 
 #[derive(Deserialize, Debug, Clone)]
 #[serde(untagged)]
@@ -49,33 +146,28 @@ impl MinecraftVersion {
     pub fn from_str(version: &str) -> Result<MinecraftVersion, MinecraftVersionError> {
         let split: Vec<&str> = version.split(".").collect();
         if split.len() != 3 && split.len() != 2 {
-            return Err(MinecraftVersionError::UnknownVersionString(
+            return Err(MinecraftVersionError::unknown_version_string(
                 version.to_string(),
             ));
         }
         if split.len() == 2 {
             Ok(Self {
                 v0: 1,
-                v1: u8::from_str(split[0].trim())
-                    .map_err(|e| MinecraftVersionError::ParseIntError(e))?,
-                v2: u8::from_str(split[1].trim())
-                    .map_err(|e| MinecraftVersionError::ParseIntError(e))?,
+                v1: u8::from_str(split[0].trim())?,
+                v2: u8::from_str(split[1].trim())?,
             })
         } else {
             Ok(Self {
-                v0: u8::from_str(split[0].trim())
-                    .map_err(|e| MinecraftVersionError::ParseIntError(e))?,
-                v1: u8::from_str(split[1].trim())
-                    .map_err(|e| MinecraftVersionError::ParseIntError(e))?,
-                v2: u8::from_str(split[2].trim())
-                    .map_err(|e| MinecraftVersionError::ParseIntError(e))?,
+                v0: u8::from_str(split[0].trim())?,
+                v1: u8::from_str(split[1].trim())?,
+                v2: u8::from_str(split[2].trim())?,
             })
         }
     }
 
     pub fn from_vec(vec: Vec<u8>) -> Result<MinecraftVersion, MinecraftVersionError> {
         if vec.len() != 3 && vec.len() != 2 {
-            return Err(MinecraftVersionError::UnknownVersionVec(vec));
+            return Err(MinecraftVersionError::unknown_version_vec(vec));
         }
         if vec.len() == 2 {
             Ok(Self {

@@ -3,14 +3,19 @@ name = "sc_raknet"
 version = "0.1.0"
 edition = "2021"
 
+license = "LGPL-3.0-only"
 [dependencies]
+sc_error = { path = "../sc_error" }
 sc_ecs = { path = "../sc_ecs" }
 sc_binary = { path = "../sc_binary" }
 sc_utils = { path = "../sc_utils" }
 sc_log = { path = "../sc_log" }
-parking_lot = { version = "0.12", features = ["arc_lock", "send_guard"] }
-tokio = { version = "=1.53.2", features = ["full"] }
+parking_lot.workspace = true
+tokio = { version = "=1.53.2", features = ["rt", "rt-multi-thread", "macros", "net", "time", "sync"] }
 log = "=0.4.34"
 async-channel = "=2.5.0"
 future-utils = "=0.12.1"
 arc-swap = "1"
+
+[lints]
+workspace = true

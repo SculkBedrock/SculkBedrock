@@ -45,7 +45,10 @@ write_impl![
 
 impl NbtCustomWrite for bool {
     fn write<T: NbtWriteTrait>(&self, writer: &mut NbtWriter) -> io::Result<()> {
-        writer.write::<T>(&self.to_nbt().unwrap())
+        let value = self.to_nbt().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "bool has no NBT representation")
+        })?;
+        writer.write::<T>(&value)
     }
     fn to_nbt(&self) -> Option<NbtValue> {
         Some(NbtValue::Byte(if *self { 1 } else { 0 }))

@@ -3,7 +3,11 @@ name = "sc_item"
 version = "0.1.0"
 edition = "2021"
 
+license = "LGPL-3.0-only"
 [dependencies]
 sc_ecs = { path = "../sc_ecs" }
 sc_world = { path = "../sc_world" }
-parking_lot = "0.12"
+parking_lot.workspace = true
+
+[lints]
+workspace = true

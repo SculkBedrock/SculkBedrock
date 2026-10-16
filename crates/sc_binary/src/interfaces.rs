@@ -41,6 +41,33 @@ macro_rules! impl_reader {
             }
         )*
     };
+    (newtype $($t:ty, $method:ident),*) => {
+        $(
+            impl Reader<$t> for $t {
+                fn read(buf: &mut ByteReader) -> Result<$t, std::io::Error> {
+                    buf.$method().map(<$t>::from)
+                }
+            }
+        )*
+    };
+    (newtype_le $(LE<$t:ty>, $method:ident),*) => {
+        $(
+            impl Reader<LE<$t>> for LE<$t> {
+                fn read(buf: &mut ByteReader) -> Result<LE<$t>, std::io::Error> {
+                    buf.$method().map(|v| LE::new(v.into()))
+                }
+            }
+        )*
+    };
+    (newtype_be $(BE<$t:ty>, $method:ident),*) => {
+        $(
+            impl Reader<BE<$t>> for BE<$t> {
+                fn read(buf: &mut ByteReader) -> Result<BE<$t>, std::io::Error> {
+                    buf.$method().map(|v| BE::new(v.into()))
+                }
+            }
+        )*
+    };
 }
 
 macro_rules! impl_writer {
@@ -67,6 +94,15 @@ macro_rules! impl_writer {
             impl Writer for $t {
                 fn write(&self, buf: &mut ByteWriter) -> Result<(), std::io::Error> {
                     buf.$method(*self)
+                }
+            }
+        )*
+    };
+    (newtype $($t:ty, $method:ident),*) => {
+        $(
+            impl Writer for $t {
+                fn write(&self, buf: &mut ByteWriter) -> Result<(), std::io::Error> {
+                    buf.$method(self.0)
                 }
             }
         )*
@@ -282,65 +318,29 @@ impl Reader<SocketAddr> for SocketAddr {
     }
 }
 
-impl Reader<varu32> for varu32 {
-    fn read(buf: &mut ByteReader) -> Result<varu32, std::io::Error> {
-        Ok(varu32(buf.read_var_u32()?))
-    }
-}
+// Tuple newtypes: each wire method returns the inner primitive, wrapped via `From`.
+impl_reader!(
+    newtype varu32,
+    read_var_u32,
+    vari32,
+    read_var_i32,
+    varu64,
+    read_var_u64,
+    vari64,
+    read_var_i64,
+    u24,
+    read_u24,
+    i24,
+    read_i24
+);
 
-impl Reader<vari32> for vari32 {
-    fn read(buf: &mut ByteReader) -> Result<vari32, std::io::Error> {
-        Ok(vari32(buf.read_var_i32()?))
-    }
-}
+// NOTE: `LE<u24>`/`LE<i24>` readers keep the historical big-endian wire
+// methods (`read_u24`/`read_i24`), exactly matching the hand-written impls they
+// replace; the writers below use the LE methods. Switching the readers to
+// `read_u24_le`/`read_i24_le` would fix the asymmetry but alter wire behavior.
+impl_reader!(newtype_le LE<u24>, read_u24, LE<i24>, read_i24);
 
-impl Reader<varu64> for varu64 {
-    fn read(buf: &mut ByteReader) -> Result<varu64, std::io::Error> {
-        Ok(varu64(buf.read_var_u64()?))
-    }
-}
-
-impl Reader<vari64> for vari64 {
-    fn read(buf: &mut ByteReader) -> Result<vari64, std::io::Error> {
-        Ok(vari64(buf.read_var_i64()?))
-    }
-}
-
-impl Reader<LE<u24>> for LE<u24> {
-    fn read(buf: &mut ByteReader) -> Result<LE<u24>, std::io::Error> {
-        Ok(LE(buf.read_u24()?.into()))
-    }
-}
-
-impl Reader<BE<u24>> for BE<u24> {
-    fn read(buf: &mut ByteReader) -> Result<BE<u24>, std::io::Error> {
-        Ok(BE(buf.read_u24()?.into()))
-    }
-}
-
-impl Reader<LE<i24>> for LE<i24> {
-    fn read(buf: &mut ByteReader) -> Result<LE<i24>, std::io::Error> {
-        Ok(LE(buf.read_i24()?.into()))
-    }
-}
-
-impl Reader<BE<i24>> for BE<i24> {
-    fn read(buf: &mut ByteReader) -> Result<BE<i24>, std::io::Error> {
-        Ok(BE(buf.read_i24()?.into()))
-    }
-}
-
-impl Reader<u24> for u24 {
-    fn read(buf: &mut ByteReader) -> Result<u24, std::io::Error> {
-        Ok(u24(buf.read_u24()?))
-    }
-}
-
-impl Reader<i24> for i24 {
-    fn read(buf: &mut ByteReader) -> Result<i24, std::io::Error> {
-        Ok(i24(buf.read_i24()?))
-    }
-}
+impl_reader!(newtype_be BE<u24>, read_u24, BE<i24>, read_i24);
 
 /// Allows you to write to a `ByteWriter` without needing to know the type.
 ///
@@ -432,7 +432,11 @@ impl_writer!(
     LE<f32>,
     write_f32_le,
     LE<f64>,
-    write_f64_le
+    write_f64_le,
+    LE<u24>,
+    write_u24_le,
+    LE<i24>,
+    write_i24_le
 );
 
 // big endian explicit implementations on primitive types.
@@ -456,7 +460,22 @@ impl_writer!(
     BE<f32>,
     write_f32,
     BE<f64>,
-    write_f64
+    write_f64,
+    BE<u24>,
+    write_u24,
+    BE<i24>,
+    write_i24
+);
+// varint newtypes: the wire method takes the inner primitive (`self.0`).
+impl_writer!(
+    newtype varu32,
+    write_var_u32,
+    vari32,
+    write_var_i32,
+    varu64,
+    write_var_u64,
+    vari64,
+    write_var_i64
 );
 impl Writer for String {
     fn write(&self, buf: &mut ByteWriter) -> Result<(), std::io::Error> {
@@ -527,55 +546,6 @@ impl Writer for SocketAddr {
     }
 }
 
-impl Writer for LE<u24> {
-    fn write(&self, buf: &mut ByteWriter) -> Result<(), std::io::Error> {
-        buf.write_u24_le(self.0)
-    }
-}
-
-impl Writer for BE<u24> {
-    fn write(&self, buf: &mut ByteWriter) -> Result<(), std::io::Error> {
-        buf.write_u24(self.0)
-    }
-}
-
-impl Writer for LE<i24> {
-    fn write(&self, buf: &mut ByteWriter) -> Result<(), std::io::Error> {
-        buf.write_i24_le(self.0)
-    }
-}
-
-impl Writer for BE<i24> {
-    fn write(&self, buf: &mut ByteWriter) -> Result<(), std::io::Error> {
-        buf.write_i24(self.0)
-    }
-}
-
-impl Writer for varu32 {
-    fn write(&self, buf: &mut ByteWriter) -> Result<(), std::io::Error> {
-        buf.write_var_u32(self.0)
-    }
-}
-
-impl Writer for varu64 {
-    fn write(&self, buf: &mut ByteWriter) -> Result<(), std::io::Error> {
-        buf.write_var_u64(self.0)
-    }
-}
-
-impl Writer for vari32 {
-    fn write(&self, buf: &mut ByteWriter) -> Result<(), std::io::Error> {
-        buf.write_var_i32(self.0)
-    }
-}
-
-impl Writer for vari64 {
-    fn write(&self, buf: &mut ByteWriter) -> Result<(), std::io::Error> {
-        buf.write_var_i64(self.0)
-    }
-}
-
-///
 /// __**This trait exists only for backwards compatibility.**__
 ///
 /// If you wish to read and write from a `ByteReader` or `ByteWriter`,

@@ -12,6 +12,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use sc_binary::interfaces::Writer;
+use sc_error::{ScError, ScSite, capture_site};
 use sc_log::t_log;
 
 /// How many seconds a reliable datagram must remain unacknowledged before it is
@@ -22,49 +23,122 @@ const RESEND_THRESHOLD_SECS: u64 = 2;
 const MAX_RESENDS_PER_TICK: usize = 32;
 const MAX_NACK_RESENDS_PER_PACKET: usize = 64;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// Send-path failure.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, ScError)]
 pub enum SendQueueError {
     /// The packet is too large to be sent.
-    PacketTooLarge,
+    #[sc_error(code = "raknet.send.packet_too_large")]
+    PacketTooLarge { detail: String, site: ScSite },
     /// Parsing Error
-    ParseError,
+    #[sc_error(code = "raknet.send.parse_error")]
+    ParseError { detail: String, site: ScSite },
     /// Fragmentation error
-    FragmentError(FragmentQueueError),
+    #[sc_error(code = "raknet.send.fragment_error")]
+    FragmentError {
+        source: FragmentQueueError,
+        detail: String,
+        site: ScSite,
+    },
     /// Send queue error
-    SendError,
+    #[sc_error(code = "raknet.send.send_error")]
+    SendError { detail: String, site: ScSite },
     /// Unacknowledged reliable data reached its admission bound.
-    ///
-    /// Terminal for the connection: continuing would silently drop reliable
-    /// datagrams the peer still expects, so the caller must close instead.
-    RecoveryQueueFull(String),
+    #[sc_error(code = "raknet.send.recovery_full")]
+    RecoveryQueueFull {
+        reason: String,
+        detail: String,
+        site: ScSite,
+    },
 }
 
 impl SendQueueError {
+    /// Build a packet-too-large error, capturing the call site.
+    #[track_caller]
+    pub fn packet_too_large(detail: impl Into<String>) -> Self {
+        Self::PacketTooLarge {
+            detail: detail.into(),
+            site: capture_site(),
+        }
+    }
+
+    /// Build a parse error, capturing the call site.
+    #[track_caller]
+    pub fn parse_error(detail: impl Into<String>) -> Self {
+        Self::ParseError {
+            detail: detail.into(),
+            site: capture_site(),
+        }
+    }
+
+    /// Build a fragmentation error, capturing the call site.
+    #[track_caller]
+    pub fn fragment_error(source: FragmentQueueError) -> Self {
+        let detail = format!("Fragment error: {}", source.detail());
+        Self::FragmentError {
+            source,
+            detail,
+            site: capture_site(),
+        }
+    }
+
+    /// Build a send error, capturing the call site.
+    #[track_caller]
+    pub fn send_error(detail: impl Into<String>) -> Self {
+        Self::SendError {
+            detail: detail.into(),
+            site: capture_site(),
+        }
+    }
+
+    /// Build a recovery-queue-full error, capturing the call site.
+    #[track_caller]
+    pub fn recovery_full(reason: impl Into<String>) -> Self {
+        let reason = reason.into();
+        let detail = reason.clone();
+        Self::RecoveryQueueFull {
+            reason,
+            detail,
+            site: capture_site(),
+        }
+    }
+
     /// Whether the connection can no longer deliver a consistent stream.
     pub fn is_terminal(&self) -> bool {
-        matches!(self, SendQueueError::RecoveryQueueFull(_))
+        matches!(self, SendQueueError::RecoveryQueueFull { .. })
     }
 }
 
 impl std::fmt::Display for SendQueueError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                SendQueueError::PacketTooLarge => "Packet too large".to_string(),
-                SendQueueError::ParseError => "Parse error".to_string(),
-                SendQueueError::FragmentError(e) => format!("Fragment error: {}", e),
-                SendQueueError::SendError => "Send error".to_string(),
-                SendQueueError::RecoveryQueueFull(reason) => {
-                    format!("Recovery queue full: {reason}")
-                }
+        match self {
+            Self::PacketTooLarge { detail, site } => {
+                write!(f, "[raknet.send.packet_too_large] {detail} (at {site})")
             }
-        )
+            Self::ParseError { detail, site } => {
+                write!(f, "[raknet.send.parse_error] {detail} (at {site})")
+            }
+            Self::FragmentError { detail, site, .. } => {
+                write!(f, "[raknet.send.fragment_error] {detail} (at {site})")
+            }
+            Self::SendError { detail, site } => {
+                write!(f, "[raknet.send.send_error] {detail} (at {site})")
+            }
+            Self::RecoveryQueueFull { detail, site, .. } => {
+                write!(f, "[raknet.send.recovery_full] {detail} (at {site})")
+            }
+        }
     }
 }
 
-impl std::error::Error for SendQueueError {}
+impl std::error::Error for SendQueueError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::FragmentError { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
 
 /// This queue is used to prioritize packets being sent out
 /// Packets that are old, are either dropped or requested again.
@@ -194,8 +268,8 @@ impl SendQueue {
                 let mut frames_to_send = match self.fragment_queue.take(frag_id) {
                     Ok((_, frames)) => frames,
                     Err(_) => {
-                        return Err(SendQueueError::FragmentError(
-                            FragmentQueueError::FragmentInvalid,
+                        return Err(SendQueueError::fragment_error(
+                            FragmentQueueError::fragment_invalid(),
                         ))
                     }
                 };
@@ -242,7 +316,7 @@ impl SendQueue {
 
                     self.recovery
                         .insert_id(pk.sequence, pk.clone())
-                        .map_err(|full| SendQueueError::RecoveryQueueFull(full.to_string()))?;
+                        .map_err(|full| SendQueueError::recovery_full(full.to_string()))?;
 
                     if let Ok(buf) = pk.write_to_bytes() {
                         trace!("Write is sending fragment stream: {:?}", reliability);
@@ -253,7 +327,7 @@ impl SendQueue {
                 Ok(())
             } else {
                 // we couldn't send this frame!
-                Err(SendQueueError::FragmentError(fragmented.unwrap_err()))
+                Err(SendQueueError::fragment_error(fragmented.unwrap_err()))
             }
         } else {
             // we're not gonna send this frame out yet!
@@ -314,14 +388,14 @@ impl SendQueue {
         // Datagram-level recovery is UNCONDITIONAL (see fragment path note).
         self.recovery
             .insert_id(pk.sequence, pk.clone())
-            .map_err(|full| SendQueueError::RecoveryQueueFull(full.to_string()))?;
+            .map_err(|full| SendQueueError::recovery_full(full.to_string()))?;
 
         if let Ok(buf) = pk.write_to_bytes() {
             trace!("[!] Write sent the packet.. {:?}", buf.as_slice());
             self.send_stream(buf.as_slice())?;
         } else {
             trace!("SendQ: Failed to send frame: {:?}", pk);
-            return Err(SendQueueError::ParseError);
+            return Err(SendQueueError::parse_error("Parse error"));
         }
         Ok(())
     }
@@ -341,7 +415,7 @@ impl SendQueue {
                 to_address_token(self.address),
                 e
             );
-            return Err(SendQueueError::SendError);
+            return Err(SendQueueError::send_error("Send error"));
         }
         Ok(())
     }
@@ -364,7 +438,7 @@ impl SendQueue {
             }
             Ok(())
         } else {
-            Err(SendQueueError::ParseError)
+            Err(SendQueueError::parse_error("Parse error"))
         }
     }
 

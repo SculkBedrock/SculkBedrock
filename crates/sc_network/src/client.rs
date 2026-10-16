@@ -20,7 +20,7 @@ impl MinecraftClientNetwork for MinecraftClient {
             .world
             .get_component::<EntityAttributes>(&self.entity_id)
             .map(|attributes| (*attributes).clone())
-            .ok_or(PlayerConnectionError::RecvError(RecvError::Closed))?;
+            .ok_or_else(|| PlayerConnectionError::recv(RecvError::closed("connection closed")))?;
         // Debug: log the attributes being sent (min/max/current/default).
         for (name, attr) in attributes.iter() {
             let a = attr.read();
@@ -37,11 +37,11 @@ impl MinecraftClientNetwork for MinecraftClient {
         let entity_id = *self
             .world
             .get_component::<MinecraftEntityId>(&self.entity_id)
-            .ok_or(PlayerConnectionError::RecvError(RecvError::Closed))?;
+            .ok_or_else(|| PlayerConnectionError::recv(RecvError::closed("connection closed")))?;
         let connection = self
             .world
             .get_component::<PlayerConnection>(&self.entity_id)
-            .ok_or(PlayerConnectionError::RecvError(RecvError::Closed))?;
+            .ok_or_else(|| PlayerConnectionError::recv(RecvError::closed("connection closed")))?;
         connection
             .send_packet(
                 UpdateAttributes {
@@ -62,7 +62,7 @@ impl MinecraftClientNetwork for MinecraftClient {
         let connection = self
             .world
             .get_component::<PlayerConnection>(&self.entity_id)
-            .ok_or(PlayerConnectionError::RecvError(RecvError::Closed))?;
+            .ok_or_else(|| PlayerConnectionError::recv(RecvError::closed("connection closed")))?;
         connection.disconnect(reason, hide_disconnect_screen).await
     }
 }

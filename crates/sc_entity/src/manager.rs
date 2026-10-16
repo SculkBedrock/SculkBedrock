@@ -69,4 +69,8 @@ impl MinecraftEntitiesManager {
     pub fn len(&self) -> usize {
         self.entities.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.entities.is_empty()
+    }
 }
