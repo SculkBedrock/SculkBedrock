@@ -1565,9 +1565,9 @@ mod tests {
             }
         }"#;
         let raws: Vec<(&str, &str)> = vec![
-            ("definitions/blocks/minecraft/air.block.json", air),
+            ("blocks/minecraft/air.json", air),
             (
-                "definitions/blocks/minecraft/crafting_table.block.json",
+                "blocks/minecraft/crafting_table.json",
                 table,
             ),
         ];
@@ -1576,7 +1576,7 @@ mod tests {
         refs.sort_by(|a, b| a.0.cmp(b.0));
         let files = refs
             .iter()
-            .map(|(p, b)| parse_block_file("test", p, b, &budgets).expect("夹具应合法"))
+            .map(|(p, b)| parse_block_file("test", p, b).expect("夹具应合法"))
             .collect();
         let bundle = BlockJsonBundle {
             schema_version: 1,
@@ -1716,7 +1716,7 @@ mod tests {
         assert!(!MiningProfile::fallback().declared);
     }
 
-    /// End to end: break durations really come from `.block.json` dense columns (not hardcoded tables).
+    /// End to end: break durations really come from `.json` dense columns (not hardcoded tables).
     #[test]
     fn mining_profile_reads_json_snapshot_columns() {
         use sc_block::block_json::{compile_bundle, BlockJsonRegistry};
@@ -1761,17 +1761,17 @@ mod tests {
             }
         }"#;
         let raws: Vec<(&str, &str)> = vec![
-            ("definitions/blocks/minecraft/air.block.json", air),
-            ("definitions/blocks/minecraft/bedrock.block.json", bedrock),
-            ("definitions/blocks/minecraft/stone.block.json", stone),
-            ("definitions/blocks/test/undeclared.block.json", undeclared),
+            ("blocks/minecraft/air.json", air),
+            ("blocks/minecraft/bedrock.json", bedrock),
+            ("blocks/minecraft/stone.json", stone),
+            ("blocks/test/undeclared.json", undeclared),
         ];
         let budgets = BlockBundleBudgets::default();
         let mut refs: Vec<(&str, &[u8])> = raws.iter().map(|(p, b)| (*p, b.as_bytes())).collect();
         refs.sort_by(|a, b| a.0.cmp(b.0));
         let files = refs
             .iter()
-            .map(|(p, b)| parse_block_file("test", p, b, &budgets).expect("夹具应合法"))
+            .map(|(p, b)| parse_block_file("test", p, b).expect("夹具应合法"))
             .collect();
         let bundle = BlockJsonBundle {
             schema_version: 1,
@@ -1859,15 +1859,15 @@ mod tests {
             }
         }"#;
         let raws: Vec<(&str, &str)> = vec![
-            ("definitions/blocks/minecraft/air.block.json", air),
-            ("definitions/blocks/example/ore.block.json", ore),
+            ("blocks/minecraft/air.json", air),
+            ("blocks/example/ore.json", ore),
         ];
         let budgets = BlockBundleBudgets::default();
         let mut refs: Vec<(&str, &[u8])> = raws.iter().map(|(p, b)| (*p, b.as_bytes())).collect();
         refs.sort_by(|a, b| a.0.cmp(b.0));
         let files = refs
             .iter()
-            .map(|(p, b)| parse_block_file("test", p, b, &budgets).unwrap())
+            .map(|(p, b)| parse_block_file("test", p, b).unwrap())
             .collect();
         let bundle = BlockJsonBundle {
             schema_version: 1,

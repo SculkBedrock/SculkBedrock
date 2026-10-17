@@ -1,3 +1,11 @@
+/// Registered component key: implemented automatically by
+/// [`components_export!`] for every listed component, so the list stays the
+/// single source of truth (no per-type derive or hand-written `impl`).
+pub trait ComponentKey {
+    /// Registered component key (e.g. `"minecraft:food"`).
+    const NAME: &'static str;
+}
+
 #[macro_export]
 macro_rules! components_export {
     ($struct_name:ident, $($name:ident = $alias:expr,)*) => {
@@ -10,6 +18,11 @@ macro_rules! components_export {
         pub enum $struct_name {
             Map(Map<String, Value>)
         }
+        $(
+            impl $crate::macros::ComponentKey for $name {
+                const NAME: &'static str = $alias;
+            }
+        )*
         impl std::fmt::Debug for $struct_name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 let mut f = f.debug_struct(stringify!($struct_name));
@@ -33,6 +46,14 @@ macro_rules! components_export {
             }
         }
         impl $struct_name {
+            /// Component key (alias) of every registered component, in declaration order.
+            pub const NAMES: &'static [&'static str] = &[$($alias),*];
+
+            /// Whether the key is a registered component (used by compilation routing).
+            pub fn is_known(key: &str) -> bool {
+                Self::NAMES.contains(&key)
+            }
+
             pub fn new_single<T: serde::Serialize + sc_ecs::component::Component>(component: T) -> Option<Self> {
                 let mut map = Map::new();
                 let alias = Self::get_alias(&T::name())?;

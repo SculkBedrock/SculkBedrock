@@ -10,7 +10,8 @@
 
 use std::collections::BTreeMap;
 
-use sc_packloader::block::{BlockBundleBudgets, BlockComponentSchema, BlockJsonError};
+use sc_packloader::macros::ComponentKey;
+use sc_packloader::block::{BlockBundleBudgets, BlockJsonError};
 
 /// Workstation slot role (server container addressing). `Extra` is
 /// reserved for 4+-slot processes (campfire); no shipped decl uses it yet.

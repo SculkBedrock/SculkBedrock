@@ -533,16 +533,16 @@ mod tests {
             }
         }"#;
         let raws: Vec<(&str, &str)> = vec![
-            ("definitions/blocks/minecraft/air.block.json", air),
-            ("definitions/blocks/example/ore.block.json", ore),
-            ("definitions/blocks/example/plain.block.json", plain),
+            ("blocks/minecraft/air.json", air),
+            ("blocks/example/ore.json", ore),
+            ("blocks/example/plain.json", plain),
         ];
         let budgets = BlockBundleBudgets::default();
         let mut refs: Vec<(&str, &[u8])> = raws.iter().map(|(p, b)| (*p, b.as_bytes())).collect();
         refs.sort_by(|a, b| a.0.cmp(b.0));
         let files = refs
             .iter()
-            .map(|(p, b)| parse_block_file("test", p, b, &budgets).unwrap())
+            .map(|(p, b)| parse_block_file("test", p, b).unwrap())
             .collect();
         let bundle = BlockJsonBundle {
             schema_version: 1,

@@ -5,9 +5,10 @@
 
 use super::*;
 use std::collections::{BTreeMap, HashMap};
-use sc_packloader::block::{
-    BlockBundleBudgets, BlockComponentSchema, BlockJsonError, Drops, Mining, COUNT_SUM_TOLERANCE,
-    MAX_DROP_COUNT_TOTAL, ONE_OF_TOTAL_TOLERANCE,
+use sc_packloader::macros::ComponentKey;
+use sc_packloader::block::{BlockBundleBudgets, BlockJsonError, Mining};
+use sc_packloader::loot_tables::{
+    Drops, COUNT_SUM_TOLERANCE, MAX_DROP_COUNT_TOTAL, ONE_OF_TOTAL_TOLERANCE,
 };
 
 // ---------------------------------------------------------------------------
@@ -222,7 +223,7 @@ pub fn compile_drops(
     budgets: &BlockBundleBudgets,
     item_exists: &dyn Fn(&str) -> bool,
 ) -> Result<Option<DropCompiled>, BlockJsonError> {
-    use sc_packloader::block::component::Drops as DropsSchema;
+    use sc_packloader::loot_tables::Drops as DropsSchema;
     let field = |name: &str| format!("$.minecraft:block.components.{name}（状态 {key:?}）");
     let Some(raw) = merged.get(DropsSchema::NAME) else {
         return Ok(None);

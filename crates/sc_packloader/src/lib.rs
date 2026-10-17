@@ -28,7 +28,9 @@ pub mod definitions;
 pub mod entity;
 pub mod ident;
 pub mod item;
+pub mod loot_tables;
 pub mod macros;
+
 pub mod pack;
 pub mod pack_loader;
 pub mod recipe_source;

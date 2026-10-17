@@ -64,7 +64,7 @@ fn main() {
              e.g. sc_data_extractor block_palette_729.nbt definitions/block_palette.nbt\n\
              \n\
              sc_data_extractor split-blocks <block_palette.nbt> <output dir> [--defaults defaults.json] [--hardness hardness.json]\n\
-             Split the legacy palette by identifier into definitions/blocks/<ns>/<path>.block.json\n\
+             Split the legacy palette by identifier into blocks/<ns>/<path>.json\n\
              (stock format_version + minecraft:block layout + sc:default_state/sc:protocol_runtime_ids).\n\
              Multi-state defaults must come from --defaults (missing entries report TODO, never guessed).\n\
              \n\
@@ -213,7 +213,7 @@ fn main() {
     eprintln!("done. Place the file at definitions/block_palette.nbt in the version pack");
 }
 
-/// `split-blocks` subcommand: legacy palette to one `.block.json` per block (vanilla structure).
+/// `split-blocks` subcommand: legacy palette to one `.json` per block (vanilla structure).
 ///
 /// Usage: `split-blocks <block_palette.nbt> <output dir> [--defaults defaults.json] [--hardness hardness.json]`.
 /// - Input palettes accept gzip or raw NBT (detected by magic);
@@ -229,8 +229,7 @@ fn main() {
 fn split_blocks(args: &[String]) {
     use std::collections::HashMap;
     use sc_packloader::block::{
-        parse_hardness_json, parse_legacy_palette_entries, split_legacy_palette,
-        BlockBundleBudgets, SplitError,
+        parse_hardness_json, parse_legacy_palette_entries, split_legacy_palette, SplitError,
     };
 
     if args.len() < 3 {
@@ -314,8 +313,7 @@ fn split_blocks(args: &[String]) {
         }
     };
 
-    let budgets = BlockBundleBudgets::default();
-    let files = match split_legacy_palette(&entries, &defaults, &hardness, &budgets) {
+    let files = match split_legacy_palette(&entries, &defaults, &hardness) {
         Ok(files) => files,
         Err(SplitError::MissingDefaults { ids, .. }) => {
             for id in ids.iter() {

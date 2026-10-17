@@ -813,11 +813,11 @@ mod tests {
         }"#;
         let raws: Vec<(&str, String)> = vec![
             (
-                "definitions/blocks/minecraft/air.block.json",
+                "blocks/minecraft/air.json",
                 air.to_string(),
             ),
             (
-                "definitions/blocks/minecraft/furnace.block.json",
+                "blocks/minecraft/furnace.json",
                 file(
                     "minecraft:furnace",
                     "minecraft:lit_furnace",
@@ -827,7 +827,7 @@ mod tests {
                 ),
             ),
             (
-                "definitions/blocks/minecraft/lit_furnace.block.json",
+                "blocks/minecraft/lit_furnace.json",
                 file("minecraft:lit_furnace", "minecraft:furnace", true, 200, 110),
             ),
         ];
@@ -836,7 +836,7 @@ mod tests {
         refs.sort_by(|a, b| a.0.cmp(b.0));
         let files = refs
             .iter()
-            .map(|(p, b)| parse_block_file("test", p, b, &budgets).expect("夹具应合法"))
+            .map(|(p, b)| parse_block_file("test", p, b).expect("夹具应合法"))
             .collect();
         let bundle = BlockJsonBundle {
             schema_version: 1,

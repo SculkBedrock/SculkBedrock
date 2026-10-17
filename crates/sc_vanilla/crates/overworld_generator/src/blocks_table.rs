@@ -411,11 +411,11 @@ mod tests {
         }"#;
         let raws = [
             (
-                "definitions/blocks/minecraft/air.block.json",
+                "blocks/minecraft/air.json",
                 air_json.as_bytes().to_vec(),
             ),
             (
-                "definitions/blocks/minecraft/stone.block.json",
+                "blocks/minecraft/stone.json",
                 stone_json.as_bytes().to_vec(),
             ),
         ];
@@ -423,7 +423,7 @@ mod tests {
         refs.sort_by(|a, b| a.0.cmp(b.0));
         let files = refs
             .iter()
-            .map(|(p, b)| parse_block_file("test", p, b, &budgets).unwrap())
+            .map(|(p, b)| parse_block_file("test", p, b).unwrap())
             .collect();
         let bundle = BlockJsonBundle {
             schema_version: 1,

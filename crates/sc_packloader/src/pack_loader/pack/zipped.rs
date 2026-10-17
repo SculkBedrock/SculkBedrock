@@ -1,4 +1,4 @@
-use crate::entity::MinecraftEntitySpawner;
+use crate::entity::{EntityComponents, MinecraftEntitySpawner};
 use crate::item::MinecraftItemSpawner;
 use crate::pack::manifest::{ResourcePackManifest, ResourcePackManifestJson};
 use crate::pack::ResourcePack;
@@ -404,6 +404,19 @@ impl ZippedResourcePack {
         };
         pack.for_each_json_file("entities", &mut parse_file);
         pack.for_each_json_file("entity", &mut parse_file);
+        // Attach parsed loot tables: an entity `minecraft:loot` path reference
+        // resolves against this behavior pack and becomes a parsed
+        // `sc:loot_tables` component next to the raw reference. Unresolvable
+        // references are left untouched (loading never fails on them).
+        for spawner in map.values_mut() {
+            let Some(EntityComponents::Map(component_map)) = spawner.components.as_mut() else {
+                continue;
+            };
+            crate::loot_tables::attach_entity_loot_tables(
+                component_map,
+                &mut |path: &str| pack.read_file(path),
+            );
+        }
         map
     }
 

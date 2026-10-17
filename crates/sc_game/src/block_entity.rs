@@ -263,15 +263,15 @@ mod tests {
             }
         }"#;
         let raws: Vec<(&str, &str)> = vec![
-            ("definitions/blocks/minecraft/air.block.json", air),
-            ("definitions/blocks/minecraft/furnace.block.json", furnace),
+            ("blocks/minecraft/air.json", air),
+            ("blocks/minecraft/furnace.json", furnace),
         ];
         let budgets = BlockBundleBudgets::default();
         let mut refs: Vec<(&str, &[u8])> = raws.iter().map(|(p, b)| (*p, b.as_bytes())).collect();
         refs.sort_by(|a, b| a.0.cmp(b.0));
         let files = refs
             .iter()
-            .map(|(p, b)| parse_block_file("test", p, b, &budgets).expect("夹具应合法"))
+            .map(|(p, b)| parse_block_file("test", p, b).expect("夹具应合法"))
             .collect();
         let bundle = BlockJsonBundle {
             schema_version: 1,

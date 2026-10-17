@@ -1154,7 +1154,7 @@ mod pipeline_tests {
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        let files = split_legacy_palette(&covered_entries, &defaults_map, &hardness_map, &budgets)
+        let files = split_legacy_palette(&covered_entries, &defaults_map, &hardness_map)
             .expect("full split must succeed");
         assert_eq!(files.len(), counts.len());
         let mut refs: Vec<(&str, &[u8])> = files
@@ -1164,7 +1164,7 @@ mod pipeline_tests {
         refs.sort_by(|a, b| a.0.cmp(b.0));
         let parsed = refs
             .iter()
-            .map(|(p, b)| parse_block_file("test-pack", p, b, &budgets).expect("split output must parse"))
+            .map(|(p, b)| parse_block_file("test-pack", p, b).expect("split output must parse"))
             .collect();
         let bundle = BlockJsonBundle {
             schema_version: 1,

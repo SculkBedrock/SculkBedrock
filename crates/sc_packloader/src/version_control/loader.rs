@@ -1,4 +1,4 @@
-use crate::block::{load_block_json_bundle, BlockBundleBudgets};
+use crate::block::load_block_json_bundle;
 use crate::definitions::attribute::EntityAttribute;
 use crate::pack_loader::pack::zipped::{PackSource, MAX_BINARY_ENTRY_BYTES, MAX_JSON_ENTRY_BYTES};
 use crate::pack_loader::zipped_loader::get_extension;
@@ -353,7 +353,11 @@ impl ZippedVersionPack {
         })
     }
 
-    fn get_behavior_packs(pack: &mut PackSource) -> Vec<PackSource> {
+    /// Open every nested behavior pack as its own source (directory packs
+    /// first, then zip packs in archive order; deterministic for a given
+    /// version pack). Public so external consumers (e.g. `sc_block` tests)
+    /// can feed the same sources to the block bundle loader.
+    pub fn get_behavior_packs(pack: &mut PackSource) -> Vec<PackSource> {
         // Directory wins on a file/dir name collision (active edit).
         let mut out = Vec::new();
         let mut dir_stems = std::collections::HashSet::new();
@@ -574,7 +578,7 @@ impl ZippedVersionPack {
 
     pub fn get_version(pack: &mut PackSource) -> Result<SCVersionPack, VersionPackLoaderError> {
         let manifest = Self::get_manifest(pack)?;
-        let behavior_packs = Self::get_behavior_packs(pack);
+        let mut behavior_packs = Self::get_behavior_packs(pack);
         let runtime_id = Self::get_runtime_id(pack)?;
         let biomes = Self::get_biomes(pack)?;
         let biome_ids = Self::get_biome_ids(pack);
@@ -594,10 +598,9 @@ impl ZippedVersionPack {
             None => (None, false),
             Some(decl) => {
                 let bundle =
-                    load_block_json_bundle(pack, decl, &pack_id, &BlockBundleBudgets::default())
-                        .map_err(|e| {
-                            VersionPackLoaderError::deserialization_error(format!("block_data: {e}"))
-                        })?;
+                    load_block_json_bundle(&mut behavior_packs, decl, &pack_id).map_err(|e| {
+                        VersionPackLoaderError::deserialization_error(format!("block_data: {e}"))
+                    })?;
                 (bundle, true)
             }
         };
@@ -738,10 +741,23 @@ mod tests {
         if declare {
             manifest["block_data"] = serde_json::json!({
                 "schema_version": 1,
-                "directory": "definitions/blocks",
+                "directory": "blocks",
                 "network_id_mode": "hashed"
             });
         }
+        // Block files live inside a nested behavior pack (`blocks/**/*.json`).
+        let inner_entries: Vec<(String, Vec<u8>)> = block_files
+            .iter()
+            .map(|(n, c)| (n.to_string(), c.as_bytes().to_vec()))
+            .collect();
+        let behavior_pack_bytes = {
+            let mut inner = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            for (name, bytes) in inner_entries {
+                inner.start_file(name, options).unwrap();
+                inner.write_all(&bytes).unwrap();
+            }
+            inner.finish().unwrap().into_inner()
+        };
         let entries: Vec<(String, Vec<u8>)> = std::iter::once((
             "manifest.json".to_string(),
             serde_json::to_vec(&manifest).unwrap(),
@@ -754,11 +770,10 @@ mod tests {
                 b"\x00".to_vec(),
             ),
         ])
-        .chain(
-            block_files
-                .iter()
-                .map(|(n, c)| (n.to_string(), c.as_bytes().to_vec())),
-        )
+        .chain(std::iter::once((
+            "behavior_packs/inner.zip".to_string(),
+            behavior_pack_bytes,
+        )))
         .collect();
         for (name, bytes) in entries {
             writer.start_file(name, options).unwrap();
@@ -787,13 +802,10 @@ mod tests {
         assert!(pack.take_block_json_bundle().is_none());
     }
 
-    /// Declared packs load the bundle normally; zero or broken files fail the whole pack (no fallback).
+    /// Declared packs load the bundle from nested behavior packs; zero or broken files fail the whole pack (no fallback).
     #[test]
     fn declared_pack_loads_bundle_and_fails_loud_without_fallback() {
-        let bytes = make_mini_pack(
-            &[("definitions/blocks/minecraft/air.block.json", MINI_AIR)],
-            true,
-        );
+        let bytes = make_mini_pack(&[("blocks/minecraft/air.json", MINI_AIR)], true);
         let mut source = PackSource::from_bytes(bytes).expect("pack source 打开失败");
         let mut pack = ZippedVersionPack::get_version(&mut source).expect("声明包应可加载");
         assert!(pack.has_declared_block_json());
@@ -808,13 +820,10 @@ mod tests {
         ZippedVersionPack::get_version(&mut source).expect_err("零文件必须整包失败");
 
         // Declared but broken file: fail the whole pack (path-attributed error, no legacy fallback).
-        let bytes = make_mini_pack(
-            &[("definitions/blocks/minecraft/air.block.json", "{oops")],
-            true,
-        );
+        let bytes = make_mini_pack(&[("blocks/minecraft/air.json", "{oops")], true);
         let mut source = PackSource::from_bytes(bytes).expect("pack source 打开失败");
         let e = ZippedVersionPack::get_version(&mut source).expect_err("坏文件必须整包失败");
-        assert!(e.to_string().contains("air.block.json"), "实际：{e}");
+        assert!(e.to_string().contains("air.json"), "实际：{e}");
     }
 
     /// Real version-pack integration test: definitions/block_tags.json must load once injected.

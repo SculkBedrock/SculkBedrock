@@ -1,4 +1,4 @@
-//! Semantic compilation of `.block.json` files into an immutable registry snapshot (in `sc_block`).
+//! Semantic compilation of `.json` files into an immutable registry snapshot (in `sc_block`).
 //!
 //! Responsibility split: the `sc_packloader::block` domain handles discovery, quota-capped reads, and
 //! schema parsing (component struct registry in `block::component`, mirroring `item::component`; file body is the
@@ -150,7 +150,7 @@ mod tests {
             }
         }"#;
         (
-            "definitions/blocks/minecraft/air.block.json".to_string(),
+            "blocks/minecraft/air.json".to_string(),
             json.as_bytes().to_vec(),
         )
     }
@@ -180,13 +180,12 @@ mod tests {
             }
         }"#;
         (
-            "definitions/blocks/minecraft/oak_log.block.json".to_string(),
+            "blocks/minecraft/oak_log.json".to_string(),
             json.as_bytes().to_vec(),
         )
     }
 
     fn bundle_of(raws: &[(String, Vec<u8>)], mode: &str) -> BlockJsonBundle {
-        let budgets = BlockBundleBudgets::default();
         let mut refs: Vec<(&str, &[u8])> = raws
             .iter()
             .map(|(p, b)| (p.as_str(), b.as_slice()))
@@ -195,7 +194,7 @@ mod tests {
         let fingerprint = fingerprint_bundle(&refs, mode);
         let mut files = Vec::with_capacity(refs.len());
         for (path, bytes) in refs {
-            files.push(parse_block_file(PACK, path, bytes, &budgets).expect("夹具应合法"));
+            files.push(parse_block_file(PACK, path, bytes).expect("夹具应合法"));
         }
         BlockJsonBundle {
             schema_version: 1,
@@ -262,7 +261,7 @@ mod tests {
             }
         }"#;
         let mixed = (
-            "definitions/blocks/test/mixed.block.json".to_string(),
+            "blocks/test/mixed.json".to_string(),
             json.as_bytes().to_vec(),
         );
         let bundle = bundle_of(&[raw_air(), mixed], "hashed");
@@ -333,7 +332,7 @@ mod tests {
             }
         }"#;
         let mixed = (
-            "definitions/blocks/test/mixed.block.json".to_string(),
+            "blocks/test/mixed.json".to_string(),
             json.as_bytes().to_vec(),
         );
         let bundle = bundle_of(&[raw_air(), mixed], "hashed");
@@ -463,7 +462,7 @@ mod tests {
             }
         }"#;
         let raw = (
-            "definitions/blocks/minecraft/air.block.json".to_string(),
+            "blocks/minecraft/air.json".to_string(),
             json.as_bytes().to_vec(),
         );
         let snap = compile_bundle(
@@ -500,7 +499,7 @@ mod tests {
             );
             let air = raw_air();
             let stone = (
-                "definitions/blocks/minecraft/stone.block.json".to_string(),
+                "blocks/minecraft/stone.json".to_string(),
                 json.as_bytes().to_vec(),
             );
             bundle_of(&[air, stone], "hashed")
@@ -612,7 +611,7 @@ mod tests {
             }
         }"#;
         let raw = (
-            "definitions/blocks/minecraft/oak_log.block.json".to_string(),
+            "blocks/minecraft/oak_log.json".to_string(),
             json.as_bytes().to_vec(),
         );
         let (snap, _) = compile_bundle(
@@ -647,7 +646,8 @@ mod tests {
         assert_eq!(dy.entries.len(), 1);
     }
 
-    /// Conflicting components are rejected per final state (single and cross layer).
+    /// Conflicting components are rejected per final state (compile time, on the merged map;
+    /// the packloader load path is a direct load and does not pre-reject).
     #[test]
     fn conflicting_components_are_rejected_per_state() {
         // Single layer: mining plus unbreakable coexist.
@@ -664,15 +664,20 @@ mod tests {
                 "sc:protocol_runtime_ids": [7]
             }
         }"#;
-        // Single layers are rejected at parse time (unbreakable+mining).
-        let e = sc_packloader::block::parse_block_file(
+        // Single layers are rejected at compile time (unbreakable+mining on the merged map).
+        let raw = (
+            "blocks/minecraft/stone.json".to_string(),
+            bad.as_bytes().to_vec(),
+        );
+        let e = compile_bundle(
+            &bundle_of(&[raw_air(), raw], "hashed"),
             PACK,
-            "definitions/blocks/minecraft/stone.block.json",
-            bad.as_bytes(),
             &BlockBundleBudgets::default(),
+            NO_PREEXISTING,
+            ALLOW_ALL_ITEMS,
         )
         .expect_err("单层互斥必须拒绝");
-        assert!(e.to_string().contains("不能同时声明"), "实际：{e}");
+        assert!(e.to_string().contains("互斥"), "实际：{e}");
 
         // Cross layer: shared unbreakable plus permutation mining (coexist after merge).
         let cross = r#"{
@@ -689,7 +694,7 @@ mod tests {
             }
         }"#;
         let raw = (
-            "definitions/blocks/minecraft/oak_log.block.json".to_string(),
+            "blocks/minecraft/oak_log.json".to_string(),
             cross.as_bytes().to_vec(),
         );
         let e = compile_bundle(
@@ -702,7 +707,7 @@ mod tests {
         .expect_err("跨层互斥必须整包拒绝");
         assert!(e.to_string().contains("互斥"), "实际：{e}");
 
-        // loot plus enabled drops are rejected together.
+        // loot plus enabled drops are rejected together (compile time).
         let loot_bad = r#"{
             "format_version": "1.10.0",
             "minecraft:block": {
@@ -715,11 +720,16 @@ mod tests {
                 "sc:protocol_runtime_ids": [7]
             }
         }"#;
-        let e = sc_packloader::block::parse_block_file(
+        let raw = (
+            "blocks/minecraft/stone.json".to_string(),
+            loot_bad.as_bytes().to_vec(),
+        );
+        let e = compile_bundle(
+            &bundle_of(&[raw_air(), raw], "hashed"),
             PACK,
-            "definitions/blocks/minecraft/stone.block.json",
-            loot_bad.as_bytes(),
             &BlockBundleBudgets::default(),
+            NO_PREEXISTING,
+            ALLOW_ALL_ITEMS,
         )
         .expect_err("loot+启用的 drops 必须拒绝");
         assert!(e.to_string().contains("掉落来源不明"), "实际：{e}");
@@ -741,7 +751,7 @@ mod tests {
             }
         }"#;
         let raw = (
-            "definitions/blocks/minecraft/stone.block.json".to_string(),
+            "blocks/minecraft/stone.json".to_string(),
             unknown_item.as_bytes().to_vec(),
         );
         let e = compile_bundle(
@@ -757,7 +767,7 @@ mod tests {
             "实际：{e}"
         );
 
-        // Budget saturated: too many tools.
+        // Budget saturated: too many tools (compile-time check).
         let mut tight = BlockBundleBudgets::default();
         tight.max_mining_tools_per_state = 0;
         let many_tools = r#"{
@@ -772,15 +782,16 @@ mod tests {
             }
         }"#;
         let raw = (
-            "definitions/blocks/minecraft/stone.block.json".to_string(),
+            "blocks/minecraft/stone.json".to_string(),
             many_tools.as_bytes().to_vec(),
         );
-        // Rejected at parse time for budget (tool count 1 > 0).
-        let e = sc_packloader::block::parse_block_file(
+        // Rejected at compile time for budget (tool count 1 > 0).
+        let e = compile_bundle(
+            &bundle_of(&[raw_air(), raw], "hashed"),
             PACK,
-            "definitions/blocks/minecraft/stone.block.json",
-            raw.1.as_slice(),
             &tight,
+            NO_PREEXISTING,
+            ALLOW_ALL_ITEMS,
         )
         .expect_err("预算超限必须拒绝");
         assert!(e.to_string().contains("超出预算"), "实际：{e}");
@@ -820,21 +831,19 @@ mod tests {
             }
         }"#;
         let bad_raw = (
-            "definitions/blocks/minecraft/stone.block.json".to_string(),
+            "blocks/minecraft/stone.json".to_string(),
             bad_json.as_bytes().to_vec(),
         );
-        // Rejected at parse time (duplicate item), so no bundle is even built; simulates failed-compile-no-publish here.
-        let parse_err = sc_packloader::block::parse_block_file(
+        // Rejected at compile time (duplicate item), so no snapshot is published.
+        let e = compile_bundle(
+            &bundle_of(&[raw_air(), bad_raw], "hashed"),
             PACK,
-            &bad_raw.0,
-            &bad_raw.1,
             &BlockBundleBudgets::default(),
+            NO_PREEXISTING,
+            ALLOW_ALL_ITEMS,
         )
-        .expect_err("重复工具必须解析失败");
-        assert!(
-            parse_err.to_string().contains("重复出现"),
-            "实际：{parse_err}"
-        );
+        .expect_err("重复工具必须编译失败");
+        assert!(e.to_string().contains("重复出现"), "实际：{e}");
         // Registry still holds the old snapshot (never partially modified).
         let after = registry.get().expect("旧快照仍可读");
         assert_eq!(after.type_count(), 2);
@@ -851,14 +860,14 @@ mod tests {
         let refs_a: Vec<(&str, &[u8])> = vec![
             (air.0.as_str(), air.1.as_slice()),
             (
-                "definitions/blocks/minecraft/stone.block.json",
+                "blocks/minecraft/stone.json",
                 a.as_bytes(),
             ),
         ];
         let refs_b: Vec<(&str, &[u8])> = vec![
             (air.0.as_str(), air.1.as_slice()),
             (
-                "definitions/blocks/minecraft/stone.block.json",
+                "blocks/minecraft/stone.json",
                 b.as_bytes(),
             ),
         ];
@@ -868,19 +877,19 @@ mod tests {
         );
     }
 
-    /// Example files load (`examples/blocks/example_compressed_ore.block.json`).
+    /// Example files load (`examples/blocks/example_compressed_ore.json`).
     #[test]
     fn example_compressed_ore_loads() {
         let bytes = std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../examples/blocks/example_compressed_ore.block.json"
+            "/../../examples/blocks/example_compressed_ore.json"
         ))
         .expect("示例文件缺失");
         // JSON syntax valid (all examples syntax-checked).
         let _: serde_json::Value = serde_json::from_slice(&bytes).expect("示例 JSON 语法非法");
         let air = raw_air();
         let ore = (
-            "definitions/blocks/example/compressed_ore.block.json".to_string(),
+            "blocks/example/compressed_ore.json".to_string(),
             bytes,
         );
         // Note: the example identifier is example:compressed_ore and the file path
@@ -915,10 +924,11 @@ mod tests {
         assert_eq!(d.entries.len(), 2);
     }
 
-    /// Any `ur:*` key is rejected (the legacy namespace has fully migrated, no compat).
+    /// `ur:*` keys load raw (direct load; namespace semantics belong to consumers,
+    /// unknown components flow into the plugin bucket at compile time).
     #[test]
-    fn any_ur_key_is_rejected_without_compat() {
-        // Component-level ur:* rejected.
+    fn ur_keys_load_raw_without_interpretation() {
+        // Component-level ur:* loads raw.
         let legacy = r#"{
             "format_version": "1.10.0",
             "minecraft:block": {
@@ -928,48 +938,36 @@ mod tests {
                 "sc:protocol_runtime_ids": [0]
             }
         }"#;
-        let e = sc_packloader::block::parse_block_file(
+        let parsed = sc_packloader::block::parse_block_file(
             PACK,
-            "definitions/blocks/minecraft/air.block.json",
+            "blocks/minecraft/air.json",
             legacy.as_bytes(),
-            &BlockBundleBudgets::default(),
         )
-        .expect_err("ur:* 组件必须拒绝，不做兼容");
-        assert!(e.to_string().contains("ur:replaceable"), "实际：{e}");
-        // Top-level ur:* rejected.
+        .expect("直接加载不拒绝 ur:*");
+        assert_eq!(
+            parsed.base.get("ur:replaceable"),
+            Some(&serde_json::json!(true))
+        );
+        // Top-level ur:* is ignored by envelope extraction (data still loads).
         let top_legacy = r#"{
             "format_version": "1.10.0",
             "minecraft:block": {
                 "description": {"identifier": "minecraft:air", "states": {}},
                 "components": {},
                 "ur:default_state": {},
-                "sc:protocol_runtime_ids": [0]
-            }
-        }"#;
-        sc_packloader::block::parse_block_file(
-            PACK,
-            "definitions/blocks/minecraft/air.block.json",
-            top_legacy.as_bytes(),
-            &BlockBundleBudgets::default(),
-        )
-        .expect_err("顶层 ur:* 必须拒绝");
-        // Proposed names rejected likewise.
-        let proposal = r#"{
-            "format_version": "1.10.0",
-            "minecraft:block": {
-                "description": {"identifier": "minecraft:air", "states": {}},
-                "components": {"ur:mining": {}},
                 "sc:default_state": {},
                 "sc:protocol_runtime_ids": [0]
             }
         }"#;
-        sc_packloader::block::parse_block_file(
+        let parsed = sc_packloader::block::parse_block_file(
             PACK,
-            "definitions/blocks/minecraft/air.block.json",
-            proposal.as_bytes(),
-            &BlockBundleBudgets::default(),
+            "blocks/minecraft/air.json",
+            top_legacy.as_bytes(),
         )
-        .expect_err("ur:mining 必须拒绝");
+        .expect("顶层未知字段直接加载");
+        assert_eq!(parsed.identifier, "minecraft:air");
+        // Unregistered components stay out of the known set (compile routes them to plugins).
+        assert!(!sc_packloader::block::BlockComponents::is_known("ur:replaceable"));
     }
 
     /// Overlapping permutation overlays fail the whole pack (array-order independent).
@@ -991,16 +989,15 @@ mod tests {
             }
         }"#;
         // air has no properties, so conditions referencing undeclared properties are rejected at parse time.
-        let parsed = parse_block_file(
+        let e = parse_block_file(
             PACK,
-            "definitions/blocks/minecraft/air.block.json",
+            "blocks/minecraft/air.json",
             json.as_bytes(),
-            &BlockBundleBudgets::default(),
         )
         .expect_err("引用未声明属性必须拒绝");
         assert!(
-            parsed.to_string().contains("未声明的属性"),
-            "实际：{parsed}"
+            e.to_string().contains("未声明的属性"),
+            "实际：{e}"
         );
 
         // True overlap: two conditions hit the same state and overlay the same component.
@@ -1023,7 +1020,7 @@ mod tests {
             }
         }"#;
         let raw = (
-            "definitions/blocks/minecraft/oak_log.block.json".to_string(),
+            "blocks/minecraft/oak_log.json".to_string(),
             json.as_bytes().to_vec(),
         );
         let e = compile_bundle(
@@ -1052,9 +1049,8 @@ mod tests {
         // A single-state block cannot carry two runtime ids (length mismatch rejected at parse time).
         let e = parse_block_file(
             PACK,
-            "definitions/blocks/minecraft/oak_log.block.json",
+            "blocks/minecraft/oak_log.json",
             json.as_bytes(),
-            &BlockBundleBudgets::default(),
         )
         .expect_err("长度不符必须拒绝");
         assert!(e.to_string().contains("一一对应"), "实际：{e}");
@@ -1083,11 +1079,11 @@ mod tests {
                 &[
                     raw_air(),
                     (
-                        "definitions/blocks/minecraft/oak_log.block.json".to_string(),
+                        "blocks/minecraft/oak_log.json".to_string(),
                         a.as_bytes().to_vec(),
                     ),
                     (
-                        "definitions/blocks/minecraft/birch_log.block.json".to_string(),
+                        "blocks/minecraft/birch_log.json".to_string(),
                         b.as_bytes().to_vec(),
                     ),
                 ],
@@ -1149,14 +1145,13 @@ mod tests {
             .cloned()
             .collect();
         assert_eq!(subset.len(), single.len());
-        let budgets = BlockBundleBudgets::default();
-        let files = split_legacy_palette(&subset, &HashMap::new(), &HashMap::new(), &budgets)
+        let files = split_legacy_palette(&subset, &HashMap::new(), &HashMap::new())
             .expect("单状态子集拆分应成功");
         assert_eq!(files.len(), single.len());
         // air must be in the subset (baseline block).
         assert!(files
             .iter()
-            .any(|f| f.zip_path.ends_with("minecraft/air.block.json")));
+            .any(|f| f.zip_path.ends_with("minecraft/air.json")));
         let mut refs: Vec<(&str, &[u8])> = files
             .iter()
             .map(|f| (f.zip_path.as_str(), f.bytes.as_slice()))
@@ -1164,7 +1159,7 @@ mod tests {
         refs.sort_by(|a, b| a.0.cmp(b.0));
         let mut parsed = Vec::with_capacity(refs.len());
         for (path, bytes) in refs {
-            parsed.push(parse_block_file("<real>", path, bytes, &budgets).expect("子集应合法"));
+            parsed.push(parse_block_file("<real>", path, bytes).expect("子集应合法"));
         }
         let bundle = BlockJsonBundle {
             schema_version: 1,
@@ -1178,9 +1173,10 @@ mod tests {
             ),
             files: parsed,
         };
-        let snap = compile_bundle(&bundle, PACK, &budgets, NO_PREEXISTING, &|_| true)
-            .expect("子集应编译成功")
-            .0;
+        let snap =
+            compile_bundle(&bundle, PACK, &BlockBundleBudgets::default(), NO_PREEXISTING, &|_| true)
+                .expect("子集应编译成功")
+                .0;
         let report = compare_legacy_snapshot(&snap, &subset);
         assert!(report.is_equal(), "新旧数据必须等价：{report:?}");
         assert_eq!(snap.type_count(), single.len());
@@ -1207,25 +1203,28 @@ mod real_pack_tests {
             return;
         };
         let entries = parse_legacy_palette_entries(&palette_bytes).expect("旧 palette 解析");
-        let budgets = BlockBundleBudgets::default();
+        let mut behavior_packs =
+            sc_packloader::version_control::loader::ZippedVersionPack::get_behavior_packs(
+                &mut source,
+            );
         let bundle = sc_packloader::block::load_block_json_bundle(
-            &mut source,
+            &mut behavior_packs,
             &BlockDataManifest {
                 schema_version: 1,
                 directory: sc_packloader::block::BLOCKS_DIRECTORY.to_string(),
                 network_id_mode: "hashed".to_string(),
             },
             "Vanilla",
-            &budgets,
         )
         .expect("bundle 应加载")
         .expect("manifest 已声明 block_data");
         assert_eq!(bundle.files.len(), 1379);
         let total_states: usize = bundle.files.iter().map(|f| f.state_count()).sum();
         assert_eq!(total_states, entries.len());
-        let snap = compile_bundle(&bundle, "Vanilla", &budgets, &|_| None, &|_| true)
-            .expect("全量编译")
-            .0;
+        let snap =
+            compile_bundle(&bundle, "Vanilla", &BlockBundleBudgets::default(), &|_| None, &|_| true)
+                .expect("全量编译")
+                .0;
         assert_eq!(snap.type_count(), 1379);
         assert_eq!(snap.state_count(), entries.len());
         let report = compare_legacy_snapshot(&snap, &entries);

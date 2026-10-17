@@ -9,6 +9,9 @@ use sc_packloader::block::{
     canonical_state_key, canonical_state_props, BlockBundleBudgets, BlockJsonBundle,
     BlockJsonError, ParsedBlockFile, PropValue,
 };
+use sc_packloader::block::BlockComponents;
+use sc_packloader::macros::ComponentKey;
+use sc_packloader::loot_tables::{Drops, Loot};
 use crate::mining_drops::{compile_drops, compile_mining};
 use crate::workstation::{compile_process, compile_workstation};
 
@@ -32,11 +35,11 @@ fn compile_state_columns(
     let bad = |name: &str, detail: String| BlockJsonError::new(pack_id, file, field(name), detail);
     let get = |name: &str| merged.get(name).cloned();
 
-    let collision: Option<Vec<[f32; 6]>> = match get(CollisionBox::NAME) {
+    let collision: Option<Vec<[f32; 6]>> = match get(CollisionBoxes::NAME) {
         None => None,
         Some(v) => {
             let boxes = collision_boxes_of(&v)
-                .map_err(|e| bad(CollisionBox::NAME, format!("内部不一致：{e}")))?;
+                .map_err(|e| bad(CollisionBoxes::NAME, format!("内部不一致：{e}")))?;
             let mut out = Vec::new();
             for b in boxes {
                 if !b.enabled {
@@ -185,7 +188,7 @@ fn compile_state_columns(
 
     let mut plugin = Vec::new();
     for (name, value) in merged.iter() {
-        if !is_known_component(name) {
+        if !BlockComponents::is_known(name) {
             plugin.push((Box::from(name.as_str()), value.clone()));
         }
     }
