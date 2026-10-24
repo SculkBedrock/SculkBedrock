@@ -11,7 +11,7 @@
 
 ### SculkBedrock is a third-party server software for Minecraft: Bedrock Edition written in Rust.
 
-### ECS architecture, data-driven, hot-loading... and many more features to discover
+### ECS architecture, data-driven, hot-loading and ultra-fast chunk generator... and many more features to discover
 
 > [!IMPORTANT]
 > This project is in a very early stage of development.
@@ -19,14 +19,6 @@
 > It contains **unknown bugs** and **many unimplemented features**. There is no official release. Do not use it in **production**.
 >
 > Due to the **long development timeline of the project, the author's own skill level, and school commitments**, this project may have **some architectural design / logic flaws**. Welcome to submit PRs or issues to fix them!
-
-> [!WARNING]
-> ### Special statement:
-> The current SculkBedrock **overworld generator** uses worldgen code from [PowerNukkitX](https://github.com/PowerNukkitX/PowerNukkitX).
->
-> This is only a temporary measure to verify project functionality, and does not mean we will use PowerNukkitX's code long-term.
->
-> In future updates, we will gradually replace it and adopt **data-driven Density Function JSON**.
 
 📚 Detailed architecture and capability guide: [developer documentation](DOCS.md)
 
@@ -36,13 +28,16 @@
 - **Version packs**: No need to download multiple server versions repeatedly; switch the server's game version with one click via version packs. Modify data freely and easily customize your own server.
 - **Data-driven blocks/items**: Compatible with MCBE's official **data-driven** formats, plus a separately designed **Block JSON** format, etc.
 - **Vanilla feature support**: SculkBedrock supports vanilla features as much as possible, aiming for a near-vanilla gameplay experience.
-- **Multi-threaded chunk pipeline**: shared loading, shared encoding, ordered delivery. (Currently not fully complete; design needs verification)
+- **Multi-threaded chunk pipeline**: Ultra-fast chunk generation system (with an generation speed of up to 1987 CPS *)
 - **Multi-threading / async support**: natively supported. Network / game logic run concurrently through the scheduler, ensuring smooth gameplay.
 - **Intent-based network system**: decouples the game logic layer from the network layer via intents, preventing mutual interference.
 - **MCBE addon compatibility**: run official MCBE addons easily via a **Molang interpreter and a JavaScript interpreter**. May further support Minecraft: China Edition Python plugins in the future.
 - **Plugin system**: **Rust built-in plugins** and **C-ABI dynamic library plugins** coexist; may support TypeScript plugins, etc. in the future (depends on the actual situation, not guaranteed).
 - **Beautiful TUI interface**: no idea what it's for, but it looks awesome anyway.
 - **More for you to discover**
+
+(* The current chunk generation system has not yet fully developed all its features, and the speed may decrease once all features are completed)
+(* This test result is based on the Apple M6 chip and does not represent its ultimate generation speed)
 
 ## 🎆 Getting Started 🎆
 
