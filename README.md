@@ -37,6 +37,7 @@
 - **More for you to discover**
 
 (* The current chunk generation system has not yet fully developed all its features, and the speed may decrease once all features are completed)
+
 (* This test result is based on the Apple M6 chip and does not represent its ultimate generation speed)
 
 ## 🎆 Getting Started 🎆
