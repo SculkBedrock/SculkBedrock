@@ -24,8 +24,9 @@ use sc_world::manager::MinecraftWorldId;
 /// Player inventory window id (always 0).
 pub const PLAYER_INVENTORY_WINDOW_ID: u8 = 0;
 
-/// The container kind a player currently has open.
-/// Variants split by what the container is backed by, not by protocol bytes.
+/// 玩家当前打开的容器种类。
+///
+/// Kind of container currently open for a player.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContainerKind {
     /// The player's own inventory (no block position or world binding).
@@ -39,10 +40,18 @@ pub enum ContainerKind {
         world_id: MinecraftWorldId,
         position: (i32, i32, i32),
     },
+    /// Storage container (chest, double chest, barrel, etc.).
+    Chest {
+        world_id: MinecraftWorldId,
+        position: (i32, i32, i32),
+        paired_position: Option<(i32, i32, i32)>,
+        slots: u16,
+    },
 }
 
-/// The container window a player currently has open.
-/// Component presence means open; removal means closed.
+/// 玩家当前打开的容器窗口；组件存在表示打开。
+///
+/// Container window currently open for a player; component presence means the container is open.
 #[derive(Component, Clone, Debug)]
 pub struct ContainerOpen {
     /// Server-assigned window id (inventory is always zero).
@@ -76,11 +85,31 @@ impl ContainerOpen {
         }
     }
 
+    /// Open a chest container window.
+    pub fn chest(
+        window_id: u8,
+        world_id: MinecraftWorldId,
+        position: (i32, i32, i32),
+        paired_position: Option<(i32, i32, i32)>,
+        slots: u16,
+    ) -> Self {
+        Self {
+            window_id,
+            kind: ContainerKind::Chest {
+                world_id,
+                position,
+                paired_position,
+                slots,
+            },
+        }
+    }
+
     /// Type name for diagnostics.
     pub fn kind_name(&self) -> &'static str {
         match &self.kind {
             ContainerKind::PlayerInventory => "player_inventory",
             ContainerKind::Workstation { station, .. } => station.tag(),
+            ContainerKind::Chest { .. } => "chest",
         }
     }
 
@@ -89,17 +118,30 @@ impl ContainerOpen {
         matches!(self.kind, ContainerKind::PlayerInventory)
     }
 
-    /// Workstation details `(type, world, block position)`; `None` for inventory.
+    /// Workstation details `(type, world, block position)`; `None` for inventory or chest.
     ///
     /// Returned by value so callers can `remove_component` first and keep reading.
     pub fn workstation(&self) -> Option<(StationKind, MinecraftWorldId, (i32, i32, i32))> {
         match &self.kind {
-            ContainerKind::PlayerInventory => None,
             ContainerKind::Workstation {
                 station,
                 world_id,
                 position,
             } => Some((*station, world_id.clone(), *position)),
+            _ => None,
+        }
+    }
+
+    /// Chest details `(world, block position, paired position)`; `None` if not a chest.
+    pub fn chest_info(&self) -> Option<(MinecraftWorldId, (i32, i32, i32), Option<(i32, i32, i32)>)> {
+        match &self.kind {
+            ContainerKind::Chest {
+                world_id,
+                position,
+                paired_position,
+                ..
+            } => Some((world_id.clone(), *position, *paired_position)),
+            _ => None,
         }
     }
 

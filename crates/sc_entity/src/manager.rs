@@ -1,3 +1,7 @@
+//! 实体注册表：标识符到 spawner 的映射。
+//!
+//! 由版本包行为包数据构建；`SpawnEntity` trait 依据标识符从中生成实体。
+//!
 //! `MinecraftEntitiesManager`: entity registry (identifier to spawner).
 //!
 //! Built from version-pack behavior-pack data; the `SpawnEntity` trait spawns entities by identifier from it.
@@ -32,6 +36,8 @@ impl MinecraftEntitiesManager {
         self.entity_ids.insert(*entity, self.id_count);
     }
 
+    /// 按 MinecraftEntityId 从管理器移除实体。
+    ///
     /// Remove an entity from the manager by its MinecraftEntityId.
     /// This must be called when a player disconnects to prevent the
     /// entities HashMap from growing unbounded over many join/leave cycles.
@@ -45,6 +51,8 @@ impl MinecraftEntitiesManager {
         result
     }
 
+    /// 按 ECS EntityId 从管理器移除实体。
+    ///
     /// Remove an entity from the manager by its ECS EntityId.
     pub fn remove_entity_by_ecs_id(&mut self, entity: &EntityId) -> Option<u64> {
         let mc_id = self.entity_ids.remove(entity)?;

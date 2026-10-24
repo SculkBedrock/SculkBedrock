@@ -1,3 +1,9 @@
+//! 区块流水线数据模型。
+//!
+//! 只定义状态、不含行为：网络侧的 `order_chunks` / `send_next_chunk`
+//! 消费这些类型。订阅代际保留在此，使跨维度/传送切换的过期异步任务
+//! 无法污染当前玩家视野；载荷缓存使用「所属世界 + 维度」隔离键。
+//!
 //! Chunk pipeline data model.
 //!
 //! Defines state only, no behavior: the network-side `order_chunks` / `send_next_chunk`
@@ -13,28 +19,49 @@ use crate::chunk::ChunkPosition;
 use crate::manager::MinecraftWorldId;
 use crate::storage::ChunkKey;
 
+/// 区块发送设置（每 tick 数量 / 出生阈值 / 视距）。
+///
 /// Chunk-send settings (per-tick count / spawn threshold / view distance).
 #[derive(Resource, Clone, Debug)]
 pub struct ChunkSendSettings {
+    /// 每 tick 最大实际准入区块数（默认 4）。
+    ///
+    /// 这是投递预算：准备好的载荷在投递窗口等待，直到某个 tick 槽位
+    /// 空出。它不再同时是在飞行准备工作量的上限。
+    ///
     /// Max effectively admitted chunks per tick (default 4).
     ///
     /// This is a delivery budget: prepared payloads wait in the delivery window
     /// until a tick slot frees up. It is no longer also the amount of in-flight
-    /// preparation work (§8.2).
+    /// preparation work.
     pub chunks_per_tick: u32,
+    /// 单玩家并发处于「已准入-已准备」状态的最大区块数。
+    ///
     /// Max chunks per player concurrently in the admitted-prepared state.
+    ///
+    /// 准备（worker 加载 + 编码）与投递分别设界，使一个慢列不再占满
+    /// 玩家整Tick配额，空闲 tick 也不会积攒无界积压。取值区间 8–16，
+    /// 起始值为 12。
     ///
     /// Preparation (worker load + encode) is bounded separately from delivery so
     /// one slow column can no longer occupy a player's whole per-tick allowance,
-    /// and so an idle tick cannot accumulate an unbounded backlog. The design doc
-    /// lists 8–16 as the experiment range; 12 is the starting value.
+    /// and so an idle tick cannot accumulate an unbounded backlog. Range
+    /// 8–16; 12 is the starting value.
     pub prepare_window: u32,
+    /// `PlayStatus::PLAYER_SPAWN` 前发送的区块数（默认 56）。
+    ///
     /// Chunks sent before PlayStatus::PLAYER_SPAWN (default 56).
     pub spawn_threshold: u32,
+    /// 玩家视距（区块半径；默认 10）。
+    ///
     /// Player view distance (chunk radius; default 10).
     pub view_distance: i32,
+    /// `order_chunks` 两次运行间的 tick 间隔（默认 20）。
+    ///
     /// Tick interval between `order_chunks` runs (default 20).
     pub reorder_interval: u32,
+    /// 区块离开视距后的卸载宽限期（tick；默认 600 = 30s）。
+    ///
     /// Unload grace period after a chunk leaves view distance (ticks; default 600 = 30s).
     pub unload_grace_ticks: u32,
 }
@@ -42,8 +69,8 @@ pub struct ChunkSendSettings {
 impl Default for ChunkSendSettings {
     fn default() -> Self {
         Self {
-            chunks_per_tick: 4,
-            prepare_window: 12,
+            chunks_per_tick: 128,
+            prepare_window: 128,
             spawn_threshold: 56,
             view_distance: 10,
             reorder_interval: 20,
@@ -53,7 +80,13 @@ impl Default for ChunkSendSettings {
 }
 
 impl ChunkSendSettings {
+    /// 由 ServerProperties 构造（`[chunk]` 节，缺失项回退默认值）。
+    ///
     /// Build from ServerProperties ([chunk] section), falling back to defaults when absent.
+    ///
+    /// - `view_distance`: 视距（区块半径）
+    /// - `chunks_per_tick`: 每 tick 投递预算
+    /// - `spawn_threshold`: 出生前发送区块数
     pub fn from_properties(view_distance: i32, chunks_per_tick: u32, spawn_threshold: u32) -> Self {
         Self {
             view_distance,
@@ -63,6 +96,9 @@ impl ChunkSendSettings {
         }
     }
 
+    /// 有效准备窗口：不低于投递预算，防止
+    /// `chunks_per_tick > prepare_window` 的配置死锁。
+    ///
     /// Effective preparation window; never below the delivery budget so a
     /// configuration of `chunks_per_tick > prepare_window` cannot deadlock.
     pub fn prepare_window(&self) -> u32 {
@@ -70,85 +106,179 @@ impl ChunkSendSettings {
     }
 }
 
+/// 每玩家的区块视野状态（已发送区块 / 加载队列 / 下次重排运行）。
+///
 /// Per-player chunk view state (sent chunks / load queue / next reorder run).
 #[derive(Component, Clone, Debug)]
 pub struct ChunkView {
+    /// 可变视野数据（内部锁保护）。
+    ///
+    /// Mutable view data (guarded by an internal lock).
     pub inner: Arc<parking_lot::RwLock<ChunkViewData>>,
+    /// 硬上下文代际的 watch 发送端（通知已排队的消费者）。
+    ///
+    /// Watch sender for the hard-context epoch (notifies queued consumers).
     context_epoch_tx: tokio::sync::watch::Sender<u64>,
 }
 
+/// 已准入区块的投递基线（列身份 + 视图版本），用于识别过期结果。
+///
+/// Admission baseline for an admitted chunk (column identity plus view
+/// version), used to detect stale results.
 #[derive(Clone, Copy, Debug)]
 pub struct AdmittedChunkBaseline {
+    /// 列身份号。
+    ///
+    /// Column incarnation.
     pub incarnation: u128,
+    /// 投递时的视图版本。
+    ///
+    /// View generation at delivery.
     pub generation: u64,
 }
 
+/// 投递基线表的最大条数（有界，防无限增长）。
+///
+/// Maximum number of admission baselines (bounded against unbounded growth).
 pub const MAX_ADMITTED_CHUNK_BASELINES: usize = 4096;
 
+/// 每连接跟踪的、用于 delta 版本间隙统计的最大列数（有界）。
+///
 /// Bounded number of columns tracked per connection for delta-version gaps.
 pub const MAX_TRACKED_DELTA_GAP_COLUMNS: usize = 512;
 
+/// 可变的区块视野状态。
+///
 /// Mutable chunk-view state.
 #[derive(Clone, Debug)]
 pub struct ChunkViewData {
+    /// 硬上下文代际；世界/维度/传送切换时递增。常规中心移动只推进
+    /// `view_revision`，不丢弃仍重叠的工作。
+    ///
     /// Hard context generation; incremented on world/dimension/teleport context switches.
     /// Ordinary center moves only bump `view_revision` without discarding still-overlapping work.
     pub epoch: u64,
+    /// 期望区块集/优先级的版本；常规中心或半径变化时递增。
+    ///
     /// Version of the desired chunk set/priority; incremented on ordinary center or radius changes.
     pub view_revision: u64,
+    /// 玩家所在世界。
+    ///
     /// Saved world the player is in.
     pub world_id: MinecraftWorldId,
+    /// 世界维度 id（用于构造 ChunkKey）。
+    ///
     /// World dimension id (used to build ChunkKey).
     pub dimension: i32,
+    /// 当前视野半径（区块数）。
+    ///
     /// Current view radius (chunk count).
     pub radius: i32,
+    /// 视野中心（玩家所在区块）。
+    ///
     /// View center (chunk the player is in).
     pub center: ChunkPosition,
+    /// 当前代际的期望区块集。
+    ///
     /// Desired chunk set for the current epoch.
     pub desired_chunks: HashSet<ChunkKey>,
+    /// 已发送给该玩家的区块。
+    ///
     /// Chunks already sent to this player.
     pub used_chunks: HashSet<ChunkKey>,
+    /// 已发送区块 → 投递基线（用于识别内容是否变化）。
+    ///
+    /// Sent chunk to admission baseline (detects whether content changed).
     pub delivery_ledger: HashMap<ChunkKey, AdmittedChunkBaseline>,
+    /// 内容已变化、需要重发的区块。
+    ///
+    /// Chunks whose content changed and need re-sending.
     pub refresh_required: HashSet<ChunkKey>,
+    /// 最近一次准入发生的 tick。
+    ///
+    /// Tick of the most recent admission.
     pub admission_tick: u64,
+    /// 本 tick 已准入的区块数。
+    ///
+    /// Number of chunks admitted this tick.
     pub admitted_this_tick: u32,
+    /// 待发送队列，按（距离平方, 区块）排序（近的优先）。
+    ///
     /// Pending send queue, ordered by (distance-squared, chunk) (near first).
     pub load_queue: BTreeSet<(u64, ChunkKey)>,
+    /// 已弹出但发送任务仍在飞行的区块，值为其所属代际。
+    ///
     /// Popped chunks whose send task is still in flight, with their owning epoch.
     pub in_flight: HashMap<ChunkKey, u64>,
+    /// 每玩家至多一个区块发送任务；值为持有者的硬上下文代际。
+    ///
     /// At most one chunk-send task per player; value is the holder hard-context epoch.
     pub send_lease: Option<u64>,
+    /// 发布器更新尚未入队；视野/上下文变化时置位。
+    ///
     /// Publisher update not yet queued; set when view/context changes.
     pub publisher_pending: bool,
+    /// 在飞行的发布器更新尝试票据（上下文代际, 视图版本）。
+    ///
     /// In-flight publisher-update attempt ticket (context epoch, view revision).
     pub publisher_in_flight: Option<(u64, u64)>,
+    /// 距下次重排的剩余 tick 数。
+    ///
     /// Ticks remaining until the next reorder.
     pub next_order_run: u32,
+    /// 累计发送区块数（出生阈值检查用）。
+    ///
     /// Total chunks sent (spawn-threshold check).
     pub chunks_sent: u32,
+    /// 出生前的装备容器同步是否已发送。
+    ///
+    /// 盔甲/光标/副手背包状态在区块阶段发送，早于最终全量背包同步
+    /// 与 PLAYER_SPAWN 过渡。
+    ///
     /// Whether the pre-spawn equipment container sync has been sent.
     ///
     /// Armor/cursor/offhand inventory state is sent during the chunk phase,
     /// before the final full inventory sync and PLAYER_SPAWN transition.
     pub equipment_container_sync_sent: bool,
+    /// `PlayStatus::PLAYER_SPAWN` 是否已发送。
+    ///
     /// Whether PlayStatus::PLAYER_SPAWN has been sent.
     pub has_spawn_chunks: bool,
+    /// 本硬上下文是否已诊断过一次达不到的 PLAYER_SPAWN 阈值。
+    /// 防止重复半径请求刷日志。
+    ///
     /// Whether an unreachable PLAYER_SPAWN threshold has been diagnosed for
     /// this hard context. Keeps repeated radius requests from spamming logs.
     spawn_threshold_warning_emitted: bool,
+    /// 越界区块 → 到期 tick（宽限期卸载）。
+    ///
     /// Out-of-range chunk to expiry tick (grace-period unload).
     pub unloading: HashMap<ChunkKey, u64>,
+    /// 本视野连续未被调度的 tick 数（跨玩家公平）。
+    ///
+    /// 公平策略用轮转游标加等待时长，固定遍历顺序会让单个玩家
+    /// 独吞预算。该值即本视野需求的等待时长，参与每 tick 轮转。
+    ///
     /// Ticks this view went unscheduled in a row (cross-player fairness).
     ///
-    /// §8.3: fairness uses a rotation cursor plus waiting age, so a fixed
+    /// Fairness uses a rotation cursor plus waiting age, so a fixed
     /// traversal order cannot let one player monopolize the budget. The value is
     /// the age of this view's demand and feeds the per-tick rotation.
     pub waiting_ticks: u32,
+    /// 上次被调度时的 `waiting_ticks`（仅诊断用）。
+    ///
     /// `waiting_ticks` at the last scheduling (diagnostics only).
     pub last_served_waiting_ticks: u32,
+    /// 已准入方块 delta 跳过至少一个内容版本的列。
+    ///
+    /// 跳过一个以上内容代际的 delta 只能携带自身方块，同列中*不同*
+    /// 位置的较旧编辑会一直未应用，直到该列被刷新。这正是「有界
+    /// delta 日志」成为必需的确切条件，因此按连接计数而不是
+    /// 假定其不存在。
+    ///
     /// Columns whose admitted block deltas skipped at least one content version.
     ///
-    /// §10.3: a delta that jumps more than one content generation can only carry
+    /// A delta that jumps more than one content generation can only carry
     /// its own block, so an older edit of a *different* position in the same
     /// column stays unapplied until the column is refreshed. That is the precise
     /// condition under which a bounded delta journal becomes necessary, so it is
@@ -159,6 +289,14 @@ pub struct ChunkViewData {
 }
 
 impl ChunkViewData {
+    /// 请求刷新一个区块：已在投递/期望集合中则标记重发，
+    /// 仍在期望集合中则按距离重新入队。
+    ///
+    /// Requests a refresh for a chunk: marks it for re-sending when it is in
+    /// the delivery ledger or the desired set, and re-queues it by distance
+    /// while it remains desired.
+    ///
+    /// - `key`: 目标区块键
     pub fn request_refresh(&mut self, key: ChunkKey) {
         if self.delivery_ledger.contains_key(&key) || self.desired_chunks.contains(&key) {
             self.refresh_required.insert(key);
@@ -171,13 +309,23 @@ impl ChunkViewData {
         }
     }
 
+    /// 推进视图版本号并标记发布器待更新。
+    ///
+    /// Advances the view revision and marks the publisher pending.
     fn advance_view_revision(&mut self) {
         self.view_revision = self.view_revision.wrapping_add(1).max(1);
         self.publisher_pending = true;
     }
 
+    /// 更新移动中的视野中心，不使硬上下文代际失效。
+    /// 规划器在同一 tick 替换期望/加载集合。
+    ///
     /// Update the moving center without invalidating the hard context epoch.
     /// The planner replaces desired/load sets in the same tick.
+    ///
+    /// 中心未变返回 `false`。
+    ///
+    /// Returns `false` when the center is unchanged.
     pub fn update_center(&mut self, center: ChunkPosition) -> bool {
         if self.center == center {
             return false;
@@ -187,9 +335,16 @@ impl ChunkViewData {
         true
     }
 
+    /// 应用一次常规半径/中心变更，保留已使用与在飞行的重叠部分。
+    /// 期望键立即更新，使规划器下一 tick 前的过期发送无法依赖旧半径。
+    ///
     /// Apply a normal radius/center change while preserving already-used and
     /// in-flight overlap. Desired keys are updated immediately so stale sends
     /// cannot rely on the old radius before the planner's next tick.
+    ///
+    /// 半径与中心均未变返回 `false`。
+    ///
+    /// Returns `false` when both the radius and center are unchanged.
     pub fn update_view(&mut self, radius: i32, center: ChunkPosition) -> bool {
         let radius = radius.max(0);
         if self.radius == radius && self.center == center {
@@ -214,10 +369,17 @@ impl ChunkViewData {
         true
     }
 
+    /// 为准备工作预留至多 `limit` 个键，遵守在飞行上限。
+    ///
+    /// 投递预算（`chunks_per_tick`）在准入时才生效；这里只预留准备槽位。
+    ///
     /// Reserve up to `limit` keys for preparation, honouring the in-flight cap.
     ///
     /// The delivery budget (`chunks_per_tick`) is applied later, at admission
     /// time; this only reserves preparation slots.
+    ///
+    /// - `prepare_window`: 准备窗口大小
+    /// - `already_in_flight`: 已在进行中的准备/发送任务数
     pub fn take_prepare_batch(
         &mut self,
         prepare_window: u32,
@@ -246,11 +408,18 @@ impl ChunkViewData {
         out
     }
 
+    /// 记录一次方块 delta 跳过了内容版本。
+    ///
+    /// 该列新进入间隙集合时返回 `true`。调用方用它做限流诊断；
+    /// 有界集合本身保持记账零成本。
+    ///
     /// Note that a block delta skipped one or more content versions.
     ///
     /// Returns `true` when this column newly entered the gapped set. The caller
     /// uses it for a rate-limited diagnostic; the bounded set itself keeps the
     /// accounting free.
+    ///
+    /// - `key`: 发生间隙的区块键
     pub fn note_delta_gap(&mut self, key: ChunkKey) -> bool {
         self.delta_gap_total = self.delta_gap_total.saturating_add(1);
         let inserted = self.delta_gap_columns.insert(key);
@@ -263,27 +432,41 @@ impl ChunkViewData {
         inserted
     }
 
+    /// 当前已知跳过内容版本的列数。
+    ///
     /// Columns currently known to have skipped content versions.
     pub fn delta_gap_column_count(&self) -> usize {
         self.delta_gap_columns.len()
     }
 
+    /// 本视野观察到的版本间隙总数。
+    ///
     /// Total version gaps observed for this view.
     pub fn delta_gap_total(&self) -> u64 {
         self.delta_gap_total
     }
 
+    /// 记录本视野本 tick 未被调度，使其需求老化。
+    ///
     /// Record that this view was not served this tick, so its demand ages.
     pub fn note_unserved_tick(&mut self) {
         self.waiting_ticks = self.waiting_ticks.saturating_add(1);
     }
 
+    /// 本视野等待投递预算的时长。
+    ///
     /// How long this view has been waiting for delivery budget.
     pub fn waiting_age(&self) -> u32 {
         self.waiting_ticks
     }
 
+    /// 为当前视图版本预订一次发布器更新。
+    ///
     /// Reserve one publisher update for the current view version.
+    ///
+    /// 已有更新待发或在飞行时返回 `None`。
+    ///
+    /// Returns `None` when an update is already pending or in flight.
     pub fn take_publisher_ticket(&mut self) -> Option<(u64, u64)> {
         if !self.publisher_pending || self.publisher_in_flight.is_some() {
             return None;
@@ -295,6 +478,14 @@ impl ChunkViewData {
 }
 
 impl ChunkView {
+    /// 构造一个视野组件。
+    ///
+    /// Builds a chunk-view component.
+    ///
+    /// - `world_id`: 玩家所在世界 id
+    /// - `dimension`: 维度 id
+    /// - `radius`: 初始视距半径
+    /// - `center`: 初始视野中心
     pub fn new(
         world_id: MinecraftWorldId,
         dimension: i32,
@@ -336,15 +527,32 @@ impl ChunkView {
         }
     }
 
+    /// 读锁访问视野数据。
+    ///
+    /// Read-locked access to the view data.
     pub fn read(&self) -> parking_lot::RwLockReadGuard<'_, ChunkViewData> {
         self.inner.read()
     }
 
+    /// 写锁访问视野数据。
+    ///
+    /// Write-locked access to the view data.
     pub fn write(&self) -> parking_lot::RwLockWriteGuard<'_, ChunkViewData> {
         self.inner.write()
     }
 
+    /// 重启区块订阅上下文。旧异步任务仍可跑完但无法提交结果。
+    ///
     /// Restart the chunk subscription context. Old async tasks may still finish but cannot commit results.
+    ///
+    /// 返回新的硬上下文代际。
+    ///
+    /// Returns the new hard-context epoch.
+    ///
+    /// - `world_id`: 新世界 id
+    /// - `dimension`: 新维度 id
+    /// - `radius`: 新视距半径
+    /// - `center`: 新视野中心
     pub fn reset_subscription(
         &self,
         world_id: MinecraftWorldId,
@@ -383,9 +591,14 @@ impl ChunkView {
         data.epoch
     }
 
+    /// 标记并报告当前协商的方形视野下达不到的 PLAYER_SPAWN 阈值。
+    /// 本硬上下文首次诊断时返回可用区块数上限。
+    ///
     /// Mark and report an unreachable PLAYER_SPAWN threshold for the current
     /// negotiated square view. Returns the maximum number of chunks available
     /// on the first diagnostic in this hard context.
+    ///
+    /// - `threshold`: 出生阈值
     pub fn diagnose_unreachable_spawn_threshold(&self, threshold: u32) -> Option<u64> {
         let mut data = self.inner.write();
         let radius = data.radius.max(0) as u64;
@@ -402,12 +615,20 @@ impl ChunkView {
         Some(available)
     }
 
+    /// 订阅硬上下文变更，使已排队的消费者能丢弃共享加载等待而不取消
+    /// 其他玩家仍需要的工作。
+    ///
     /// Subscribe to hard-context changes so queued consumers can drop their
     /// shared-load waiter without cancelling work still needed by other players.
     pub fn context_epoch_receiver(&self) -> tokio::sync::watch::Receiver<u64> {
         self.context_epoch_tx.subscribe()
     }
 
+    /// 发布器票据是否仍对应当前视图版本。
+    ///
+    /// Whether a publisher ticket still matches the current view version.
+    ///
+    /// - `ticket`: `(代际, 视图版本)` 票据
     pub fn publisher_ticket_is_current(&self, ticket: (u64, u64)) -> bool {
         let data = self.read();
         data.epoch == ticket.0
@@ -415,8 +636,14 @@ impl ChunkView {
             && data.publisher_in_flight == Some(ticket)
     }
 
+    /// 完成发布器准入。失败/过期的尝试让当前视图保持脏状态，
+    /// 下次重排可以重试。
+    ///
     /// Complete publisher admission. Failed/stale attempts leave the current
     /// view dirty so the next reorder can retry it.
+    ///
+    /// - `ticket`: `(代际, 视图版本)` 票据
+    /// - `queued`: 是否成功入队
     pub fn complete_publisher_ticket(&self, ticket: (u64, u64), queued: bool) {
         let mut data = self.write();
         if data.publisher_in_flight != Some(ticket) {
@@ -428,50 +655,98 @@ impl ChunkView {
         }
     }
 
+    /// 异步结果是否仍属于当前活跃的硬上下文。
+    ///
     /// Whether an asynchronous result still belongs to the active hard context.
+    ///
+    /// - `epoch`: 结果所属代际
     pub fn context_is_current(&self, epoch: u64) -> bool {
         self.inner.read().epoch == epoch
     }
 
+    /// 该键是否仍属于同一订阅上下文且在视野内。
+    ///
     /// Whether the key still belongs to the same subscription context and is in view.
+    ///
+    /// - `epoch`: 结果所属代际
+    /// - `key`: 区块键
     pub fn accepts(&self, epoch: u64, key: &ChunkKey) -> bool {
         let data = self.inner.read();
         data.epoch == epoch && data.desired_chunks.contains(key)
     }
 
+    /// 区块是否已订阅（已发送）。
+    ///
     /// Whether the chunk is subscribed (already sent).
+    ///
+    /// - `key`: 区块键
     pub fn is_subscribed(&self, key: &ChunkKey) -> bool {
         self.read().used_chunks.contains(key)
     }
 }
 
+/// 载荷缓存的世界隔离键。
+///
 /// World isolation key for the payload cache.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ChunkCacheKey {
+    /// 所属世界 id。
+    ///
+    /// Owning world id.
     pub world_id: MinecraftWorldId,
+    /// 区块坐标键。
+    ///
+    /// Chunk coordinate key.
     pub chunk: ChunkKey,
 }
 
 impl ChunkCacheKey {
+    /// 由世界 id + 区块键构造隔离键。
+    ///
+    /// Builds an isolation key from a world id and a chunk key.
+    ///
+    /// - `world_id`: 所属世界 id
+    /// - `chunk`: 区块坐标键
     pub fn new(world_id: MinecraftWorldId, chunk: ChunkKey) -> Self {
         Self { world_id, chunk }
     }
 }
 
+/// 编码后的 LevelChunk 载荷缓存条目。
+///
 /// Encoded LevelChunk payload cache entry.
 #[derive(Clone, Debug)]
 pub struct CachedChunk {
+    /// 编码后的 LevelChunk 载荷（不含 x/z/dimension 头）。
+    ///
     /// Encoded LevelChunk payload (without the x/z/dimension header).
     pub payload: Arc<Vec<u8>>,
+    /// `sub_chunk_count` 字段。
+    ///
     /// sub_chunk_count field.
     pub subchunk_count: u32,
+    /// 源 ChunkColumn 变更计数器；不匹配即使条目失效待重编码。
+    ///
     /// Source ChunkColumn change counter; mismatch invalidates the entry for re-encoding.
     pub generation: u64,
+    /// 列身份号（与 `generation` 共同判定失效）。
+    ///
+    /// Column incarnation (together with `generation` decides invalidation).
     pub incarnation: u128,
+    /// 生成该载荷的协议/线路 profile。
+    ///
+    /// Protocol/wire profile the payload was encoded for.
     pub wire_profile: u32,
 }
 
 impl CachedChunk {
+    /// 条目是否仍匹配给定列的当前内容与线路 profile。
+    ///
+    /// Whether the entry still matches the column's current content and the
+    /// given wire profile.
+    ///
+    /// - `column`: 源区块列
+    /// - `wire_profile`: 线路 profile
     pub fn matches_column(&self, column: &crate::storage::ChunkColumn, wire_profile: u32) -> bool {
         self.incarnation == column.incarnation()
             && self.generation == column.generation()
@@ -479,30 +754,75 @@ impl CachedChunk {
     }
 }
 
+/// 全局 LevelChunk 载荷缓存（所属世界 + 维度 + x/z → 编码结果）。
+///
 /// Global LevelChunk payload cache (saved world + dimension + x/z to encoded result).
+///
+/// 缓存同时受条目数与自有载荷分配容量约束。`payload_bytes` 有意不含
+/// HashMap/顺序元数据与进行中发送任务持有的 Arc 引用；它是缓存自有
+/// 分配的估计，不是进程 RSS 或存活载荷总内存。
 ///
 /// The cache is bounded by both entry count and owned payload allocation
 /// capacity. `payload_bytes` intentionally excludes HashMap/order metadata and
 /// Arc references held by active send tasks; it is a cache-owned allocation
 /// estimate, not process RSS or total live-payload memory.
-const DEFAULT_LEVEL_CHUNK_CACHE_CAPACITY: usize = 256;
-const DEFAULT_LEVEL_CHUNK_CACHE_BYTES: usize = 8 * 1024 * 1024;
 
+/// 默认缓存条目数上限。
+///
+/// Default cache entry-count cap.
+const DEFAULT_LEVEL_CHUNK_CACHE_CAPACITY: usize = 1024;
+/// 默认缓存载荷字节上限（64 MiB）。
+///
+/// Default cache payload-byte cap (64 MiB).
+const DEFAULT_LEVEL_CHUNK_CACHE_BYTES: usize = 64 * 1024 * 1024;
+
+/// 缓存内部条目（载荷 + 淘汰顺序令牌 + 字节数）。
+///
+/// Internal cache entry (payload + eviction order token + byte count).
 #[derive(Clone, Debug)]
 struct LevelChunkCacheEntry {
+    /// 编码载荷。
+    ///
+    /// Encoded payload.
     chunk: CachedChunk,
+    /// 插入顺序令牌（淘汰用）。
+    ///
+    /// Insertion order token (for eviction).
     order_token: u64,
+    /// 该条目占用的载荷字节数。
+    ///
+    /// Payload bytes owned by this entry.
     payload_bytes: usize,
 }
 
+/// LevelChunk 载荷缓存（ECS 资源）。
+///
+/// LevelChunk payload cache (an ECS resource).
 #[derive(Resource, Clone, Debug)]
 pub struct LevelChunkCache {
+    /// 隔离键 → 条目。
+    ///
+    /// Isolation key to entry.
     entries: HashMap<ChunkCacheKey, LevelChunkCacheEntry>,
+    /// 只追加的插入令牌；淘汰时跳过过期令牌。
+    ///
     /// Append-only insertion tokens; stale tokens are skipped during eviction.
     order: VecDeque<(ChunkCacheKey, u64)>,
+    /// 下一个插入令牌。
+    ///
+    /// Next insertion token.
     next_order_token: u64,
+    /// 条目数上限。
+    ///
+    /// Entry-count cap.
     max_entries: usize,
+    /// 载荷字节上限。
+    ///
+    /// Payload-byte cap.
     max_payload_bytes: usize,
+    /// 当前占用的载荷字节数。
+    ///
+    /// Currently owned payload bytes.
     payload_bytes: usize,
 }
 
@@ -516,10 +836,21 @@ impl Default for LevelChunkCache {
 }
 
 impl LevelChunkCache {
+    /// 以条目数上限构造（字节上限用默认值）。
+    ///
+    /// Builds a cache with an entry-count cap (default byte cap).
+    ///
+    /// - `max_entries`: 条目数上限
     pub fn with_capacity(max_entries: usize) -> Self {
         Self::with_limits(max_entries, DEFAULT_LEVEL_CHUNK_CACHE_BYTES)
     }
 
+    /// 以条目数与字节双上限构造。
+    ///
+    /// Builds a cache with both an entry-count and a byte cap.
+    ///
+    /// - `max_entries`: 条目数上限（至少 1）
+    /// - `max_payload_bytes`: 载荷字节上限（至少 1）
     pub fn with_limits(max_entries: usize, max_payload_bytes: usize) -> Self {
         Self {
             entries: HashMap::new(),
@@ -531,10 +862,27 @@ impl LevelChunkCache {
         }
     }
 
+    /// 按键取缓存条目；未命中返回 `None`。
+    ///
+    /// Looks up a cache entry by key; returns `None` on a miss.
+    ///
+    /// - `key`: 隔离键
     pub fn get(&self, key: &ChunkCacheKey) -> Option<&CachedChunk> {
         self.entries.get(key).map(|entry| &entry.chunk)
     }
 
+    /// 插入一个条目；超限时按插入顺序淘汰最旧条目。
+    ///
+    /// Inserts an entry; evicts the oldest entries by insertion order when
+    /// over either cap.
+    ///
+    /// 单个载荷超过整个字节预算时交给当前消费者但不留作缓存条目。
+    ///
+    /// An individual payload larger than the entire cache budget is sent to
+    /// the current consumer but not retained as a permanent cache entry.
+    ///
+    /// - `key`: 隔离键
+    /// - `chunk`: 编码载荷条目
     pub fn insert(&mut self, key: ChunkCacheKey, chunk: CachedChunk) {
         let payload_bytes = chunk.payload.capacity();
         self.remove_entry(&key);
@@ -573,23 +921,40 @@ impl LevelChunkCache {
         self.compact_order_if_needed();
     }
 
+    /// 使一个缓存条目失效。
+    ///
+    /// Invalidates a cache entry.
+    ///
+    /// - `key`: 隔离键
     pub fn invalidate(&mut self, key: &ChunkCacheKey) {
         self.remove_entry(key);
         self.compact_order_if_needed();
     }
 
+    /// 清空整个缓存。
+    ///
+    /// Clears the whole cache.
     pub fn clear(&mut self) {
         self.entries.clear();
         self.order.clear();
         self.payload_bytes = 0;
     }
 
+    /// 移除条目并回收其字节记账。
+    ///
+    /// Removes an entry and reclaims its byte accounting.
+    ///
+    /// - `key`: 隔离键
     fn remove_entry(&mut self, key: &ChunkCacheKey) {
         if let Some(entry) = self.entries.remove(key) {
             self.payload_bytes = self.payload_bytes.saturating_sub(entry.payload_bytes);
         }
     }
 
+    /// 顺序令牌表过期条目过多时压缩（保留现行令牌）。
+    ///
+    /// Compacts the order-token table when stale entries dominate (keeps
+    /// current tokens).
     fn compact_order_if_needed(&mut self) {
         let threshold = self.entries.len().saturating_mul(2).saturating_add(64);
         if self.order.len() <= threshold {
@@ -603,22 +968,37 @@ impl LevelChunkCache {
         });
     }
 
+    /// 当前占用的载荷字节数。
+    ///
+    /// Currently owned payload bytes.
     pub fn payload_bytes(&self) -> usize {
         self.payload_bytes
     }
 
+    /// 载荷字节上限。
+    ///
+    /// Payload-byte cap.
     pub fn max_payload_bytes(&self) -> usize {
         self.max_payload_bytes
     }
 
+    /// 当前条目数。
+    ///
+    /// Current entry count.
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
+    /// 是否为空。
+    ///
+    /// Whether the cache is empty.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
+    /// 条目数上限。
+    ///
+    /// Entry-count cap.
     pub fn max_entries(&self) -> usize {
         self.max_entries
     }
@@ -629,10 +1009,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn settings_defaults_match_reference() {
+    fn chunk_send_settings_have_the_expected_defaults() {
         let settings = ChunkSendSettings::default();
-        assert_eq!(settings.chunks_per_tick, 4);
-        assert_eq!(settings.prepare_window, 12);
+        assert_eq!(settings.chunks_per_tick, 128);
+        assert_eq!(settings.prepare_window, 128);
         assert!(settings.prepare_window() >= settings.chunks_per_tick);
         assert_eq!(settings.spawn_threshold, 56);
         assert_eq!(settings.view_distance, 10);
@@ -991,6 +1371,9 @@ mod tests {
         assert!(!view.is_subscribed(&key));
     }
 
+    /// 传送/维度切换重置必须清掉在途标记与发送租约：旧的异步任务
+    /// 完成后不得占据新的订阅上下文。
+    ///
     /// Teleport/dimension reset must clear in-flight marks and the send lease: old async tasks
     /// cannot occupy the new subscription context after finishing.
     #[test]

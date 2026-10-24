@@ -1,11 +1,6 @@
-//! Structure placement grid: sparse region sampling for structure origins.
+//! 结构放置网格：稀疏采样区域以确定结构原点。
 //!
-//! Notes:
-//! - [`PlacementSettings`] carries field defaults via its `Default` impl.
-//! - The biome predicate is a boxed `Fn(i32) -> bool`.
-//! - Callers sample the biome themselves, then call
-//!   [`StructurePlacement::can_generate`].
-//! - Nearest-generation lookup (locate command) is not covered.
+//! Structure placement grid: sparse region sampling to determine structure origins.
 
 use crate::worldgen::random::RandomSourceProvider;
 use crate::worldgen::stages::chunk_hash;
@@ -14,7 +9,9 @@ use crate::worldgen::stages::chunk_hash;
 // PlacementSettings: spacing/salt/biome predicate for one structure kind
 // ---------------------------------------------------------------------------
 
-/// Spacing/salt/biome predicate for one structure kind.
+/// 某类结构的间距、盐值与生物群系谓词配置。
+///
+/// Spacing, salt, and biome predicate configuration for one structure kind.
 pub struct PlacementSettings {
     /// Salt mixed into the region RNG (default `0x76694565C616765`).
     pub salt: i64,
@@ -44,7 +41,9 @@ impl Default for PlacementSettings {
 // StructurePlacement: region-grid origin check
 // ---------------------------------------------------------------------------
 
-/// Region-grid origin check: sparsely decides whether a chunk is a structure origin.
+/// 区域网格原点判定：稀疏决定区块是否为结构原点。
+///
+/// Region-grid origin check deciding sparsely whether a chunk is a structure origin.
 pub struct StructurePlacement {
     /// Placement settings.
     pub settings: PlacementSettings,

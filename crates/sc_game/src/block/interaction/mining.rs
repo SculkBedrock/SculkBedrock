@@ -78,6 +78,11 @@ fn try_grace_complete_break(
         position,
         0,
     );
+    let initial_damage = world
+        .get_component::<sc_item::PlayerInventory>(entity)
+        .and_then(|inv| inv.get(inv.selected_slot() as usize))
+        .map(|s| s.damage)
+        .unwrap_or(0);
     let admitted = queue.try_push_break(
         BlockChange {
             world_id: world_id.as_ref().clone(),
@@ -91,6 +96,7 @@ fn try_grace_complete_break(
         BlockBreakContext {
             hand: state.hand.clone(),
             creative: state.creative,
+            initial_damage,
         },
     );
     world.remove_component::<BreakingState>(entity);
@@ -404,6 +410,11 @@ pub fn advance_block_break(
             position,
             0,
         );
+        let initial_damage = world
+            .get_component::<sc_item::PlayerInventory>(&entity)
+            .and_then(|inv| inv.get(inv.selected_slot() as usize))
+            .map(|s| s.damage)
+            .unwrap_or(0);
         let admitted = queue.try_push_break(
             BlockChange {
                 world_id: world_id.as_ref().clone(),
@@ -417,6 +428,7 @@ pub fn advance_block_break(
             BlockBreakContext {
                 hand: state.hand.clone(),
                 creative: state.creative,
+                initial_damage,
             },
         );
         if admitted.is_none() {

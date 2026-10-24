@@ -1,4 +1,12 @@
+//! `.json` 文件的语义编译：产出不可变注册表快照（位于 `sc_block`）。
+//!
 //! Semantic compilation of `.json` files into an immutable registry snapshot (in `sc_block`).
+//!
+//! 职责划分：`sc_packloader::block` 域负责发现、配额封顶的读取与 schema 解析
+//! （`block::component` 的组件结构注册表，镜像 `item::component`；文件体是原版
+//! `format_version` + `minecraft:block` 结构），而本模块负责全部跨文件语义检查
+//! （默认状态、id 冲突、哈希碰撞、覆盖重叠），并在私有构建流程完成后原子发布
+//! 不可变的 [`BlockJsonSnapshot`]。
 //!
 //! Responsibility split: the `sc_packloader::block` domain handles discovery, quota-capped reads, and
 //! schema parsing (component struct registry in `block::component`, mirroring `item::component`; file body is the
@@ -6,12 +14,22 @@
 //! checks (default states, id conflicts, hash collisions, overlay overlaps) and atomically publishes
 //! the immutable [`BlockJsonSnapshot`] once the private builder flow completes.
 //!
+//! Tick 热路径只读快照与稠密表，绝不解析 JSON。
+//!
 //! Tick hot paths only read the snapshot and dense tables, never parse JSON.
+//!
+//! 标识契约：内部稠密下标（按标识符与类型化规范状态序分配）、FNV 状态哈希
+//! （规范 `sc_world::leveldb::block_hash` 算法）、协议顺序 id
+//! （`sc:protocol_runtime_ids` 原样保留，绝不按排序重算）与物品 id 彼此独立。
+//! `minecraft:unknown` 保持 `-2` 哨兵；任何哈希碰撞即拒绝整个包。
 //!
 //! Identity contract: internal dense indices (assigned by identifier and typed canonical state order),
 //! FNV state hashes (canonical `sc_world::leveldb::block_hash` algorithm), protocol sequential ids
 //! (`sc:protocol_runtime_ids` kept verbatim, never recomputed by sort order), and item ids stay
 //! independent. `minecraft:unknown` keeps the `-2` sentinel; any hash collision rejects the whole pack.
+//!
+//! 本模块绝不猜测玩法数据：未声明的组件编译为 `None`（未声明），
+//! 而不继承石头式默认值。
 //!
 //! This module never guesses gameplay data: undeclared components compile to `None` (undeclared)
 //! instead of inheriting stone-like defaults.
@@ -20,7 +38,7 @@ use sc_nbt::compound::CompoundNbt;
 use sc_nbt::NbtValue;
 use sc_packloader::block::PropValue;
 #[cfg(test)]
-use sc_packloader::block::{BlockBundleBudgets, BlockJsonBundle, LegacyPaletteEntry};
+use sc_packloader::block::{BlockBundleBudgets, BlockJsonBundle};
 
 pub mod compile;
 pub mod legacy;
@@ -38,7 +56,12 @@ pub use snapshot::{BlockJsonSnapshot, SnapState, SnapType};
 // state_signature string-concat/byte-bool behavior).
 // ---------------------------------------------------------------------------
 
+/// 标识符 + 排序后属性到无歧义键（带长度前缀，防分隔符伪造）。
+///
 /// identifier plus sorted properties to an unambiguous key (length-prefixed, separator-forgery safe).
+///
+/// - `identifier`: 方块标识符
+/// - `props`: 属性名到属性值列表
 pub fn typed_state_key(identifier: &str, props: &[(String, PropValue)]) -> Box<str> {
     let mut out = String::new();
     out.push_str(&format!("{}:{};", identifier.len(), identifier));
@@ -53,7 +76,11 @@ pub fn typed_state_key(identifier: &str, props: &[(String, PropValue)]) -> Box<s
     Box::from(out)
 }
 
+/// 属性赋值到等价 states NBT（磁盘调色板/全局字典共享同一属性标识）。
+///
 /// Property assignments to equivalent states NBT (disk palette / global dictionary share the same property identity).
+///
+/// - `props`: 属性名到属性值列表
 pub fn states_nbt_of(props: &[(String, PropValue)]) -> CompoundNbt {
     let mut out = CompoundNbt::new(None);
     for (name, value) in props.iter() {
@@ -62,8 +89,15 @@ pub fn states_nbt_of(props: &[(String, PropValue)]) -> CompoundNbt {
     out
 }
 
+/// 单个查询键值对与类型化快照属性的宽松字符串匹配
+/// （规则同全局字典在 NBT 值上的匹配器）。
+///
 /// Lenient string match of one query pair against typed snapshot props
 /// (same rules as the global dictionary matcher over NBT values).
+///
+/// - `props`: 类型化属性列表
+/// - `key`: 属性名
+/// - `value`: 查询字符串值
 fn snapshot_prop_matches(props: &[(String, PropValue)], key: &str, value: &str) -> bool {
     let Some((_, prop)) = props.iter().find(|(k, _)| k == key) else {
         return false;
@@ -79,19 +113,34 @@ fn snapshot_prop_matches(props: &[(String, PropValue)], key: &str, value: &str) 
     }
 }
 
+/// 全部查询键值对均匹配才算匹配（缺键即失败）。
+///
 /// All query pairs match (missing keys fail).
+///
+/// - `props`: 类型化属性列表
+/// - `pairs`: 查询键值对
 fn snapshot_props_match(props: &[(String, PropValue)], pairs: &[(&str, &str)]) -> bool {
     pairs
         .iter()
         .all(|(key, value)| snapshot_prop_matches(props, key, value))
 }
 
+/// NBT 值到类型化比较键片段。
+///
 /// NBT value to typed comparison key fragment.
+///
+/// byte/int/string 与 [`typed_state_key`] **字节一致地**编码（同一函数、同一键），
+/// 从而快照状态可与旧调色板/全局字典逐状态比对；
+/// 其他旧类型（short/long/float/数组/嵌套）没有对应 `PropValue`，使用 `~t`
+/// 前缀 + 类型标签 + Debug 文本，其前缀绝不会与三种标准编码碰撞。
 ///
 /// byte/int/string encode **byte-identically** to [`typed_state_key`] (same function, same key),
 /// so snapshot states compare per-state against the legacy palette / global dictionary;
 /// other legacy types (short/long/float/array/nested) have no `PropValue`, using a `~t`
 /// prefix plus type tag plus Debug text whose prefix can never collide with the three standard encodings.
+///
+/// - `out`: 输出字符串（追加写入）
+/// - `v`: 待编码的 NBT 值
 fn sort_key_for_nbt_value(out: &mut String, v: &NbtValue) {
     match v {
         NbtValue::Byte(b) => {
@@ -109,8 +158,14 @@ fn sort_key_for_nbt_value(out: &mut String, v: &NbtValue) {
     }
 }
 
+/// 任意 NBT states（含 byte/int/string 之外的旧类型）到类型化比较键。
+/// 在三种属性类型上与 [`typed_state_key`] 一致。
+///
 /// Arbitrary NBT states (including legacy types beyond byte/int/string) to typed comparison keys.
 /// Matches [`typed_state_key`] on the three property types.
+///
+/// - `identifier`: 方块标识符
+/// - `states`: 原始 states NBT（`None` 表示无属性）
 pub fn typed_key_for_nbt(identifier: &str, states: Option<&CompoundNbt>) -> Box<str> {
     let mut out = format!("{}:{};", identifier.len(), identifier);
     let Some(states) = states else {
@@ -131,9 +186,7 @@ pub fn typed_key_for_nbt(identifier: &str, states: Option<&CompoundNbt>) -> Box<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sc_packloader::block::{
-        fingerprint_bundle, parse_block_file, parse_legacy_palette_entries,
-    };
+    use sc_packloader::block::{fingerprint_bundle, parse_block_file};
 
     const PACK: &str = "test-pack";
     const NO_PREEXISTING: &dyn Fn(u32) -> Option<(Box<str>, Box<str>)> = &|_| None;
@@ -145,7 +198,6 @@ mod tests {
             "minecraft:block": {
                 "description": {"identifier": "minecraft:air", "states": {}},
                 "components": {"sc:replaceable": true},
-                "sc:default_state": {},
                 "sc:protocol_runtime_ids": [0]
             }
         }"#;
@@ -161,7 +213,7 @@ mod tests {
             "minecraft:block": {
                 "description": {
                     "identifier": "minecraft:oak_log",
-                    "states": {"pillar_axis": ["x", "y", "z"]}
+                    "states": {"pillar_axis": ["y", "x", "z"]}
                 },
                 "components": {
                     "minecraft:collision_box": {"origin": [-8, 0, -8], "size": [16, 16, 16]},
@@ -175,7 +227,6 @@ mod tests {
                         "components": {"minecraft:loot": "loot_tables/blocks/oak_log.json"}
                     }
                 ],
-                "sc:default_state": {"pillar_axis": "y"},
                 "sc:protocol_runtime_ids": [100, 101, 102]
             }
         }"#;
@@ -186,6 +237,14 @@ mod tests {
     }
 
     fn bundle_of(raws: &[(String, Vec<u8>)], mode: &str) -> BlockJsonBundle {
+        bundle_of_with_tables(raws, mode, std::collections::BTreeMap::new())
+    }
+
+    fn bundle_of_with_tables(
+        raws: &[(String, Vec<u8>)],
+        mode: &str,
+        loot_tables: std::collections::BTreeMap<String, serde_json::Value>,
+    ) -> BlockJsonBundle {
         let mut refs: Vec<(&str, &[u8])> = raws
             .iter()
             .map(|(p, b)| (p.as_str(), b.as_slice()))
@@ -201,6 +260,7 @@ mod tests {
             network_id_mode: mode.to_string(),
             fingerprint,
             files,
+            loot_tables,
         }
     }
 
@@ -256,7 +316,6 @@ mod tests {
                         {"name": "s", "values": ["a"]}
                     ]
                 },
-                "sc:default_state": {"lit": false, "age": 0, "s": "a"},
                 "sc:protocol_runtime_ids": [1, 2, 3, 4]
             }
         }"#;
@@ -327,7 +386,6 @@ mod tests {
                         {"name": "s", "values": ["a"]}
                     ]
                 },
-                "sc:default_state": {"lit": false, "age": 0, "s": "a"},
                 "sc:protocol_runtime_ids": [1, 2, 3, 4]
             }
         }"#;
@@ -457,7 +515,6 @@ mod tests {
             "minecraft:block": {
                 "description": {"identifier": "minecraft:air", "states": {}},
                 "components": {"sc:unbreakable": {}},
-                "sc:default_state": {},
                 "sc:protocol_runtime_ids": [0]
             }
         }"#;
@@ -494,7 +551,7 @@ mod tests {
             }
             comps.push(format!("\"sc:mining\": {mining_json}"));
             let json = format!(
-                r#"{{"format_version": "1.10.0","minecraft:block": {{"description": {{"identifier": "minecraft:stone", "states": {{}}}},"components": {{{}}},"sc:default_state": {{}},"sc:protocol_runtime_ids": [7]}}}}"#,
+                r#"{{"format_version": "1.10.0","minecraft:block": {{"description": {{"identifier": "minecraft:stone", "states": {{}}}},"components": {{{}}},"sc:protocol_runtime_ids": [7]}}}}"#,
                 comps.join(",")
             );
             let air = raw_air();
@@ -599,14 +656,10 @@ mod tests {
                                 "base_time_seconds": 3.0,
                                 "default": {"can_mine": false, "harvest": false, "speed_multiplier": 1.0}
                             },
-                            "sc:drops": {
-                                "enabled": true, "mode": "independent",
-                                "entries": [{"item": "minecraft:coal", "chance": 1.0, "count": [{"value": 1, "chance": 1.0}]}]
-                            }
+                            "minecraft:loot": {"table": "loot_tables/blocks/oak_log_y.json"}
                         }
                     }
                 ],
-                "sc:default_state": {"pillar_axis": "x"},
                 "sc:protocol_runtime_ids": [100, 101]
             }
         }"#;
@@ -614,8 +667,19 @@ mod tests {
             "blocks/minecraft/oak_log.json".to_string(),
             json.as_bytes().to_vec(),
         );
+        // The permutation overrides `minecraft:loot` for axis y; the referenced
+        // table content rides on the bundle.
+        let mut tables = std::collections::BTreeMap::new();
+        tables.insert(
+            "loot_tables/blocks/oak_log_y.json".to_string(),
+            serde_json::json!({
+                "pools": [{"rolls": 1, "entries": [
+                    {"type": "item", "name": "minecraft:coal", "count": 1}
+                ]}]
+            }),
+        );
         let (snap, _) = compile_bundle(
-            &bundle_of(&[raw_air(), raw], "hashed"),
+            &bundle_of_with_tables(&[raw_air(), raw], "hashed", tables),
             PACK,
             &BlockBundleBudgets::default(),
             NO_PREEXISTING,
@@ -632,18 +696,19 @@ mod tests {
         };
         let axis_x = find("pillar_axis=x");
         let axis_y = find("pillar_axis=y");
-        // x takes shared mining (mineable, iron pickaxe 4x), no drops.
+        // x takes shared mining (mineable, iron pickaxe 4x), no loot (no drops).
         let mx = snap.mining_of(axis_x).expect("x mining");
         assert_eq!(mx.base_seconds, 2.0);
         assert!(mx.default_rule.can_mine);
         assert!(snap.drops_of(axis_x).is_none());
-        // y takes overlay mining (unmineable) plus drops (enabled).
+        // y takes overlay mining (unmineable) plus the overridden loot table (drops enabled).
         let my = snap.mining_of(axis_y).expect("y mining");
         assert_eq!(my.base_seconds, 3.0);
         assert!(!my.default_rule.can_mine);
         let dy = snap.drops_of(axis_y).expect("y drops");
         assert!(dy.enabled);
         assert_eq!(dy.entries.len(), 1);
+        assert_eq!(&*dy.entries[0].item, "minecraft:coal");
     }
 
     /// Conflicting components are rejected per final state (compile time, on the merged map;
@@ -660,7 +725,6 @@ mod tests {
                     "sc:unbreakable": {},
                     "sc:mining": {"formula_version": 1,"base_time_seconds": 1.0,"default": {"can_mine": true,"harvest": true,"speed_multiplier": 1.0}}
                 },
-                "sc:default_state": {},
                 "sc:protocol_runtime_ids": [7]
             }
         }"#;
@@ -689,7 +753,6 @@ mod tests {
                     {"condition": "q.block_property('minecraft:oak_log','pillar_axis') == 'x'",
                      "components": {"sc:mining": {"formula_version": 1,"base_time_seconds": 1.0,"default": {"can_mine": true,"harvest": true,"speed_multiplier": 1.0}}}}
                 ],
-                "sc:default_state": {"pillar_axis": "x"},
                 "sc:protocol_runtime_ids": [100, 101]
             }
         }"#;
@@ -706,39 +769,12 @@ mod tests {
         )
         .expect_err("跨层互斥必须整包拒绝");
         assert!(e.to_string().contains("互斥"), "实际：{e}");
-
-        // loot plus enabled drops are rejected together (compile time).
-        let loot_bad = r#"{
-            "format_version": "1.10.0",
-            "minecraft:block": {
-                "description": {"identifier": "minecraft:stone", "states": {}},
-                "components": {
-                    "minecraft:loot": "loot_tables/blocks/stone.json",
-                    "sc:drops": {"enabled": true,"mode": "independent","entries": [{"item": "minecraft:cobblestone","chance": 1.0,"count": [{"value": 1,"chance": 1.0}]}]}
-                },
-                "sc:default_state": {},
-                "sc:protocol_runtime_ids": [7]
-            }
-        }"#;
-        let raw = (
-            "blocks/minecraft/stone.json".to_string(),
-            loot_bad.as_bytes().to_vec(),
-        );
-        let e = compile_bundle(
-            &bundle_of(&[raw_air(), raw], "hashed"),
-            PACK,
-            &BlockBundleBudgets::default(),
-            NO_PREEXISTING,
-            ALLOW_ALL_ITEMS,
-        )
-        .expect_err("loot+启用的 drops 必须拒绝");
-        assert!(e.to_string().contains("掉落来源不明"), "实际：{e}");
     }
 
     /// Illegal tool/drop references and budgets are rejected at compile time (including missing items).
     #[test]
     fn bad_refs_and_budgets_are_rejected() {
-        // Unknown item.
+        // Unknown item (mining tool).
         let unknown_item = r#"{
             "format_version": "1.10.0",
             "minecraft:block": {
@@ -746,7 +782,6 @@ mod tests {
                 "components": {
                     "sc:mining": {"formula_version": 1,"base_time_seconds": 1.0,"default": {"can_mine": true,"harvest": true,"speed_multiplier": 1.0},"tools": [{"items": ["minecraft:nope_not_an_item"],"can_mine": true,"harvest": true,"speed_multiplier": 2.0}]}
                 },
-                "sc:default_state": {},
                 "sc:protocol_runtime_ids": [7]
             }
         }"#;
@@ -767,6 +802,41 @@ mod tests {
             "实际：{e}"
         );
 
+        // Unknown item (loot-table drop entry; the table rides on the bundle).
+        let loot_unknown = r#"{
+            "format_version": "1.10.0",
+            "minecraft:block": {
+                "description": {"identifier": "minecraft:stone", "states": {}},
+                "components": {"minecraft:loot": "loot_tables/blocks/stone.json"},
+                "sc:protocol_runtime_ids": [7]
+            }
+        }"#;
+        let raw = (
+            "blocks/minecraft/stone.json".to_string(),
+            loot_unknown.as_bytes().to_vec(),
+        );
+        let mut tables = std::collections::BTreeMap::new();
+        tables.insert(
+            "loot_tables/blocks/stone.json".to_string(),
+            serde_json::json!({
+                "pools": [{"rolls": 1, "entries": [
+                    {"type": "item", "name": "minecraft:nope_not_an_item", "count": 1}
+                ]}]
+            }),
+        );
+        let e = compile_bundle(
+            &bundle_of_with_tables(&[raw_air(), raw], "hashed", tables),
+            PACK,
+            &BlockBundleBudgets::default(),
+            NO_PREEXISTING,
+            &|id: &str| id != "minecraft:nope_not_an_item",
+        )
+        .expect_err("战利品表未知物品必须拒绝");
+        assert!(
+            e.to_string().contains("不在当前版本包物品注册表"),
+            "实际：{e}"
+        );
+
         // Budget saturated: too many tools (compile-time check).
         let mut tight = BlockBundleBudgets::default();
         tight.max_mining_tools_per_state = 0;
@@ -777,7 +847,6 @@ mod tests {
                 "components": {
                     "sc:mining": {"formula_version": 1,"base_time_seconds": 1.0,"default": {"can_mine": true,"harvest": true,"speed_multiplier": 1.0},"tools": [{"items": ["minecraft:stone"],"can_mine": true,"harvest": true,"speed_multiplier": 2.0}]}
                 },
-                "sc:default_state": {},
                 "sc:protocol_runtime_ids": [7]
             }
         }"#;
@@ -826,7 +895,6 @@ mod tests {
                         {"items": ["minecraft:stone"],"can_mine": true,"harvest": true,"speed_multiplier": 3.0}
                     ]}
                 },
-                "sc:default_state": {},
                 "sc:protocol_runtime_ids": [7]
             }
         }"#;
@@ -854,8 +922,8 @@ mod tests {
     #[test]
     fn fingerprint_changes_with_mining_drops() {
         use sc_packloader::block::fingerprint_bundle;
-        let a = r#"{"format_version": "1.10.0","minecraft:block": {"description": {"identifier": "minecraft:stone", "states": {}},"components": {"sc:mining": {"formula_version": 1,"base_time_seconds": 1.0,"default": {"can_mine": true,"harvest": true,"speed_multiplier": 1.0}}},"sc:default_state": {},"sc:protocol_runtime_ids": [7]}}"#;
-        let b = r#"{"format_version": "1.10.0","minecraft:block": {"description": {"identifier": "minecraft:stone", "states": {}},"components": {"sc:mining": {"formula_version": 1,"base_time_seconds": 2.0,"default": {"can_mine": true,"harvest": true,"speed_multiplier": 1.0}}},"sc:default_state": {},"sc:protocol_runtime_ids": [7]}}"#;
+        let a = r#"{"format_version": "1.10.0","minecraft:block": {"description": {"identifier": "minecraft:stone", "states": {}},"components": {"sc:mining": {"formula_version": 1,"base_time_seconds": 1.0,"default": {"can_mine": true,"harvest": true,"speed_multiplier": 1.0}}},"sc:protocol_runtime_ids": [7]}}"#;
+        let b = r#"{"format_version": "1.10.0","minecraft:block": {"description": {"identifier": "minecraft:stone", "states": {}},"components": {"sc:mining": {"formula_version": 1,"base_time_seconds": 2.0,"default": {"can_mine": true,"harvest": true,"speed_multiplier": 1.0}}},"sc:protocol_runtime_ids": [7]}}"#;
         let air = raw_air();
         let refs_a: Vec<(&str, &[u8])> = vec![
             (air.0.as_str(), air.1.as_slice()),
@@ -877,12 +945,12 @@ mod tests {
         );
     }
 
-    /// Example files load (`examples/blocks/example_compressed_ore.json`).
+    /// Example files load (`examples/blocks/example_compressed_ore.block.json`).
     #[test]
     fn example_compressed_ore_loads() {
         let bytes = std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../examples/blocks/example_compressed_ore.json"
+            "/../../examples/blocks/example_compressed_ore.block.json"
         ))
         .expect("示例文件缺失");
         // JSON syntax valid (all examples syntax-checked).
@@ -894,7 +962,22 @@ mod tests {
         );
         // Note: the example identifier is example:compressed_ore and the file path
         // example/compressed_ore (single path segment) matches it.
-        let bundle = bundle_of(&[air, ore], "hashed");
+        let bundle = bundle_of_with_tables(
+            &[air, ore],
+            "hashed",
+            std::iter::once((
+                "loot_tables/blocks/example_compressed_ore.json".to_string(),
+                serde_json::from_slice(
+                    &std::fs::read(concat!(
+                        env!("CARGO_MANIFEST_DIR"),
+                        "/../../examples/blocks/loot_tables/example_compressed_ore.json"
+                    ))
+                    .expect("示例战利品表缺失"),
+                )
+                .expect("示例战利品表 JSON 非法"),
+            ))
+            .collect(),
+        );
         let (snap, warnings) = compile_bundle(
             &bundle,
             PACK,
@@ -919,9 +1002,150 @@ mod tests {
             .default_state;
         let m = snap.mining_of(ore_idx).expect("mining");
         assert_eq!(m.base_seconds, 3.0);
+        // Drops compile from the referenced table (two independent pools).
+        assert_eq!(
+            snap.loot_of(ore_idx),
+            Some("loot_tables/blocks/example_compressed_ore.json")
+        );
         let d = snap.drops_of(ore_idx).expect("drops");
         assert!(d.enabled);
         assert_eq!(d.entries.len(), 2);
+        assert_eq!(&*d.entries[0].item, "minecraft:cobblestone");
+        assert_eq!(d.entries[0].chance, 1.0);
+        assert_eq!(&*d.entries[1].item, "minecraft:coal");
+        assert_eq!(d.entries[1].chance, 0.25);
+    }
+
+    /// Weighted one_of pools and empty alternatives compile per the extraction-pipeline
+    /// table shape (gilded_blackstone / gravel / mangrove_propagule semantics).
+    #[test]
+    fn loot_table_one_of_weight_and_empty_alternatives() {
+        let json = r#"{
+            "format_version": "1.10.0",
+            "minecraft:block": {
+                "description": {"identifier": "test:weighted", "states": {}},
+                "components": {"minecraft:loot": {"table": "loot_tables/blocks/weighted.json"}},
+                "sc:protocol_runtime_ids": [7]
+            }
+        }"#;
+        let raw = (
+            "blocks/test/weighted.json".to_string(),
+            json.as_bytes().to_vec(),
+        );
+        let mut tables = std::collections::BTreeMap::new();
+        tables.insert(
+            "loot_tables/blocks/weighted.json".to_string(),
+            serde_json::json!({
+                "pools": [
+                    // 90% self, 10% gold_nugget with a count distribution (weighted one_of).
+                    {"rolls": 1, "entries": [
+                        {"type": "item", "name": "minecraft:gilded_blackstone", "weight": 900000, "count": 1},
+                        {"type": "item", "name": "minecraft:gold_nugget", "weight": 100000, "count": [
+                            {"value": 2, "chance": 0.25}, {"value": 3, "chance": 0.25},
+                            {"value": 4, "chance": 0.25}, {"value": 5, "chance": 0.25}
+                        ]}
+                    ]}
+                ]
+            }),
+        );
+        let snap = compile_bundle(
+            &bundle_of_with_tables(&[raw_air(), raw], "hashed", tables),
+            PACK,
+            &BlockBundleBudgets::default(),
+            NO_PREEXISTING,
+            ALLOW_ALL_ITEMS,
+        )
+        .expect("加权表应编译")
+        .0;
+        let idx = snap
+            .type_by_identifier("test:weighted")
+            .unwrap()
+            .default_state;
+        let d = snap.drops_of(idx).expect("加权 drops");
+        assert_eq!(d.mode, crate::mining_drops::DropMode::OneOf);
+        assert_eq!(d.entries.len(), 2);
+        // Selection chances normalize over the pool weight total.
+        assert_eq!(d.entries[0].chance, 0.9);
+        assert_eq!(d.entries[1].chance, 0.1);
+        assert_eq!(&*d.entries[0].item, "minecraft:gilded_blackstone");
+        assert_eq!(&*d.entries[1].item, "minecraft:gold_nugget");
+
+        // 50/50 empty alternative: the empty branch counts toward the weight total.
+        let json = r#"{
+            "format_version": "1.10.0",
+            "minecraft:block": {
+                "description": {"identifier": "test:empty_alt", "states": {}},
+                "components": {"minecraft:loot": "loot_tables/blocks/empty_alt.json"},
+                "sc:protocol_runtime_ids": [7]
+            }
+        }"#;
+        let raw = (
+            "blocks/test/empty_alt.json".to_string(),
+            json.as_bytes().to_vec(),
+        );
+        let mut tables = std::collections::BTreeMap::new();
+        tables.insert(
+            "loot_tables/blocks/empty_alt.json".to_string(),
+            serde_json::json!({
+                "pools": [{"rolls": 1, "entries": [
+                    {"type": "item", "name": "minecraft:flint", "weight": 1, "count": 1},
+                    {"type": "empty", "weight": 1}
+                ]}]
+            }),
+        );
+        let snap = compile_bundle(
+            &bundle_of_with_tables(&[raw_air(), raw], "hashed", tables),
+            PACK,
+            &BlockBundleBudgets::default(),
+            NO_PREEXISTING,
+            ALLOW_ALL_ITEMS,
+        )
+        .expect("50/50 empty 表应编译")
+        .0;
+        let idx = snap
+            .type_by_identifier("test:empty_alt")
+            .unwrap()
+            .default_state;
+        let d = snap.drops_of(idx).expect("50/50 drops");
+        assert_eq!(d.mode, crate::mining_drops::DropMode::OneOf);
+        assert_eq!(d.entries.len(), 1);
+        assert_eq!(d.entries[0].chance, 0.5);
+        assert_eq!(&*d.entries[0].item, "minecraft:flint");
+
+        // A pure-empty pool compiles to no drops at all.
+        let json = r#"{
+            "format_version": "1.10.0",
+            "minecraft:block": {
+                "description": {"identifier": "test:empty_pool", "states": {}},
+                "components": {"minecraft:loot": "loot_tables/blocks/empty.json"},
+                "sc:protocol_runtime_ids": [7]
+            }
+        }"#;
+        let raw = (
+            "blocks/test/empty_pool.json".to_string(),
+            json.as_bytes().to_vec(),
+        );
+        let mut tables = std::collections::BTreeMap::new();
+        tables.insert(
+            "loot_tables/blocks/empty.json".to_string(),
+            serde_json::json!({
+                "pools": [{"rolls": 1, "entries": [{"type": "empty", "weight": 1}]}]
+            }),
+        );
+        let snap = compile_bundle(
+            &bundle_of_with_tables(&[raw_air(), raw], "hashed", tables),
+            PACK,
+            &BlockBundleBudgets::default(),
+            NO_PREEXISTING,
+            ALLOW_ALL_ITEMS,
+        )
+        .expect("纯 empty 表应编译")
+        .0;
+        let idx = snap
+            .type_by_identifier("test:empty_pool")
+            .unwrap()
+            .default_state;
+        assert!(snap.drops_of(idx).is_none());
     }
 
     /// `ur:*` keys load raw (direct load; namespace semantics belong to consumers,
@@ -934,7 +1158,6 @@ mod tests {
             "minecraft:block": {
                 "description": {"identifier": "minecraft:air", "states": {}},
                 "components": {"ur:replaceable": true},
-                "sc:default_state": {},
                 "sc:protocol_runtime_ids": [0]
             }
         }"#;
@@ -955,7 +1178,6 @@ mod tests {
                 "description": {"identifier": "minecraft:air", "states": {}},
                 "components": {},
                 "ur:default_state": {},
-                "sc:default_state": {},
                 "sc:protocol_runtime_ids": [0]
             }
         }"#;
@@ -984,7 +1206,6 @@ mod tests {
                     {"condition": "q.block_property('minecraft:air','x') == 0",
                      "components": {"sc:random_tick": false}}
                 ],
-                "sc:default_state": {},
                 "sc:protocol_runtime_ids": [0]
             }
         }"#;
@@ -1015,7 +1236,6 @@ mod tests {
                     {"condition": "q.block_property('minecraft:oak_log','pillar_axis') == 'x'",
                      "components": {"sc:random_tick": false}}
                 ],
-                "sc:default_state": {"pillar_axis": "x"},
                 "sc:protocol_runtime_ids": [100, 101]
             }
         }"#;
@@ -1042,7 +1262,6 @@ mod tests {
             "minecraft:block": {
                 "description": {"identifier": "minecraft:oak_log", "states": {}},
                 "components": {},
-                "sc:default_state": {},
                 "sc:protocol_runtime_ids": [7, 7]
             }
         }"#;
@@ -1061,7 +1280,6 @@ mod tests {
             "minecraft:block": {
                 "description": {"identifier": "minecraft:oak_log", "states": {}},
                 "components": {},
-                "sc:default_state": {},
                 "sc:protocol_runtime_ids": [7]
             }
         }"#;
@@ -1070,7 +1288,6 @@ mod tests {
             "minecraft:block": {
                 "description": {"identifier": "minecraft:birch_log", "states": {}},
                 "components": {},
-                "sc:default_state": {},
                 "sc:protocol_runtime_ids": [7]
             }
         }"#;
@@ -1113,131 +1330,4 @@ mod tests {
         assert!(e.to_string().contains("缺少 minecraft:air"), "实际：{e}");
     }
 
-    /// Fixed real-pack subset: split, parse, compile, then legacy/new equivalence (single-state defaults
-    /// are forced by the sole state, never guessed; authoritative multi-state defaults are completed elsewhere).
-    #[test]
-    fn real_single_state_subset_compiles_and_matches_legacy() {
-        use sc_packloader::block::split_legacy_palette;
-        use std::collections::HashMap;
-        let Some(palette_bytes) = sc_packloader::test_pack::read_test_pack_file(
-            "definitions/block_palette.nbt",
-        ) else {
-            eprintln!("[skip] 版本包缺失，跳过测试");
-            return;
-        };
-        let entries = parse_legacy_palette_entries(&palette_bytes).expect("旧 palette 解析");
-        let mut by_name: HashMap<&str, usize> = HashMap::new();
-        for e in entries.iter() {
-            *by_name.entry(e.name.as_str()).or_default() += 1;
-        }
-        let single: Vec<String> = {
-            let mut v: Vec<String> = by_name
-                .iter()
-                .filter(|(_, c)| **c == 1)
-                .map(|(k, _)| (*k).to_string())
-                .collect();
-            v.sort();
-            v.into_iter().take(400).collect()
-        };
-        let subset: Vec<LegacyPaletteEntry> = entries
-            .iter()
-            .filter(|e| single.contains(&e.name))
-            .cloned()
-            .collect();
-        assert_eq!(subset.len(), single.len());
-        let files = split_legacy_palette(&subset, &HashMap::new(), &HashMap::new())
-            .expect("单状态子集拆分应成功");
-        assert_eq!(files.len(), single.len());
-        // air must be in the subset (baseline block).
-        assert!(files
-            .iter()
-            .any(|f| f.zip_path.ends_with("minecraft/air.json")));
-        let mut refs: Vec<(&str, &[u8])> = files
-            .iter()
-            .map(|f| (f.zip_path.as_str(), f.bytes.as_slice()))
-            .collect();
-        refs.sort_by(|a, b| a.0.cmp(b.0));
-        let mut parsed = Vec::with_capacity(refs.len());
-        for (path, bytes) in refs {
-            parsed.push(parse_block_file("<real>", path, bytes).expect("子集应合法"));
-        }
-        let bundle = BlockJsonBundle {
-            schema_version: 1,
-            network_id_mode: "hashed".to_string(),
-            fingerprint: fingerprint_bundle(
-                &files
-                    .iter()
-                    .map(|f| (f.zip_path.as_str(), f.bytes.as_slice()))
-                    .collect::<Vec<_>>(),
-                "hashed",
-            ),
-            files: parsed,
-        };
-        let snap =
-            compile_bundle(&bundle, PACK, &BlockBundleBudgets::default(), NO_PREEXISTING, &|_| true)
-                .expect("子集应编译成功")
-                .0;
-        let report = compare_legacy_snapshot(&snap, &subset);
-        assert!(report.is_equal(), "新旧数据必须等价：{report:?}");
-        assert_eq!(snap.type_count(), single.len());
-        assert_eq!(snap.state_count(), subset.len());
-    }
-}
-#[cfg(test)]
-mod real_pack_tests {
-    use super::*;
-    use sc_packloader::block::{parse_legacy_palette_entries, BlockDataManifest};
-
-    /// Real-pack end to end: manifest declaration, 1379 files discovered, parse, compile, then
-    /// per-state equivalence with the legacy palette. Covers load-time budgets and full compilation.
-    #[test]
-    fn real_pack_bundle_compiles_and_matches_legacy() {
-        let Some(palette_bytes) = sc_packloader::test_pack::read_test_pack_file(
-            "definitions/block_palette.nbt",
-        ) else {
-            eprintln!("[skip] 版本包缺失，跳过测试");
-            return;
-        };
-        let Some(mut source) = sc_packloader::test_pack::open_test_pack() else {
-            eprintln!("[skip] 版本包缺失，跳过测试");
-            return;
-        };
-        let entries = parse_legacy_palette_entries(&palette_bytes).expect("旧 palette 解析");
-        let mut behavior_packs =
-            sc_packloader::version_control::loader::ZippedVersionPack::get_behavior_packs(
-                &mut source,
-            );
-        let bundle = sc_packloader::block::load_block_json_bundle(
-            &mut behavior_packs,
-            &BlockDataManifest {
-                schema_version: 1,
-                directory: sc_packloader::block::BLOCKS_DIRECTORY.to_string(),
-                network_id_mode: "hashed".to_string(),
-            },
-            "Vanilla",
-        )
-        .expect("bundle 应加载")
-        .expect("manifest 已声明 block_data");
-        assert_eq!(bundle.files.len(), 1379);
-        let total_states: usize = bundle.files.iter().map(|f| f.state_count()).sum();
-        assert_eq!(total_states, entries.len());
-        let snap =
-            compile_bundle(&bundle, "Vanilla", &BlockBundleBudgets::default(), &|_| None, &|_| true)
-                .expect("全量编译")
-                .0;
-        assert_eq!(snap.type_count(), 1379);
-        assert_eq!(snap.state_count(), entries.len());
-        let report = compare_legacy_snapshot(&snap, &entries);
-        assert!(report.is_equal(), "新旧数据必须等价：{report:?}");
-        // Key default states (explicitly declared, not first-seen order).
-        assert!(snap.default_hash("minecraft:stone").is_some());
-        assert!(snap.default_hash("minecraft:air").is_some());
-        assert_eq!(
-            snap.state(snap.default_state_idx("minecraft:air").unwrap())
-                .unwrap()
-                .key
-                .as_ref(),
-            "default"
-        );
-    }
 }

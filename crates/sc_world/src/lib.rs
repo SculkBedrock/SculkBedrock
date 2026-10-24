@@ -1,3 +1,8 @@
+//! 世界/存储 crate：区块数据、LevelDB 列式存储、世界加载与脏区块写回。
+//!
+//! World/storage crate: chunk data, LevelDB columnar storage, world loading
+//! and dirty-chunk writeback.
+
 use crate::chunk_executor::WorldChunkExecutor;
 use crate::chunk_view::{ChunkSendSettings, LevelChunkCache};
 use crate::manager::{MinecraftWorldId, MinecraftWorldManager};
@@ -31,9 +36,14 @@ pub mod leveldb;
 pub mod manager;
 pub mod storage;
 pub mod world;
+pub mod generation;
 pub mod world_loader;
 pub mod writeback;
 
+/// 世界插件：向 App 注册世界加载、区块写回轮询与退出时落盘系统。
+///
+/// World plugin: registers world loading, chunk-writeback polling and
+/// shutdown-flush systems on the App.
 pub struct SCWorldPlugin;
 
 impl Plugin for SCWorldPlugin {
@@ -47,6 +57,9 @@ impl Plugin for SCWorldPlugin {
     }
 }
 
+/// 退出时落盘：收到 [`SCExit`] 后先停掉 [`WorldChunkExecutor`]，
+/// 再把所有脏区块写回存储。
+///
 /// Shutdown flush: on [`SCExit`], stop the [`WorldChunkExecutor`] first, then
 /// write all dirty chunks back to storage.
 fn on_exit_flush_chunks(world: World, mut reader: EventReader<SCExit>) {
@@ -151,6 +164,10 @@ fn on_exit_flush_chunks(world: World, mut reader: EventReader<SCExit>) {
     }
 }
 
+/// 轮询有界的 SaveAck，并按公平、有界的方式准入新的脏区块快照。
+/// 本系统只在 ECS 资源锁下克隆 world/provider 句柄，存储工作由专职
+/// 写回 worker 执行。
+///
 /// Poll bounded SaveAcks and admit a fair, bounded number of new dirty
 /// snapshots. This system only clones world/provider handles under the ECS
 /// resource guard; storage work runs on the dedicated writeback workers.
@@ -212,6 +229,13 @@ fn process_chunk_writebacks(world: World) {
 
 /// 是否已有与主世界名匹配的世界（世界身份取各世界目录下
 /// `levelname.txt` 内容，缺失时为 `SculkBedrock Level`）。
+///
+/// Returns whether any world name matches the overworld name (world identity
+/// comes from each world directory's `levelname.txt`, defaulting to
+/// `SculkBedrock Level` when absent).
+///
+/// - `worlds`: 待检查的世界切片
+/// - `overworld_name`: 目标主世界名，严格大小写相等
 fn has_overworld_name(worlds: &[crate::world::MinecraftWorld], overworld_name: &str) -> bool {
     worlds
         .iter()
@@ -223,6 +247,17 @@ fn has_overworld_name(worlds: &[crate::world::MinecraftWorld], overworld_name: &
 /// 返回 `Some` 时必含主世界；等待期间收到关闭信号返回 `None`
 /// （调用方发 SCExit 走正常退出）。每 30s 重打一次提醒，
 /// 提醒里带出已发现的世界名，方便用户对照改名。
+///
+/// Polls `worlds/` until the overworld appears; startup pauses here instead
+/// of exiting the process.
+///
+/// A `Some` result always contains the overworld; returns `None` when a
+/// shutdown signal arrives while waiting (the caller then sends SCExit for a
+/// normal exit). Re-prints a reminder every 30s listing the discovered world
+/// names so the user can rename accordingly.
+///
+/// - `loader`: 世界目录加载器
+/// - `overworld_name`: 目标主世界名
 fn wait_for_overworld(
     loader: &WorldDirectoryLoader,
     overworld_name: &str,
@@ -291,6 +326,12 @@ fn wait_for_overworld(
     }
 }
 
+/// 启动期加载世界：扫描 `worlds/` 目录、分类主世界/下界/末地，
+/// 创建区块执行器与写回执行器并注册为 ECS 资源；失败时发 SCExit。
+///
+/// Loads worlds at startup: scans the `worlds/` directory, classifies
+/// overworld/nether/end, creates the chunk executor and writeback executor
+/// and registers them as ECS resources; sends SCExit on failure.
 fn load_world(world: World, server_properties: Res<ServerProperties>) {
     //world
     let start = Local::now().timestamp_millis();
@@ -311,12 +352,12 @@ fn load_world(world: World, server_properties: Res<ServerProperties>) {
     let the_nether_name = server_properties.the_nether_name.clone();
     let the_end_name = server_properties.the_end_name.clone();
     let mut worlds = loader.get_worlds();
-    // 还没有主世界（全新部署）：暂停启动并等待放入，而不是直接退出——
-    // 这里退出在用户看来就是闪退，且每次都要重启才能重试。
+    // No overworld yet (fresh deploy): pause startup and wait instead of
+    // exiting, so the user can add worlds without restarting the process.
     if !has_overworld_name(&worlds, &overworld_name) {
         let Some(waited) = wait_for_overworld(&loader, &overworld_name) else {
-            // 等待期间收到 Ctrl+C/关闭信号：走正常 SCExit 路径退出，
-            // 主循环启动后 Last 系统会做优雅收尾。
+            // Shutdown signal received while waiting: send SCExit for the
+            // normal exit path; Last systems run once after the main loop starts.
             world.send_event(SCExit::new(
                 SCExitReason::Error(Box::new(Error::new(
                     ErrorKind::Interrupted,
@@ -432,11 +473,14 @@ mod tests {
             name.to_string(),
             PathBuf::from(name),
             sc_utils::world::data::MinecraftWorldData::default(),
-            WorldChunkProvider::new(Arc::new(EmptyWorldStorage)),
+            WorldChunkProvider::new_testing(Arc::new(EmptyWorldStorage)),
         )
     }
 
     /// 等待恢复条件：主世界名匹配即继续，空目录/名字对不上就一直等。
+    ///
+    /// Wait-recovery condition: continue once the overworld name matches; keep
+    /// waiting on an empty directory or mismatched names.
     #[test]
     fn overworld_match_resumes_but_empty_or_mismatched_names_keep_waiting() {
         assert!(!has_overworld_name(&[], "OverWorld"));
@@ -446,7 +490,8 @@ mod tests {
             &[test_world("SculkBedrock Level"), test_world("OverWorld")],
             "OverWorld"
         ));
-        // 大小写/前后空格不算匹配（与启动期分类逻辑一致的严格相等）。
+        // Case and surrounding whitespace must match exactly, same as the
+        // startup classification logic.
         assert!(!has_overworld_name(&[test_world("overworld")], "OverWorld"));
     }
 }

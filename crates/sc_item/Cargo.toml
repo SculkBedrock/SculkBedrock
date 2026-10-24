@@ -7,6 +7,7 @@ license = "LGPL-3.0-only"
 [dependencies]
 sc_ecs = { path = "../sc_ecs" }
 sc_world = { path = "../sc_world" }
+sc_nbt = { path = "../sc_nbt" }
 parking_lot.workspace = true
 
 [lints]

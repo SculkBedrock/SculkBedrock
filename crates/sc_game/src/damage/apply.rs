@@ -1,5 +1,11 @@
+//! 权威摔落伤害应用（仅 owner tick）。
+//!
 //! Authoritative fall-damage application (owner-tick only).
 //!
+//! 生命值存放在 `EntityAttributes.minecraft:health.current_value`（默认 20）。
+//! 本模块在 owner tick 下修改它并发布可靠事实；网络域拥有线路编码。
+//! 失血不会因 outbox 受压而回滚：拒绝会经 `IntentPublisher` 升级为连接隔离
+//! （与其他无重同步的生命周期事实同路径）。
 //! Health lives in `EntityAttributes.minecraft:health.current_value` (default
 //! 20). This module mutates it under the owner tick and publishes reliable
 //! facts; the network domain owns wire encoding. Blood-loss is never rolled
@@ -13,21 +19,46 @@ use sc_entity::MinecraftEntityId;
 use crate::damage::{calc_fall_damage, FallDamageInput, FallDamageOutcome, LandingMaterial};
 use crate::net::{HurtEntity, IntentPublisher, SyncHealth};
 
+/// 死亡标记：致命伤害后阻止重复的摔落结算。重生/复活会移除它
+/// （当前只由本模块设置）。
+///
 /// Dead marker: stops repeat fall settlement after fatal damage.
-/// Respawn / revive removes it (P4 scope; MVP only sets it).
+/// Respawn / revive removes it (currently only set here).
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct Dead(pub bool);
 
+/// 一次权威摔落结算的结果。
+///
 /// Result of one authoritative fall settlement.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FallSettlement {
+    /// 本次结算造成的伤害。
+    ///
+    /// Damage applied by this settlement.
     pub damage: f32,
+    /// 结算后的生命值。
+    ///
+    /// Health after the settlement.
     pub health: f32,
+    /// 是否致命。
+    ///
+    /// Whether the settlement was fatal.
     pub fatal: bool,
 }
 
+/// 判定落地类型并运行纯公式。除调用方传入的 `sneaking` 标志外是纯函数
+/// （此处不访问 World，便于测试）。
+///
 /// Classify landing + run the pure formula. Pure except for the `sneaking`
 /// flag passed in by the caller (no World access here for testability).
+///
+/// - `fall_distance`: 摔落距离
+/// - `landing`: 落地材料
+/// - `sneaking`: 是否潜行
+/// - `immune_gamemode`: 游戏模式免疫（创造/旁观/无敌）
+/// - `can_fly`: 飞行能力免疫
+/// - `gamerule_enabled`: 世界 `fallDamage` 游戏规则是否启用
+/// - `is_player`: 是否为玩家
 pub fn decide_fall_damage(
     fall_distance: f32,
     landing: LandingMaterial,
@@ -51,14 +82,31 @@ pub fn decide_fall_damage(
     })
 }
 
+/// 把结算后的摔落伤害应用到权威生命值并发布事实。
+///
 /// Apply settled fall damage to authoritative health and publish facts.
+///
+/// 无伤害时（门禁/偏移）返回 `None`，有伤害返回 `Some`。
 /// Returns `None` when there is no damage (gates/offset), `Some` on damage.
 ///
+/// - `world`: ECS 世界
+/// - `entity`: 目标实体
+/// - `runtime_id`: 实体运行时 id（intent 路由用）
+/// - `damage`: 要应用的伤害
+/// - `publisher`: intent 发布者
+///
+/// 步骤（全部同步，无 await，不持 Chunk/Network 锁）：
 /// Steps (all synchronous, no await, no Chunk/Network locks held):
-/// 1. read `EntityAttributes.minecraft:health`, subtract, clamp to `[min,max]`;
-/// 2. set `Dead` on `health <= 0`;
-/// 3. publish `SyncHealth` + `HurtEntity{fatal}` via `IntentPublisher`
-///    (backpressure escalates to connection fault; health is not rolled back).
+/// 1. 读 `EntityAttributes.minecraft:health`，扣减并钳制到 `[min,max]`；
+///    read `EntityAttributes.minecraft:health`, subtract, clamp to
+///    `[min,max]`;
+/// 2. `health <= 0` 时设置 `Dead`；
+///    set `Dead` on `health <= 0`;
+/// 3. 经 `IntentPublisher` 发布 `SyncHealth` + `HurtEntity{fatal}`
+///    （backpressure 升级为连接故障；生命值不回滚）。
+///    publish `SyncHealth` + `HurtEntity{fatal}` via `IntentPublisher`
+///    (backpressure escalates to connection fault; health is not rolled
+///    back).
 pub fn apply_fall_damage(
     world: &World,
     entity: &sc_ecs::entity::EntityId,

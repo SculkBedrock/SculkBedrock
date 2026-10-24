@@ -1,3 +1,11 @@
+//! SC 核心内置命令。
+//!
+//! 服务端生命周期命令（/help、/stop）加由宿主执行的玩法命令（/gamemode、/give）。
+//! 只解析参数并发事件的命令实体可以放在版本包插件里（例如 vanilla_command 的
+//! /say），但涉及实体组件的命令实体必须在宿主侧执行：组件不跨 cdylib 边界
+//! （`Any` 向下转型在插件侧失败），因此 /gamemode、/give 在 sc_network 中以完整
+//! 权限运行。
+//!
 //! SC core builtin commands.
 //!
 //! Server-lifecycle commands (/help, /stop) plus host-executed gameplay
@@ -14,6 +22,8 @@ use sc_utils::event::{SCExit, SCExitReason, SCExitType};
 use crate::events::{CommandFeedback, CommandInvocation};
 use crate::registry::{CommandDefinition, CommandPermissionLevel, CommandRegistry, CommandSource};
 
+/// 注册所有内置命令定义。
+///
 /// Registers all builtin command definitions.
 pub fn register_builtin_commands(registry: &mut CommandRegistry) {
     let _ = registry.register(
@@ -135,6 +145,8 @@ pub fn stop_command(world: World, mut reader: EventReader<CommandInvocation>) {
     }
 }
 
+/// `/scversion`：显示服务器核心版本（金/青样式）。
+///
 /// /scversion: shows the server core version (gold/cyan styling).
 pub fn scversion_command(world: World, mut reader: EventReader<CommandInvocation>) {
     for invocation in reader.read() {

@@ -1,53 +1,110 @@
+//! 纯摔落伤害公式（不访问 World/ECS，可完整单元测试）。
+//!
 //! Pure fall-damage formula (no World/ECS access, fully unit-testable).
 //!
+//! 基线：`damage = fallDistance - 3.255 - jumpBoost - rideReduction`。
 //! Baseline: `damage = fallDistance - 3.255 - jumpBoost - rideReduction`.
+//! 公式之前按优先级应用落地门禁：
 //! Landing gates applied before the formula, in priority order:
+//! 水 > 黏液块（玩家且未潜行）> 游戏模式/飞行/游戏规则免疫。
 //! water > slime (player, not sneaking) > gamemode/flight/gamerule immunity.
 
+/// 摔落偏移：前 3.255 格内不受伤害。
+///
 /// Fall-damage offset: no damage within the first 3.255 blocks.
 pub const FALL_DAMAGE_OFFSET: f32 = 3.255;
+/// 低于该结算距离只产生方块副作用，绝不造成伤害。
+///
 /// Below this settled distance only block side effects apply, never damage.
 pub const FALL_LANDING_THRESHOLD: f32 = 0.75;
 
+/// 结算位置的落地材料分类。
+///
 /// Landing material classification for the settled position.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LandingMaterial {
+    /// 普通落地。
+    ///
+    /// Ordinary landing.
     Normal,
+    /// 水中。
+    ///
+    /// In water.
     Water,
+    /// 黏液块上。
+    ///
+    /// On a slime block.
     Slime,
 }
 
+/// 摔落伤害判定的输入。
+///
 /// Inputs to the fall-damage decision.
 #[derive(Clone, Copy, Debug)]
 pub struct FallDamageInput {
+    /// 摔落距离。
+    ///
+    /// Fall distance.
     pub fall_distance: f32,
+    /// 落地材料。
+    ///
+    /// Landing material.
     pub landing: LandingMaterial,
+    /// 玩家正在潜行（黏液块需要未潜行才能缓冲）。
+    ///
     /// Player is sneaking (slime requires non-sneaking to cushion).
     pub sneaking: bool,
+    /// 创造/旁观/无敌。
+    ///
     /// Creative / spectator / invulnerable.
     pub immune_gamemode: bool,
-    /// Flight-ability immunity (creative-style `Player::attack` FALL immunity).
+    /// 飞行能力免疫（创造式 `Player::attack` 的 FALL 免疫）。
+    ///
+    /// Flight-ability immunity (creative-style `Player::attack` FALL
+    /// immunity).
     pub can_fly: bool,
+    /// 世界 `fallDamage` 游戏规则（仅玩家；生物忽略它）。
+    ///
     /// World `fallDamage` gamerule (players only; mobs ignore it).
     pub gamerule_enabled: bool,
+    /// 是否为玩家（游戏规则只门禁玩家）。
+    ///
     /// Whether this entity is a player (gamerule only gates players).
     pub is_player: bool,
+    /// 存在 `SLOW_FALLING` 式效果。
+    ///
     /// `SLOW_FALLING`-style effect present.
     pub has_slow_falling: bool,
-    /// Jump-boost levels (reserved; 0 until the effect system lands).
+    /// 跳跃增益等级（当前恒为 0）。
+    ///
+    /// Jump-boost levels (always 0 today).
     pub jump_boost: f32,
-    /// Ride-jump reduction (reserved; 0 until rideable entities land).
+    /// 骑乘跳跃减免（当前恒为 0）。
+    ///
+    /// Ride-jump reduction (always 0 today).
     pub ride_reduction: f32,
 }
 
+/// 摔落判定的结果。
+///
 /// Outcome of the fall decision.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum FallDamageOutcome {
+    /// 无伤害。
+    ///
+    /// No damage.
     NoDamage,
+    /// 造成指定数值的伤害。
+    ///
+    /// Deal the given amount of damage.
     Damage(f32),
 }
 
+/// 纯判定：先免疫门禁，再偏移公式。
+///
 /// Pure decision: immunity gates first, then the offset formula.
+///
+/// - `input`: 判定输入
 pub fn calc_fall_damage(input: FallDamageInput) -> FallDamageOutcome {
     if !input.fall_distance.is_finite() || input.fall_distance <= 0.0 {
         return FallDamageOutcome::NoDamage;

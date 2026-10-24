@@ -1,12 +1,16 @@
+//! 控制台驱动：日志搜索状态与导航（由 `driver.rs` 拆出；在 `crate::driver` 重新导出）。
+//!
 //! Console driver: log search state and navigation (split from `driver.rs`; re-exported at `crate::driver`).
 
 use super::*;
 
-/// Global match cap (bounded so one-char queries over thousands of logs stay cheap; keeps the oldest).
+/// Global match cap (bounded; keeps the oldest matches).
 pub(super) const MAX_SEARCH_MATCHES: usize = 2000;
-/// Query string char cap (longer input is ignored; the status line cannot fit it).
+/// Query string char cap (longer input is ignored).
 pub(super) const MAX_QUERY_CHARS: usize = 64;
 
+/// 日志搜索状态（`Ctrl+F` 进入；只读，不触碰游戏状态）。
+///
 /// Log search state (entered with `Ctrl+F`; read-only, never touches game state).
 pub(super) struct SearchState {
     /// Query string (chars; cursor is a char index, wide-char safe).
@@ -60,8 +64,7 @@ impl SearchState {
 }
 
 /// Build the search render context (with the current selection animation age; `None` once steady).
-///
-/// Pure function (explicit clock) for unit tests: the animation finishes 500ms after selection.
+/// The selection animation lasts 500ms.
 pub(super) fn search_ctx_for<'a>(
     search: &'a SearchState,
     query: &'a str,
@@ -206,7 +209,7 @@ pub(super) fn jump_to_current(state: &mut GuiState) {
     }
 }
 
-/// Jump geometry (single-line compatible form with identical behavior; for older tests and simple callers).
+/// Jump geometry (single-line form; used by tests only).
 #[cfg(test)]
 pub(super) fn jump_target_view(
     height: usize,

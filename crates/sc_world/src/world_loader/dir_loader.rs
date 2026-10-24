@@ -15,12 +15,21 @@ impl WorldDirectoryLoader {
     }
 
     /// 被扫描的世界根目录（等待提示显示用）。
+    ///
+    /// Scanned worlds root directory (shown in the wait prompt).
     pub fn dir(&self) -> &Path {
         &self.dir_path
     }
 
+    /// 轻量目录扫描：每个世界目录返回 `(dir, display name)`，
+    /// 不读取 `level.dat`，也不打开任何 LevelDB。
+    ///
     /// Lightweight directory scan: `(dir, display name)` per world directory
     /// without reading `level.dat` or opening any LevelDB.
+    ///
+    /// 启动等待循环每秒轮询本方法；完整加载
+    /// [`WorldLoaderTrait::get_worlds`]（会打开每个世界的数据库）
+    /// 只在目标名字出现后执行一次。
     ///
     /// The startup wait loop polls this every second; a full
     /// [`WorldLoaderTrait::get_worlds`] (which opens every world's database)

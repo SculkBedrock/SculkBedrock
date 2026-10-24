@@ -36,7 +36,9 @@ const GRAD_2X: [f64; 16] = GRAD_X;
 /// Same values as `GRAD_Z`.
 const GRAD_2Z: [f64; 16] = GRAD_Z;
 
-/// Java: `NoiseGeneratorImprovedD`.
+/// 改进型 Perlin 噪声生成器（双精度）。
+///
+/// Improved Perlin noise generator using double precision.
 pub struct NoiseGeneratorImprovedD {
     /// Shuffled permutation table (512 entries).
     permutations: Vec<i32>,
@@ -270,7 +272,9 @@ impl NoiseGeneratorImprovedD {
 // NoiseGeneratorOctavesD.
 // ---------------------------------------------------------------------------
 
-/// Java: `NoiseGeneratorOctavesD`.
+/// 多八度改进型噪声生成器（双精度）。
+///
+/// Multi-octave improved noise generator using double precision.
 pub struct NoiseGeneratorOctavesD {
     /// Java: `private final NoiseGeneratorImprovedD[] generatorCollection`.
     generator_collection: Vec<NoiseGeneratorImprovedD>,
@@ -390,7 +394,9 @@ const F2: f64 = 0.5 * (SQRT_3 - 1.0);
 /// Java: `NoiseGeneratorSimplexD.G2`(L12).
 const G2: f64 = (3.0 - SQRT_3) / 6.0;
 
-/// Java: `NoiseGeneratorSimplexD`.
+/// 单形噪声生成器（双精度）。
+///
+/// Simplex noise generator using double precision.
 pub struct NoiseGeneratorSimplexD {
     /// Shuffled permutation table (512 entries).
     p: Vec<i32>,
@@ -586,7 +592,9 @@ impl NoiseGeneratorSimplexD {
 // NoiseGeneratorPerlinD.
 // ---------------------------------------------------------------------------
 
-/// Java: `NoiseGeneratorPerlinD`.
+/// 多层级 Perlin 噪声生成器（双精度）。
+///
+/// Multi-level Perlin noise generator using double precision.
 pub struct NoiseGeneratorPerlinD {
     /// Java: `private final NoiseGeneratorSimplexD[] noiseLevels`.
     noise_levels: Vec<NoiseGeneratorSimplexD>,

@@ -43,9 +43,9 @@ const FLAT_SIMPLEX_GRAD: [f64; 64] = [
     0.0, -1.0, -1.0, 0.0, //
 ];
 
-/// Java: `PerlinNoiseSampler extends Noise`.
+/// Perlin 噪声采样器。
 ///
-/// Inherited sampler state (`originX/Y/Z`, `permutations`) via [`Noise`] composition.
+/// Perlin noise sampler.
 pub struct PerlinNoiseSampler {
     /// Base sampler state (`originX/originY/originZ`, `permutations`).
     pub noise: Noise,
@@ -189,7 +189,9 @@ impl PerlinNoiseSampler {
 // OctavePerlinNoiseSampler
 // ---------------------------------------------------------------------------
 
-/// Java: `OctavePerlinNoiseSampler implements NoiseSampler`.
+/// 多八度 Perlin 噪声采样器。
+///
+/// Multi-octave Perlin noise sampler.
 pub struct OctavePerlinNoiseSampler {
     /// Java: `public final double lacunarity`.
     pub lacunarity: f64,

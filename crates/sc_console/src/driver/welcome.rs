@@ -1,23 +1,24 @@
+//! 控制台驱动：欢迎屏选择器与等待（由 `driver.rs` 拆出；在 `crate::driver` 重新导出）。
+//!
 //! Console driver: welcome-screen selector and wait (split from `driver.rs`; re-exported at `crate::driver`).
 
 use super::*;
 
-/// Welcome screen target frame interval (ms, about 30fps).
-///
-/// Uses 30fps rather than 60fps: the welcome screen repaints fullscreen truecolor frames,
-/// which would saturate software terminal emulators and starve input at 60fps.
-/// Blob drift is slow enough to look identical at 30fps; exit and shine animations stay smooth.
+/// Welcome screen target frame interval (ms, about 30fps): fullscreen truecolor
+/// repaints saturate software terminals at 60fps.
 pub(super) const WELCOME_FRAME_MS: u64 = 33;
 
-/// Next frame interval: at least `budget`, and never shorter than the last write cost.
-///
-/// Never catch up past the budget: when the terminal parses slower than frames are produced,
-/// `write_all` blocks, so the loop would park in paint and starve event polling.
-/// Using the last write cost as the floor yields to the terminal speed, then polls events promptly.
+/// Next frame interval: at least `budget`, and never shorter than the last write cost
+/// (a slow terminal lowers the frame rate instead of starving event polling).
 pub(crate) fn next_frame_interval(budget: Duration, last_write: Duration) -> Duration {
     budget.max(last_write)
 }
 
+/// 诊断用欢迎屏按键延迟轨迹（`SC_CONSOLE_WELCOME_TRACE=<path>`）。
+///
+/// 记录轮询等待/唤醒、drain 结果与绘制耗时，用于定位退出延迟。
+/// 未设置时零开销。
+///
 /// Diagnostic welcome-screen key latency trace (`SC_CONSOLE_WELCOME_TRACE=<path>`).
 ///
 /// Records poll wait/wakeup, drain results, and paint cost to locate exit delays.
@@ -44,15 +45,15 @@ impl WelcomeTrace {
         if let Some(f) = self.f.as_mut() {
             use std::io::Write as _;
             let _ = writeln!(f, "t={t} {msg}");
-            let _ = f.flush(); // 诊断期逐行落盘，崩了也有现场
+            let _ = f.flush(); // flush per line so the log survives a crash
         }
     }
 }
 
-/// Welcome-screen exit condition (pure logic, unit-testable).
+/// Welcome-screen exit condition.
 ///
 /// `dismissed` is the first-key time in ms; when this returns true the caller stops waiting
-/// without painting again (avoids flashing one extra black frame).
+/// without painting again.
 pub(crate) fn welcome_should_exit(age_ms: u64, dismissed_ms: Option<u64>) -> bool {
     match dismissed_ms {
         Some(d) => age_ms.saturating_sub(d) >= crate::welcome::WELCOME_EXIT_MS,
@@ -60,6 +61,8 @@ pub(crate) fn welcome_should_exit(age_ms: u64, dismissed_ms: Option<u64>) -> boo
     }
 }
 
+/// 交给宿主的欢迎屏选择结果（一次性）。
+///
 /// Welcome-screen choice handed to the host (one-shot).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WelcomeChoice {
@@ -70,7 +73,7 @@ pub struct WelcomeChoice {
     pub hitokoto: bool,
 }
 
-/// Selector navigation with wraparound (pure for unit tests).
+/// Selector navigation with wraparound.
 pub(crate) fn select_move(selected: usize, delta: i32, count: usize) -> usize {
     if count == 0 {
         return 0;
@@ -78,6 +81,8 @@ pub(crate) fn select_move(selected: usize, delta: i32, count: usize) -> usize {
     (selected as i32 + delta).rem_euclid(count as i32) as usize
 }
 
+/// 选择器焦点：语言列表，或每日一句勾选行。
+///
 /// Selector focus: the language list, or the daily-quote checkbox row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SelectFocus {
@@ -85,7 +90,11 @@ pub(crate) enum SelectFocus {
     Quote,
 }
 
-/// Language-selector interaction state (pure, unit-tested).
+/// 语言选择器的交互状态。
+///
+/// 勾选框只在高亮中文选项时存在；默认关闭，确认英文时强制关闭。
+///
+/// Language-selector interaction state.
 ///
 /// The quote checkbox exists only while a Chinese option is highlighted;
 /// it defaults off and English confirms force it off.
@@ -96,6 +105,8 @@ pub(crate) struct SelectMenu {
     pub hitokoto: bool,
 }
 
+/// 选择器按键结果。
+///
 /// Selector key outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SelectAction {
@@ -205,7 +216,7 @@ impl SelectMenu {
 }
 
 /// Effective quote flag on confirm: the checkbox counts only for Chinese
-/// (confirming English forces it off, per spec default-off).
+/// (confirming English forces it off).
 pub(crate) fn effective_hitokoto(menu: &SelectMenu, zh_index: Option<usize>) -> bool {
     zh_index.is_some_and(|z| menu.selected == z) && menu.hitokoto
 }
@@ -231,9 +242,8 @@ pub(crate) fn is_ctrl_c(key: &KeyEvent) -> bool {
 ///
 /// After the choice (or with an env/config override) the exit flight plays,
 /// then the console boots; a second key during the flight skips it.
-/// Uses a single-level loop with event priority (per-frame bounded drain, slow
-/// terminals lower the frame rate instead of piling up latency; mouse capture
-/// stays off on the welcome screen). Returns the session language.
+/// The loop drains events with a bounded per-frame cap, keeps mouse capture off,
+/// and lowers the frame rate on slow terminals. Returns the session language.
 pub(super) fn welcome_wait(
     handle: &ConsoleHandle,
     forced_lang: Option<String>,

@@ -285,10 +285,9 @@ pub fn maintain_precision(d: f64) -> f64 {
 // LCG (linear congruential generator with seed skipping)
 // ---------------------------------------------------------------------------
 
-/// Linear congruential generator with seed skipping.
+/// 可跳过种子的线性同余随机数生成器。
 ///
-/// Fields are immutable; equality/debugging come from derived
-/// `PartialEq`/`Debug`.
+/// Linear congruential random generator with seed skipping.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Lcg {
     pub multiplier: i64,
@@ -457,6 +456,8 @@ impl Lcg {
 // Pair / Quad / Triplet (small tuples)
 // ---------------------------------------------------------------------------
 
+/// 二元组。
+///
 /// Two-element tuple.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Pair<A, B> {
@@ -490,6 +491,8 @@ impl<A, B> Pair<A, B> {
     }
 }
 
+/// 三元组。
+///
 /// Three-element tuple.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Triplet<A, B, C> {
@@ -519,6 +522,8 @@ impl<A, B, C> Triplet<A, B, C> {
     }
 }
 
+/// 四元组。
+///
 /// Four-element tuple.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Quad<A, B, C, D> {

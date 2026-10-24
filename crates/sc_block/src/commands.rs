@@ -1,4 +1,11 @@
+//! 方块核心调试命令（机制可观测，非玩法命令）。
+//!
 //! Block-core debug commands (mechanics observability, not gameplay commands).
+//!
+//! - `/blockat [x y z]`：显示该坐标处方块的标识符、states 与哈希/network id。
+//!   不带参数的玩家查询脚下方块；控制台必须传坐标。
+//! - `/setblock <x> <y> <z> <block>`：经单写者队列写入方块。
+//!   引导模式下方块解析为该标识符的首见状态，未见过的即时哈希空 states。
 //!
 //! - `/blockat [x y z]`: shows the identifier, states, and hash/network id at the coordinates.
 //!   A parameter-less player queries the block underfoot; the console must pass coordinates.
@@ -26,6 +33,12 @@ use crate::position::BlockPosition;
 use crate::registry::BlockStateRegistry;
 use crate::write::{update_flags, BlockChange, BlockChangeCause, BlockChangeQueue};
 
+/// 向命令注册表注册方块核心调试命令（`/blockat`、`/setblock`）。
+///
+/// Registers the block-core debug commands (`/blockat`, `/setblock`) into the
+/// command registry.
+///
+/// - `registry`: 目标命令注册表
 pub fn register_block_commands(registry: &mut CommandRegistry) {
     let _ = registry.register(
         CommandDefinition::new(
@@ -48,8 +61,8 @@ pub fn register_block_commands(registry: &mut CommandRegistry) {
             "Sets a block at the given coordinates",
             CommandSource::BuiltIn,
         )
-        // TODO: tighten to GameDirectors once the player permission component lands
-        // (player permissions are all Any today; tightening now would break in-game use).
+        // The player permission component is not in place yet, so every command stays
+        // Any-level today; tightening early would break in-game use.
         .with_permission(CommandPermissionLevel::Any)
         .with_overload(CommandOverload {
             parameters: vec![
@@ -62,7 +75,11 @@ pub fn register_block_commands(registry: &mut CommandRegistry) {
     );
 }
 
+/// 归一化方块标识符：转小写，无命名空间时补 `minecraft:` 前缀。
+///
 /// Normalizes a block identifier: lowercase, prefixes `minecraft:` when no namespace is present.
+///
+/// - `raw`: 原始标识符
 pub(crate) fn normalize_identifier(raw: &str) -> String {
     let lowered = raw.to_ascii_lowercase();
     if lowered.contains(':') {
@@ -72,8 +89,14 @@ pub(crate) fn normalize_identifier(raw: &str) -> String {
     }
 }
 
-/// Bootstrap-mode identifier-to-network-hash resolution: prefers the dictionary's first-seen state,
-/// hashing empty states on the fly when unseen (and registering it for /blockat reverse lookup).
+/// 引导模式下标识符到网络哈希的解析：优先取字典首见状态，
+/// 未见过的即时哈希空 states（并登记，供 `/blockat` 反查）。
+///
+/// Bootstrap-mode identifier-to-network-hash resolution: prefers the dictionary's
+/// first-seen state, hashing empty states on the fly when unseen (and registering it
+/// for /blockat reverse lookup).
+///
+/// - `identifier`: 归一化后的方块标识符
 pub(crate) fn resolve_block_state(identifier: &str) -> BlockRuntimeId {
     let dictionary = BlockStateDictionary::global();
     if let Some(hash) = dictionary.first_hash_of(identifier) {
@@ -85,7 +108,12 @@ pub(crate) fn resolve_block_state(identifier: &str) -> BlockRuntimeId {
     BlockRuntimeId(hash)
 }
 
+/// 取调用者所在世界（玩家：其所在世界；控制台：主世界）。
+///
 /// World of the invoker (player: their world; console: the main world).
+///
+/// - `world`: ECS 世界，用于取组件与资源
+/// - `origin`: 命令来源（玩家实体或控制台）
 fn resolve_world_id(world: &World, origin: CommandOrigin) -> Option<MinecraftWorldId> {
     match origin {
         CommandOrigin::Player(entity) => world
@@ -101,7 +129,13 @@ fn resolve_world_id(world: &World, origin: CommandOrigin) -> Option<MinecraftWor
     }
 }
 
-/// Empty `args` returns Ok(None) (caller decides the default coordinates); wrong count or format returns Err.
+/// 解析 `/blockat` 的可选坐标参数。空 `args` 返回 `Ok(None)`（由调用方决定默认坐标）；
+/// 个数或格式错误返回 `Err`。
+///
+/// Empty `args` returns Ok(None) (caller decides the default coordinates); wrong count
+/// or format returns Err.
+///
+/// - `args`: 命令参数字符串切片
 pub(crate) fn parse_coordinates(args: &[String]) -> Result<Option<BlockPosition>, String> {
     if args.is_empty() {
         return Ok(None);
@@ -118,6 +152,13 @@ pub(crate) fn parse_coordinates(args: &[String]) -> Result<Option<BlockPosition>
     Ok(Some(BlockPosition::new(parsed[0], parsed[1], parsed[2])))
 }
 
+/// `/blockat` 命令系统：解析坐标、读方块并回发标识符与哈希描述。
+///
+/// `/blockat` command system: resolves coordinates, reads the block and replies with
+/// its identifier and hash description.
+///
+/// - `world`: ECS 世界
+/// - `reader`: 命令调用事件读取器
 pub fn blockat_command(world: World, mut reader: EventReader<CommandInvocation>) {
     for invocation in reader.read() {
         if invocation.command != "blockat" {
@@ -196,6 +237,14 @@ pub fn blockat_command(world: World, mut reader: EventReader<CommandInvocation>)
     }
 }
 
+/// `/setblock` 命令系统：解析坐标与方块标识符，经单写者队列入队一次方块变更。
+///
+/// `/setblock` command system: resolves coordinates and block identifier, and pushes
+/// one block change through the single-writer queue.
+///
+/// - `world`: ECS 世界
+/// - `queue`: 方块变更队列（单写者）
+/// - `reader`: 命令调用事件读取器
 pub fn setblock_command(
     world: World,
     mut queue: ResMut<BlockChangeQueue>,

@@ -4,8 +4,8 @@
 //! Loading is direct: JSON in, typed parse output out. There is no format
 //! whitelist, no duplicate-key scan, no unknown-field rejection and no
 //! budgets — only the data model's required pieces are enforced (identifier,
-//! property typing, `sc:default_state`, `sc:protocol_runtime_ids`, and the
-//! permutation-condition grammar that defines how conditions evaluate).
+//! property typing, `sc:protocol_runtime_ids`, and the permutation-condition
+//! grammar that defines how conditions evaluate).
 
 use std::collections::BTreeMap;
 
@@ -20,7 +20,13 @@ use crate::block::component::is_ignored_component;
 // Property types and values (byte/int/string stay distinct, never unified)
 // ---------------------------------------------------------------------------
 
-/// NBT type of a block property. `byte(1)` and `int(1)` are different state identities, never unified.
+/// 方块属性的 NBT 类型。
+///
+/// byte 与 int 属于不同的状态标识，不合并。
+///
+/// NBT type of a block property.
+///
+/// byte and int are distinct state identities and are never merged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NbtPropType {
     Byte,
@@ -38,7 +44,9 @@ impl NbtPropType {
     }
 }
 
-/// Typed property value (parse time).
+/// 解析阶段的带类型属性值。
+///
+/// Typed property value used during parsing.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PropValue {
     Byte(i8),
@@ -133,7 +141,9 @@ impl PropValue {
     }
 }
 
-/// Declaration of one property (one entry of `description.states`).
+/// 单个属性声明的定义，对应 description.states 的一项。
+///
+/// Declaration of one property, corresponding to an entry of description.states.
 #[derive(Clone, Debug)]
 pub struct PropertyDef {
     pub name: String,
@@ -234,14 +244,18 @@ pub fn canonical_state_key(props: &[(String, PropValue)]) -> String {
 // Single-file parse output (input to sc_block compilation; no hashes or dense ids)
 // ---------------------------------------------------------------------------
 
-/// One conjunct of a permutation condition (restricted syntax, see [`parse_permutation_condition`]).
+/// 排列条件中的一个合取项。
+///
+/// One conjunct of a permutation condition.
 #[derive(Clone, Debug)]
 pub struct ConditionTest {
     pub property: String,
     pub value: PropValue,
 }
 
-/// Permutation condition (conjunction; deterministic evaluation, no molang runtime).
+/// 排列条件的合取组合，按确定性规则求值。
+///
+/// Conjunction of permutation tests evaluated deterministically.
 #[derive(Clone, Debug)]
 pub struct PermutationCondition {
     pub tests: Vec<ConditionTest>,
@@ -285,7 +299,8 @@ pub struct ParsedBlockFile {
     pub identifier: String,
     /// Canonical order (property names ascending; value order = declaration order).
     pub properties: Vec<PropertyDef>,
-    /// Default-state canonical index (explicitly declared by `sc:default_state`, never guessed).
+    /// Default-state canonical index: the first declared value of every property
+    /// (canonical index 0; the format carries no explicit default-state field).
     pub default_index: usize,
     /// Protocol runtime ids in one-to-one canonical state order (`sc:protocol_runtime_ids`,
     /// never recomputed from sorting).
@@ -301,7 +316,7 @@ impl ParsedBlockFile {
         self.network_ids.len()
     }
 
-    /// Canonical state property assignments (indexed like `network_ids` / `sc:default_state`).
+    /// Canonical state property assignments (indexed like `network_ids`).
     pub fn state_props(&self, index: usize) -> Vec<(String, PropValue)> {
         canonical_state_props(&self.properties, index)
     }
@@ -309,6 +324,26 @@ impl ParsedBlockFile {
     /// Human-readable canonical state keys.
     pub fn state_key(&self, index: usize) -> String {
         canonical_state_key(&self.state_props(index))
+    }
+
+    /// All `minecraft:loot` reference paths in this file (base layer plus
+    /// permutation layers; both the string and the `{"table": path}` object
+    /// spelling; deduped, first-seen order).
+    pub fn referenced_loot_paths(&self) -> Vec<String> {
+        const LOOT: &str = crate::loot_tables::LOOT_REFERENCE_COMPONENT;
+        let mut out = Vec::new();
+        let mut push = |map: &BTreeMap<String, Value>| {
+            if let Some(path) = crate::loot_tables::loot_reference_path(map.get(LOOT)) {
+                if !out.contains(&path) {
+                    out.push(path);
+                }
+            }
+        };
+        push(&self.base);
+        for permutation in self.permutations.iter() {
+            push(&permutation.components);
+        }
+        out
     }
 }
 
@@ -595,20 +630,23 @@ pub(super) fn parse_states(
 ///   "format_version": "1.10.0",
 ///   "minecraft:block": {
 ///     "description": { "identifier": "minecraft:oak_log",
-///                      "states": { "pillar_axis": ["x", "y", "z"] } },
+///                      "states": { "pillar_axis": ["y", "x", "z"] } },
 ///     "components": { "minecraft:destructible_by_mining": { "value": 2.0 } },
 ///     "permutations": [
 ///       { "condition": "q.block_property('minecraft:oak_log','pillar_axis') == 'y'",
 ///         "components": { "minecraft:light_dampening": 15 } }
 ///     ],
-///     "sc:default_state": { "pillar_axis": "y" },
 ///     "sc:protocol_runtime_ids": [100, 101, 102]
 ///   }
 /// }
 /// ```
 ///
-/// Server-required data with no vanilla counterpart lives under `sc:` and is always explicit:
-/// default state (never guessed) and protocol runtime ids (never recomputed from sorting).
+/// The default state is the first declared value of every property (vanilla convention;
+/// canonical index 0) and carries no explicit declaration — the former `sc:default_state`
+/// field is retired and ignored if present. Server-required data with no vanilla
+/// counterpart lives under `sc:` and is always explicit: protocol runtime ids (never
+/// recomputed from sorting). `description.states` names the state table;
+/// `description.default_states` is accepted as an alias with identical semantics.
 /// Everything else loads as-is: unknown fields and components are kept raw, client-side
 /// ignore-list entries are dropped, loot-table references resolve at bundle load (see
 /// [`crate::block::load_block_json_bundle`]).
@@ -639,64 +677,27 @@ pub fn parse_block_file(
             )
         })?;
     // Missing `states` loads as a property-less block (direct load; explicit `{}` also works).
+    // `default_states` is an alias for the same state table (pack-compat; identical semantics).
     let properties = match description.get("states") {
-        Some(states_value) => parse_states(pack, path, "$.minecraft:block.description.states", states_value)?,
-        None => Vec::new(),
+        Some(states_value) => {
+            parse_states(pack, path, "$.minecraft:block.description.states", states_value)?
+        }
+        None => match description.get("default_states") {
+            Some(states_value) => parse_states(
+                pack,
+                path,
+                "$.minecraft:block.description.default_states",
+                states_value,
+            )?,
+            None => Vec::new(),
+        },
     };
     let state_count = canonical_state_count(&properties);
 
-    // ---- sc:default_state (explicit default state; missing entries are rejected, never guessed) ----
-    let default_field = "$.minecraft:block.sc:default_state";
-    let default_value = block
-        .get("sc:default_state")
-        .ok_or_else(|| e(default_field, "必填（服务端必需数据，不猜测）".to_string()))?;
-    let default_obj = as_object(pack, path, default_field, default_value)?;
-    let mut default_assignment: BTreeMap<String, PropValue> = BTreeMap::new();
-    for (prop_name, value) in default_obj.iter() {
-        let field = format!("{default_field}.{prop_name}");
-        let prop = properties
-            .iter()
-            .find(|p| p.name == *prop_name)
-            .ok_or_else(|| {
-                BlockJsonError::new(pack, path, &field, format!("未声明的属性 {prop_name:?}"))
-            })?;
-        let pv = PropValue::from_json(value)
-            .ok_or_else(|| BlockJsonError::new(pack, path, &field, "取值应为布尔/整数/字符串"))?;
-        if pv.prop_type() != prop.nbt_type {
-            return Err(BlockJsonError::new(
-                pack,
-                path,
-                &field,
-                format!(
-                    "取值类型 {:?} 与属性声明类型 {:?} 不符",
-                    pv.prop_type(),
-                    prop.nbt_type
-                ),
-            ));
-        }
-        if prop.value_index(&pv).is_none() {
-            return Err(BlockJsonError::new(
-                pack,
-                path,
-                &field,
-                format!("取值 {} 不是该属性的声明值", pv.repr()),
-            ));
-        }
-        default_assignment.insert(prop_name.clone(), pv);
-    }
-    let default_index =
-        canonical_state_index(&properties, &default_assignment).ok_or_else(|| {
-            BlockJsonError::new(
-                pack,
-                path,
-                default_field,
-                format!(
-                    "必须恰好覆盖全部 {} 个属性（当前 {} 个）",
-                    properties.len(),
-                    default_assignment.len()
-                ),
-            )
-        })?;
+    // ---- Default state: first declared value of every property (canonical index 0) ----
+    // No explicit declaration exists in the format; the former `sc:default_state` field
+    // is retired and, like any unknown field, simply ignored.
+    let default_index = 0usize;
 
     // ---- sc:protocol_runtime_ids (order is canonical state order; never recomputed) ----
     let ids_field = "$.minecraft:block.sc:protocol_runtime_ids";
@@ -799,7 +800,6 @@ mod tests {
             "minecraft:block": {
                 "description": {"identifier": "minecraft:air", "states": {}},
                 "components": {"sc:replaceable": true, "minecraft:display_name": "Air"},
-                "sc:default_state": {},
                 "sc:protocol_runtime_ids": [0]
             }
         }"#
@@ -813,7 +813,7 @@ mod tests {
             "minecraft:block": {
                 "description": {
                     "identifier": "minecraft:oak_log",
-                    "states": {"pillar_axis": ["x", "y", "z"]}
+                    "states": {"pillar_axis": ["y", "x", "z"]}
                 },
                 "components": {
                     "minecraft:collision_box": {"origin": [-8, 0, -8], "size": [16, 16, 16]},
@@ -829,7 +829,6 @@ mod tests {
                         "components": {"minecraft:loot": "loot_tables/blocks/oak_log.json"}
                     }
                 ],
-                "sc:default_state": {"pillar_axis": "y"},
                 "sc:protocol_runtime_ids": [100, 101, 102]
             }
         }"#
@@ -854,15 +853,15 @@ mod tests {
         assert_eq!(log.properties[0].name, "pillar_axis");
         assert_eq!(log.properties[0].nbt_type, NbtPropType::String);
         assert_eq!(log.state_count(), 3);
-        // Default state is the 2nd item in declaration value order ('y').
-        assert_eq!(log.default_index, 1);
-        assert_eq!(log.state_key(1), "pillar_axis=y");
+        // Default state is the first item in declaration value order ('y' is declared first).
+        assert_eq!(log.default_index, 0);
+        assert_eq!(log.state_key(0), "pillar_axis=y");
         assert_eq!(log.network_ids, vec![100, 101, 102]);
         // Permutation condition evaluation.
         assert_eq!(log.permutations.len(), 1);
         let perm = &log.permutations[0];
-        assert!(perm.condition.matches(&log.state_props(1)));
-        assert!(!perm.condition.matches(&log.state_props(0)));
+        assert!(perm.condition.matches(&log.state_props(0)));
+        assert!(!perm.condition.matches(&log.state_props(1)));
         assert!(!perm.condition.matches(&log.state_props(2)));
         // Loot references stay raw path strings at parse time.
         assert_eq!(
@@ -905,7 +904,7 @@ mod tests {
 
     /// Both vanilla `description.states` spellings are accepted; mixed types are rejected.
     #[test]
-    fn states_forms_and_typing() {
+    fn state_property_forms_and_types_are_parsed() {
         let json_body = r#"{
             "format_version": "1.10.0",
             "minecraft:block": {
@@ -916,7 +915,6 @@ mod tests {
                         {"name": "age", "values": [0, 1, 2]}
                     ]
                 },
-                "sc:default_state": {"lit": true, "age": 2},
                 "sc:protocol_runtime_ids": [1, 2, 3, 4, 5, 6]
             }
         }"#;
@@ -933,8 +931,8 @@ mod tests {
         assert_eq!(parsed.state_count(), 6);
         assert_eq!(parsed.state_key(0), "age=0,lit=0");
         assert_eq!(parsed.state_key(5), "age=2,lit=1");
-        // Default state age=2, lit=true maps to 2*2 + 1 = 5
-        assert_eq!(parsed.default_index, 5);
+        // Default state = first declared value of every property (age=0, lit=false).
+        assert_eq!(parsed.default_index, 0);
 
         // Mixed types in one property are rejected (data-model coherence).
         let mixed = json_body.replace("\"values\": [false, true]", "\"values\": [false, 1]");
@@ -981,15 +979,11 @@ mod tests {
         }
     }
 
-    /// Required server data (`sc:default_state` / `sc:protocol_runtime_ids`) stays loud.
+    /// Required server data (`sc:protocol_runtime_ids`) stays loud; the retired
+    /// `sc:default_state` field is ignored (default state = first declared values).
     #[test]
-    fn required_server_data_missing_is_rejected() {
+    fn protocol_runtime_ids_stay_required_and_default_state_is_implicit() {
         let air = String::from_utf8(air_json()).unwrap();
-        // Missing sc:default_state (never guessed).
-        let bad = air.replace("\"sc:default_state\": {},", "");
-        let e = parse_block_file(PACK, "any/air.block.json", bad.as_bytes())
-            .expect_err("缺默认态必须拒绝");
-        assert!(e.to_string().contains("sc:default_state"), "实际：{e}");
         // Missing sc:protocol_runtime_ids.
         let bad = air.replace(",\n                \"sc:protocol_runtime_ids\": [0]", "");
         let e = parse_block_file(PACK, "any/air.block.json", bad.as_bytes())
@@ -1004,15 +998,55 @@ mod tests {
         let e = parse_block_file(PACK, "any/oak_log.block.json", bad.as_bytes())
             .expect_err("protocol id 数量不符必须拒绝");
         assert!(e.to_string().contains("一一对应"), "实际：{e}");
-        // Default state value outside the declared domain.
-        let log = String::from_utf8(log_json()).unwrap();
-        let bad = log.replace(
-            "\"sc:default_state\": {\"pillar_axis\": \"y\"}",
-            "\"sc:default_state\": {\"pillar_axis\": \"w\"}",
+        // Retired `sc:default_state` is tolerated and ignored: default stays index 0
+        // (first declared value, here 'y'), never the retired field's assignment.
+        let legacy = log.replace(
+            "\"sc:protocol_runtime_ids\": [100, 101, 102]",
+            "\"sc:default_state\": {\"pillar_axis\": \"z\"},\n                \"sc:protocol_runtime_ids\": [100, 101, 102]",
         );
-        let e = parse_block_file(PACK, "any/oak_log.block.json", bad.as_bytes())
-            .expect_err("越界默认态必须拒绝");
-        assert!(e.to_string().contains("声明值"), "实际：{e}");
+        let parsed = parse_block_file(PACK, "any/oak_log.block.json", legacy.as_bytes())
+            .expect("过期的 sc:default_state 字段应被忽略");
+        assert_eq!(parsed.default_index, 0);
+        assert_eq!(parsed.state_key(0), "pillar_axis=y");
+    }
+
+    /// `description.default_states` is accepted as the state table (pack-compat alias)
+    /// with no default-state field at all: the default state is the first declared value.
+    #[test]
+    fn default_states_alias_loads() {
+        let json_body = r#"{
+            "format_version": "1.10.0",
+            "minecraft:block": {
+                "description": {
+                    "identifier": "test:alias",
+                    "default_states": {
+                        "button_pressed_bit": [false, true],
+                        "facing_direction": [0, 1, 2, 3, 4, 5]
+                    }
+                },
+                "sc:protocol_runtime_ids": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            }
+        }"#;
+        let parsed = parse_block_file(
+            PACK,
+            "definitions/blocks/test/alias.block.json",
+            json_body.as_bytes(),
+        )
+        .expect("default_states 写法应合法");
+        assert_eq!(parsed.properties.len(), 2);
+        // Property names ascending: button_pressed_bit < facing_direction;
+        // the rightmost property varies fastest.
+        assert_eq!(parsed.properties[0].name, "button_pressed_bit");
+        assert_eq!(parsed.properties[1].name, "facing_direction");
+        assert_eq!(parsed.state_count(), 12);
+        assert_eq!(
+            parsed.state_key(0),
+            "button_pressed_bit=0,facing_direction=0"
+        );
+        assert_eq!(parsed.state_key(11), "button_pressed_bit=1,facing_direction=5");
+        // Default state = first declared value of every property (canonical index 0).
+        assert_eq!(parsed.default_index, 0);
+        assert_eq!(parsed.network_ids.len(), 12);
     }
 
     /// Direct load: unknown components and `ur:*` stay raw in the map (no rejection).

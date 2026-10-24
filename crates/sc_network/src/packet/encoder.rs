@@ -25,8 +25,13 @@ impl PackerEncoder {
         self.compression_algorithm = compression_algorithm;
     }
 
+    /// 同步编码：先协议序列化，再压缩，最后加密（[`SendCipher`]）。
+    ///
     /// Synchronous encode: protocol serialization, then compression, then
     /// encryption ([`SendCipher`]).
+    ///
+    /// 加解密是微秒级的纯 CPU 工作，保持同步：调用方在 `send_cipher.write()`
+    /// 临界区内传入 `&mut SendCipher`，同步返回时锁即释放。
     ///
     /// Crypto is microsecond-scale pure CPU work and stays synchronous: the
     /// caller passes `&mut SendCipher` inside the `send_cipher.write()`
@@ -47,6 +52,10 @@ impl PackerEncoder {
         self.encode0(packet, cipher)
     }
 
+    /// 共享的预序列化批次编码（登录常量数据包缓存）：分帧与
+    /// [`BatchPacket`] 相同，包体取自缓存的 `Arc<Vec<u8>>`
+    /// （不做每玩家重建或重复序列化）。
+    ///
     /// Shared pre-serialized batch encoding (login constant-packet cache):
     /// same framing as [`BatchPacket`], with bodies from cached
     /// `Arc<Vec<u8>>` (no per-player rebuild or re-serialization).

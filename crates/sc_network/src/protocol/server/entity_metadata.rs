@@ -1,14 +1,18 @@
+//! 实体元数据常量与列表辅助工具。
+//!
 //! Entity metadata constants and list helpers.
 //!
-//! - [`EntityKeys`]: metadata keys (e.g. DATA_AIR=7, DATA_MAX_AIR=42);
-//! - [`EntityFlags`]: entity data flags (e.g. BREATHING=35,
-//!   HAS_COLLISION=48, GRAVITY=49, SWIMMING=57);
-//! - [`EntityMetadataExt`]: direct [`EntityMetadataEntry`] list access.
+//! - [`EntityKeys`]：元数据键（如 DATA_AIR=7、DATA_MAX_AIR=42）；
+//! - [`EntityFlags`]：实体数据标志（如 BREATHING=35、
+//!   HAS_COLLISION=48、GRAVITY=49、SWIMMING=57）；
+//! - [`EntityMetadataExt`]：直接读写 [`EntityMetadataEntry`] 列表。
 
 use super::misc::{EntityMetadataEntry, EntityMetadataValue};
 
+/// 实体元数据键。
+///
 /// Entity metadata keys.
-// Wire-protocol namespace mirrors official docs.
+// Casing mirrors the wire-protocol names.
 #[allow(non_snake_case)]
 pub mod EntityKeys {
     pub const FLAGS: u32 = 0; // long
@@ -47,8 +51,10 @@ pub mod EntityKeys {
     pub const BED_ENTER_POSITION: u32 = 133; // vector3f
 }
 
-/// Entity data flags.
-// Wire-protocol namespace mirrors official docs.
+/// 实体数据标志位（写入 key 0 的 Long 值，按位寻址）。
+///
+/// Entity data flags (bits inside the Long value stored at key 0).
+// Casing mirrors the wire-protocol names.
 #[allow(non_snake_case)]
 pub mod EntityFlags {
     pub const ONFIRE: u8 = 0;
@@ -86,6 +92,8 @@ pub mod EntityFlags {
     pub const GLIDING: u8 = 32;
     pub const ELDER: u8 = 33;
     pub const MOVING: u8 = 34;
+    /// 陆地上为 true（呼吸中），水中为 false。
+    ///
     /// True on land (breathing), false in water.
     pub const BREATHING: u8 = 35;
     pub const CHESTED: u8 = 36;
@@ -184,8 +192,10 @@ pub mod EntityFlags {
     pub const NAMEPLATE_DEPTH_TESTED: u8 = 129;
 }
 
+/// 元数据值类型 id。
+///
 /// Metadata value type ids.
-// Wire-protocol namespace mirrors official docs.
+// Casing mirrors the wire-protocol names.
 #[allow(non_snake_case)]
 // Retained wire-protocol constants; not all variants are read yet.
 #[allow(dead_code)]
@@ -201,22 +211,91 @@ pub mod EntityDataTypes {
     pub const VECTOR3F: u32 = 8;
 }
 
+/// 直接读写 [`EntityMetadataEntry`] 列表的扩展 trait
+/// （键已存在时原地更新，否则追加）。
+///
 /// Direct [`EntityMetadataEntry`] list access (update in place when the
 /// key exists, append otherwise).
 pub trait EntityMetadataExt {
+    /// 设置 FLAGS（key 0）中的指定位。
+    ///
+    /// Sets the given bit inside FLAGS (key 0).
+    ///
+    /// - `flag`: 标志位序，见 [`EntityFlags`]
+    /// - `value`: 置位/清位
     fn set_flag(&mut self, flag: u8, value: bool);
+    /// 读取 FLAGS（key 0）中的指定位；条目缺失时为 `false`。
+    ///
+    /// Reads the given bit inside FLAGS (key 0); `false` when the entry is
+    /// absent.
+    ///
+    /// - `flag`: 标志位序，见 [`EntityFlags`]
     fn get_flag(&self, flag: u8) -> bool;
+    /// 写入 byte 类型元数据。
+    ///
+    /// Writes a byte-typed metadata entry.
+    ///
+    /// - `key`: 元数据键
+    /// - `value`: 值
     fn set_byte(&mut self, key: u32, value: i8);
+    /// 写入 short 类型元数据。
+    ///
+    /// Writes a short-typed metadata entry.
+    ///
+    /// - `key`: 元数据键
+    /// - `value`: 值
     fn set_short(&mut self, key: u32, value: i16);
+    /// 写入 int 类型元数据。
+    ///
+    /// Writes an int-typed metadata entry.
+    ///
+    /// - `key`: 元数据键
+    /// - `value`: 值
     fn set_int(&mut self, key: u32, value: i32);
+    /// 写入 float 类型元数据。
+    ///
+    /// Writes a float-typed metadata entry.
+    ///
+    /// - `key`: 元数据键
+    /// - `value`: 值
     fn set_float(&mut self, key: u32, value: f32);
+    /// 写入 string 类型元数据。
+    ///
+    /// Writes a string-typed metadata entry.
+    ///
+    /// - `key`: 元数据键
+    /// - `value`: 值
     fn set_string(&mut self, key: u32, value: String);
+    /// 写入 long 类型元数据。
+    ///
+    /// Writes a long-typed metadata entry.
+    ///
+    /// - `key`: 元数据键
+    /// - `value`: 值
     fn set_long(&mut self, key: u32, value: i64);
+    /// 写入 Vector3i（POS）类型元数据。
+    ///
+    /// Writes a Vector3i (POS) metadata entry.
+    ///
+    /// - `key`: 元数据键
+    /// - `x`/`y`/`z`: 向量分量
     fn set_vector3i(&mut self, key: u32, x: i32, y: i32, z: i32);
+    /// 写入 Vector3f 类型元数据。
+    ///
+    /// Writes a Vector3f metadata entry.
+    ///
+    /// - `key`: 元数据键
+    /// - `x`/`y`/`z`: 向量分量
     fn set_vector3f(&mut self, key: u32, x: f32, y: f32, z: f32);
 }
 
 impl EntityMetadataExt for Vec<EntityMetadataEntry> {
+    /// 按位设置/清除实体 FLAGS 标志。
+    ///
+    /// Sets or clears an entity FLAGS bit.
+    ///
+    /// - `flag`: 标志位序，见 [`EntityFlags`]
+    /// - `value`: 置位/清位
     fn set_flag(&mut self, flag: u8, value: bool) {
         // FLAGS (key 0) entries update bitwise; missing entries start as Long(0).
         let flags_key = EntityKeys::FLAGS;
@@ -241,6 +320,11 @@ impl EntityMetadataExt for Vec<EntityMetadataEntry> {
         }
     }
 
+    /// 读取实体 FLAGS 中指定位的状态。
+    ///
+    /// Reads the state of the given entity FLAGS bit.
+    ///
+    /// - `flag`: 标志位序，见 [`EntityFlags`]
     fn get_flag(&self, flag: u8) -> bool {
         self.iter()
             .find(|e| e.key == EntityKeys::FLAGS)
@@ -251,6 +335,9 @@ impl EntityMetadataExt for Vec<EntityMetadataEntry> {
             .unwrap_or(false)
     }
 
+    /// 写入 byte 类型元数据。
+    ///
+    /// Writes a byte-typed metadata entry.
     fn set_byte(&mut self, key: u32, value: i8) {
         upsert(
             self,
@@ -260,6 +347,9 @@ impl EntityMetadataExt for Vec<EntityMetadataEntry> {
         );
     }
 
+    /// 写入 short 类型元数据。
+    ///
+    /// Writes a short-typed metadata entry.
     fn set_short(&mut self, key: u32, value: i16) {
         upsert(
             self,
@@ -269,6 +359,9 @@ impl EntityMetadataExt for Vec<EntityMetadataEntry> {
         );
     }
 
+    /// 写入 int 类型元数据。
+    ///
+    /// Writes an int-typed metadata entry.
     fn set_int(&mut self, key: u32, value: i32) {
         upsert(
             self,
@@ -278,6 +371,9 @@ impl EntityMetadataExt for Vec<EntityMetadataEntry> {
         );
     }
 
+    /// 写入 float 类型元数据。
+    ///
+    /// Writes a float-typed metadata entry.
     fn set_float(&mut self, key: u32, value: f32) {
         upsert(
             self,
@@ -287,6 +383,9 @@ impl EntityMetadataExt for Vec<EntityMetadataEntry> {
         );
     }
 
+    /// 写入 string 类型元数据。
+    ///
+    /// Writes a string-typed metadata entry.
     fn set_string(&mut self, key: u32, value: String) {
         upsert(
             self,
@@ -296,6 +395,9 @@ impl EntityMetadataExt for Vec<EntityMetadataEntry> {
         );
     }
 
+    /// 写入 long 类型元数据。
+    ///
+    /// Writes a long-typed metadata entry.
     fn set_long(&mut self, key: u32, value: i64) {
         upsert(
             self,
@@ -305,6 +407,9 @@ impl EntityMetadataExt for Vec<EntityMetadataEntry> {
         );
     }
 
+    /// 写入 Vector3i（POS）类型元数据。
+    ///
+    /// Writes a Vector3i (POS) metadata entry.
     fn set_vector3i(&mut self, key: u32, x: i32, y: i32, z: i32) {
         upsert(
             self,
@@ -314,6 +419,9 @@ impl EntityMetadataExt for Vec<EntityMetadataEntry> {
         );
     }
 
+    /// 写入 Vector3f 类型元数据。
+    ///
+    /// Writes a Vector3f metadata entry.
     fn set_vector3f(&mut self, key: u32, x: f32, y: f32, z: f32) {
         upsert(
             self,
@@ -324,7 +432,14 @@ impl EntityMetadataExt for Vec<EntityMetadataEntry> {
     }
 }
 
+/// 更新或插入元数据条目（同键替换，否则追加）。
+///
 /// Update or insert a metadata entry (same key replaces, otherwise appends).
+///
+/// - `entries`: 元数据条目列表
+/// - `key`: 元数据键
+/// - `data_type`: 值类型 id
+/// - `value`: 值
 fn upsert(
     entries: &mut Vec<EntityMetadataEntry>,
     key: u32,

@@ -1,10 +1,15 @@
+//! NBT 值模型与网络/本地序列化。
+//!
+//! `NbtValue` 为值枚举，`CompoundNbt` 为键值容器；`network`/`local` 子模块分别实现
+//! Bedrock 网络 NBT（varint 长度前缀）与本地 NBT（LE/BE 变体）的读写。
+//! LevelDB palette、方块实体与包数据都使用该载体。
+//!
 //! NBT (Named Binary Tag) value model with network/local serialization.
 //!
 //! `NbtValue` is the value enum and `CompoundNbt` the key-value container; the `network`/`local` submodules
 //! implement Bedrock network NBT (varint-prefixed) and local NBT (LE/BE variants)
 //! reads/writes respectively. LevelDB palettes, block entities, and pack data all use this carrier.
 
-use crate::compound::CompoundNbt;
 use crate::writer::{NbtWriteTrait, NbtWriter};
 use serde::Serialize;
 use std::io;
@@ -17,13 +22,17 @@ use uuid::Uuid;
 const MAX_CLONE_ESTIMATE_LIST_DEPTH: usize = 128;
 
 pub mod compound;
+pub mod facet;
 pub mod local;
+#[macro_use]
 mod macros;
 pub mod network;
 pub mod reader;
-#[cfg(test)]
-mod test;
 pub mod writer;
+
+pub use compound::CompoundNbt;
+pub use facet::{FromNbt, NbtFacet, NbtField, ToNbt};
+pub use sc_nbt_macros::{NbtFacet, NbtWrite};
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(untagged)]
@@ -43,6 +52,8 @@ pub enum NbtValue {
 }
 
 impl NbtValue {
+    /// 估算克隆该 NBT 值时复制的堆缓冲区字节数。
+    ///
     /// Estimate heap buffers duplicated by cloning this NBT value.
     ///
     /// Compound maps use Arc-backed copy-on-write storage and therefore are
@@ -295,3 +306,25 @@ mod clone_size_tests {
         assert_eq!(value.estimated_clone_heap_bytes(), usize::MAX);
     }
 }
+
+impl PartialEq for NbtValue {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Byte(a), Self::Byte(b)) => a == b,
+            (Self::Short(a), Self::Short(b)) => a == b,
+            (Self::Int(a), Self::Int(b)) => a == b,
+            (Self::Long(a), Self::Long(b)) => a == b,
+            (Self::Float(a), Self::Float(b)) => a.to_bits() == b.to_bits(),
+            (Self::Double(a), Self::Double(b)) => a.to_bits() == b.to_bits(),
+            (Self::ByteArray(a), Self::ByteArray(b)) => a == b,
+            (Self::String(a), Self::String(b)) => a == b,
+            (Self::List(a), Self::List(b)) => a == b,
+            (Self::Compound(a), Self::Compound(b)) => a == b,
+            (Self::IntArray(a), Self::IntArray(b)) => a == b,
+            (Self::LongArray(a), Self::LongArray(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for NbtValue {}

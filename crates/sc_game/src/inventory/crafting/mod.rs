@@ -37,7 +37,9 @@ pub use session::{CraftingRevision, CraftingSession, RecipeBookState};
 pub use station::{
     open_crafting_station, BlockProcessState, ContainerWindowAllocator, ProcessSnapshot,
 };
-pub(crate) use station::{station_block_kind, workstation_decl_at};
+pub(crate) use station::{
+    chest_decl_at, container_type_at, furnace_decl_at, station_block_kind,
+};
 pub use tx::{
     bump_inventory_revision, expected_from_slots, handle_craft_requests, snapshot_from_sources,
     submit_craft, CraftInbox, CraftOutcome, CraftRequestEvent,
@@ -404,6 +406,7 @@ mod tests {
         assert!(!outcome.consumed_fuel && !outcome.completed);
         assert_eq!(state.cook_progress(), 1);
         assert_eq!(state.burn_remaining(), 1598);
+        assert_eq!(state.lit_progress(), 1598);
     }
 
     #[test]

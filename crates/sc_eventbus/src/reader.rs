@@ -32,11 +32,15 @@ impl<E: SCEventTrait + Send + Sync + 'static> Clone for SCManualEventReader<E> {
 
 #[allow(clippy::len_without_is_empty)] // Check fails since the is_empty implementation has a signature other than `(&self) -> bool`
 impl<E: SCEventTrait + Send + Sync + 'static> SCManualEventReader<E> {
+    /// 参见 [`EventReader::read`]
+    ///
     /// See [`EventReader::read`]
     pub fn read<'a>(&'a mut self, events: &'a Events<SCEvent<E>>) -> SCEventIterator<'a, E> {
         self.read_with_id(events).without_id()
     }
 
+    /// 参见 [`EventReader::read_with_id`]
+    ///
     /// See [`EventReader::read_with_id`]
     pub fn read_with_id<'a>(
         &'a mut self,
@@ -45,6 +49,8 @@ impl<E: SCEventTrait + Send + Sync + 'static> SCManualEventReader<E> {
         SCEventIteratorWithId::new(self, events)
     }
 
+    /// 可变读取需要独占 `Events` 访问（经 `ResMut` 写守卫）。
+    ///
     /// Mutable read requires exclusive `Events` access (via `ResMut` write guard).
     pub fn read_mut<'a>(
         &'a mut self,
@@ -53,6 +59,8 @@ impl<E: SCEventTrait + Send + Sync + 'static> SCManualEventReader<E> {
         self.read_mut_with_id(events).without_id()
     }
 
+    /// 参见 [`EventReader::read_mut_with_id`]
+    ///
     /// See [`EventReader::read_mut_with_id`]
     pub fn read_mut_with_id<'a>(
         &'a mut self,
@@ -61,6 +69,8 @@ impl<E: SCEventTrait + Send + Sync + 'static> SCManualEventReader<E> {
         SCEventIteratorMutWithId::new(self, events)
     }
 
+    /// 参见 [`EventReader::len`]
+    ///
     /// See [`EventReader::len`]
     pub fn len(&self, events: &Events<SCEvent<E>>) -> usize {
         // The number of events in this reader is the difference between the most recent event
@@ -73,6 +83,8 @@ impl<E: SCEventTrait + Send + Sync + 'static> SCManualEventReader<E> {
             .min(events.len())
     }
 
+    /// 我们错过的事件数量。
+    ///
     /// Amount of events we missed.
     pub fn missed_events(&self, events: &Events<SCEvent<E>>) -> usize {
         events
@@ -80,11 +92,15 @@ impl<E: SCEventTrait + Send + Sync + 'static> SCManualEventReader<E> {
             .saturating_sub(self.last_event_count)
     }
 
+    /// 参见 [`EventReader::is_empty()`]
+    ///
     /// See [`EventReader::is_empty()`]
     pub fn is_empty(&self, events: &Events<SCEvent<E>>) -> bool {
         self.len(events) == 0
     }
 
+    /// 参见 [`EventReader::clear()`]
+    ///
     /// See [`EventReader::clear()`]
     pub fn clear(&mut self, events: &Events<SCEvent<E>>) {
         self.last_event_count = events.event_count;

@@ -1,8 +1,6 @@
-//! Server-side inventory packets.
+//! 服务端背包相关包。
 //!
-//! The packet structures are deliberately kept separate from the game
-//! inventory model.  The network layer owns Bedrock's container metadata and
-//! item descriptor variants; the game layer only supplies semantic stacks.
+//! Server-side inventory packets.
 
 use std::io::{Error, ErrorKind};
 
@@ -12,6 +10,8 @@ use sc_network_macros::MinecraftPacket;
 
 use crate::protocol::client::transaction::{read_item_data, write_item_data, ItemData};
 
+/// ContainerOpen（0x2e），服务端 → 客户端。
+///
 /// ContainerOpen (0x2e), server -> client.
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct ContainerOpen {
@@ -59,11 +59,15 @@ impl Reader<ContainerOpen> for ContainerOpen {
     }
 }
 
+/// 玩家背包同步所用的 Bedrock 容器 ID。
+///
 /// Bedrock container ids used by player inventory synchronization.
 impl InventoryContent {
     pub const SPECIAL_INVENTORY: u8 = 0;
     pub const SPECIAL_OFFHAND: u8 = 0x77;
     pub const SPECIAL_ARMOR: u8 = 0x78;
+    /// 初始背包同步所用的光标/容器更新槽位。
+    ///
     /// Cursor/container-update slot used by the initial inventory sync.
     pub const SPECIAL_CURSOR: u8 = 0x7c;
 
@@ -71,23 +75,33 @@ impl InventoryContent {
     pub const FULL_CONTAINER_ARMOR: u32 = 6;
     pub const FULL_CONTAINER_OFFHAND: u32 = 34;
     pub const FULL_CONTAINER_CURSOR: u32 = 59;
-    /// Crafting input grid (container 13, matching the `ItemStackResponse`
-    /// grid container). Workstation window contents must use it.
+    /// 合成输入网格（容器 13，对应 `ItemStackResponse` 的网格容器）；
+    /// 工作台窗口内容必须使用它。
+    ///
+    /// Crafting input grid (container 13, matching the `ItemStackResponse` grid
+    /// container). Workstation window contents must use it.
     pub const FULL_CONTAINER_CRAFTING_INPUT: u32 = 13;
 }
 
+/// InventoryContent（0x31），协议 v1001。
+///
+/// 槽位使用完整的 NetworkItemStackDescriptor。`fullContainerName` 采用标准容器
+/// 枚举，而 `storageItem` 采用不含 net-id 字段的普通物品布局。
+///
 /// InventoryContent (0x31), protocol v1001.
 ///
-/// Slots use the full NetworkItemStackDescriptor.  `fullContainerName` uses
-/// the standard container enum, while `storageItem` uses the ordinary
-/// item layout without a net-id field.
+/// Slots use the full NetworkItemStackDescriptor. `fullContainerName` uses the
+/// standard container enum, while `storageItem` uses the ordinary item layout
+/// without a net-id field.
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct InventoryContent {
     pub container_id: u8,
     pub items: Vec<ItemData>,
     pub full_container_name_id: u32,
-    /// FullContainerName dynamic id (optional; workstation window contents
-    /// carry the window id, otherwise absent).
+    /// FullContainerName 动态 ID（可选；工作台窗口内容携带窗口 ID，否则缺省）。
+    ///
+    /// FullContainerName dynamic id (optional; workstation window contents carry
+    /// the window id, otherwise absent).
     pub full_container_dynamic_id: Option<u32>,
 }
 
@@ -164,8 +178,11 @@ impl Reader<InventoryContent> for InventoryContent {
     }
 }
 
-/// An empty storage item is an ordinary item:
-/// runtime=0, count=0, damage=0, hasNetId=false, block=0, userData=default.
+/// 空存储物品即普通物品：runtime=0、count=0、damage=0、hasNetId=false、
+/// block=0、userData=default。
+///
+/// An empty storage item is an ordinary item: runtime=0, count=0, damage=0,
+/// hasNetId=false, block=0, userData=default.
 fn write_storage_item(buf: &mut ByteWriter) -> Result<(), Error> {
     buf.write_u16_le(0)?;
     buf.write_u16_le(0)?;
@@ -213,13 +230,18 @@ fn read_storage_item(buf: &mut ByteReader) -> Result<ItemData, Error> {
     })
 }
 
-/// ContainerSetData (0x33): block-container progress values (furnace
-/// cook/lit, brewing stand). Server -> client only.
+/// ContainerSetData（0x33）：方块容器进度值（熔炉烧制/燃烧、酿造台）。
+/// 仅服务端 → 客户端。
 ///
-/// Wire layout (v2168 container-data encoding, unchanged
-/// through 2168): u8 window id, varint property id, varint value.
-/// Furnace properties: 0 = cook tick count, 1 = lit time remaining,
-/// 2 = lit duration.
+/// 线格式（v2168 容器数据编码，至 2168 未变）：u8 窗口 ID、varint 属性 ID、
+/// varint 数值。熔炉属性：0 = 烧制刻数，1 = 剩余燃烧时间，2 = 燃烧总时长。
+///
+/// ContainerSetData (0x33): block-container progress values (furnace cook/lit,
+/// brewing stand). Server -> client only.
+///
+/// Wire layout (v2168 container-data encoding, unchanged through 2168): u8
+/// window id, varint property id, varint value. Furnace properties: 0 = cook
+/// tick count, 1 = lit time remaining, 2 = lit duration.
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct ContainerSetData {
     pub window_id: u8,
@@ -228,10 +250,16 @@ pub struct ContainerSetData {
 }
 
 impl ContainerSetData {
+    /// 熔炉烧制进度（箭头）：朝工作台总量已累计的烧制刻数。
+    ///
     /// Furnace cook progress (arrow): ticks cooked toward the station total.
     pub const FURNACE_TICK_COUNT: i32 = 0;
+    /// 熔炉剩余燃烧时间（火焰图标分子）。
+    ///
     /// Furnace lit time remaining (flame icon numerator).
     pub const FURNACE_LIT_TIME: i32 = 1;
+    /// 熔炉燃烧总时长（火焰图标分母）。
+    ///
     /// Furnace lit duration (flame icon denominator).
     pub const FURNACE_LIT_DURATION: i32 = 2;
 }
@@ -253,6 +281,8 @@ impl Reader<ContainerSetData> for ContainerSetData {
     }
 }
 
+/// InventorySlot（0x32），v975 布局。
+///
 /// InventorySlot (0x32), v975 layout.
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct InventorySlot {
@@ -324,6 +354,11 @@ fn full_container_name_id(container_id: u8) -> u32 {
     }
 }
 
+/// PlayerArmorDamage（0x95）中的一条条目。
+///
+/// slot 使用护甲部位（helmet = 0、chestplate = 1、leggings = 2、boots = 3）；
+/// damage 为小端 16 位值。
+///
 /// One entry in PlayerArmorDamage (0x95).
 ///
 /// Slot uses armor positions (helmet = 0, chestplate = 1, leggings = 2,
@@ -334,8 +369,10 @@ pub struct ArmorSlotDamage {
     pub damage: u16,
 }
 
+/// PlayerArmorDamage 条目所用的护甲部位序号。
+///
 /// Armor slot positions for PlayerArmorDamage entries.
-// Wire-protocol namespace mirrors official docs.
+// Casing mirrors the wire-protocol names.
 #[allow(non_snake_case)]
 pub mod ArmorSlot {
     pub const HEAD: u8 = 0;
@@ -344,6 +381,8 @@ pub mod ArmorSlot {
     pub const FEET: u8 = 3;
 }
 
+/// PlayerArmorDamage（0x95），协议 v2168。
+///
 /// PlayerArmorDamage (0x95), protocol v2168.
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct PlayerArmorDamage {
@@ -389,6 +428,8 @@ impl Reader<PlayerArmorDamage> for PlayerArmorDamage {
     }
 }
 
+/// MobEquipment（0x1f），v975 布局。
+///
 /// MobEquipment (0x1f), v975 layout.
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct MobEquipment {

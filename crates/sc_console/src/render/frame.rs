@@ -160,7 +160,7 @@ pub(super) fn build_frame(f: &Frame) -> (Vec<String>, (u16, u16)) {
                 );
             }
         }
-    } // 开场分支结束（开场两行已由 render_boot_header 画完）
+    } // end of boot branch (both boot rows already drawn by render_boot_header)
     buf.push_str("\r\n");
 
     // ---- Log stream (auto-wrapped) ----
@@ -560,8 +560,8 @@ pub(super) fn build_frame(f: &Frame) -> (Vec<String>, (u16, u16)) {
                 }
                 emit_shaded_row(&mut buf, &segs, &input_bg, INPUT_ROWS - 1, 0, width, styled);
             }
-        }, // `None` = 无开场：常规脚注 / 庆祝
-    } // 开场脚注分支结束
+        }, // `None` = no boot: regular footnote / celebration
+    } // end of boot footnote branch
     buf.push_str("\r\n");
 
     // ---- Status line (right status always visible; the left side swaps to the confirm pill on double confirm) ----
@@ -728,8 +728,7 @@ pub(super) fn emit_shining_title_row(
 }
 
 /// Title row shine variant (pinned tail bracket): the body shines while the bracket keeps the base color.
-///
-/// Used for the quote: the typewriter pins the bracket at the row end, and shining it too would flicker the ending.
+/// Used for the quote, where the typewriter pins the bracket at the row end.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn emit_shining_title_row_pinned(
     buf: &mut String,
@@ -769,8 +768,7 @@ pub(super) fn emit_shining_title_row_pinned(
 
 /// Booting input box: no marker; row 3 centers the boot text with ripple-supplied backgrounds.
 ///
-/// `text_opacity`: boot text opacity (boot fade-in use; 1.0 is the steady fixed color 253,
-/// matching old behavior exactly).
+/// `text_opacity`: boot text opacity; 1.0 is the steady fixed color 253.
 pub(super) fn render_starting_box(
     buf: &mut String,
     bg_at: &dyn Fn(usize, usize) -> Rgb,

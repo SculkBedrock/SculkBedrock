@@ -1,18 +1,10 @@
-//! Chunk state enum + worldgen-chunk adapter (generation subset).
+//! 区块状态枚举与世界生成区块适配器。
 //!
-//! Layout notes:
-//! - [`ChunkState`] derives `Ord` with ordinals matching the reference:
-//!   New=0 < Started=1 < Generated=2 < Populated=3 < Finished=4.
-//! - The chunk interface is very large (entities/block entities/light/
-//!   scheduler/borders/...); the generation pipeline only needs a small
-//!   subset (coordinates/blocks/biomes/heightmap/state/sections).
-//!   [`WorldgenChunk`] implements just that subset around
-//!   `sc_world::chunk::Chunk`.
-//! - Heightmap array maps to Rust `[i16; 256]`.
-//! - Batch processing runs as direct calls (single-threaded generation
-//!   needs no synchronization wrapper).
-//! - Block/biome index: `(x << 8) | (z << 4) | y` (XZY, matching
-//!   `LocalBlockPosition::linear_index`).
+//! 提供生成流程所需的坐标、方块、生物群系、高度图与状态访问。
+//!
+//! Chunk state enum and worldgen chunk adapter.
+//!
+//! Exposes the coordinates, blocks, biomes, heightmap, and state access required by the generation pipeline.
 
 use std::sync::Arc;
 use sc_world::chunk::{BlockRuntimeId, Chunk, PalettedBiomeStorage, SubChunk, SUBCHUNK_SIZE};
@@ -21,10 +13,9 @@ use sc_world::chunk::{BlockRuntimeId, Chunk, PalettedBiomeStorage, SubChunk, SUB
 // ChunkState
 // ---------------------------------------------------------------------------
 
-/// Chunk generation state.
+/// 区块生成状态；序号按生成顺序排列，可直接比较先后。
 ///
-/// Ordinals match the reference `ordinal()`, so a derived `Ord` allows
-/// direct comparisons like `state >= ChunkState::Generated`.
+/// Chunk generation state; ordinals follow generation order so states can be compared directly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ChunkState {
     /// Fresh chunk (ordinal 0).
@@ -50,6 +41,14 @@ impl ChunkState {
 // WorldgenChunk (generation-subset chunk adapter)
 // ---------------------------------------------------------------------------
 
+/// 面向世界生成的区块适配器，包装 `sc_world::chunk::Chunk`。
+///
+/// 额外维护：
+/// - `state: ChunkState`：区块生成状态；
+/// - `heightmap: [i16; 256]`：列高度图。
+///
+/// 方块读写与 section 访问直接委托给 `Chunk` 的现有 API。
+///
 /// Generation-subset chunk adapter around `sc_world::chunk::Chunk`.
 ///
 /// Additionally maintains:
@@ -401,7 +400,7 @@ mod tests {
     }
 
     #[test]
-    fn biome_set_get() {
+    fn biome_ids_are_stored_per_position() {
         let mut c = make_chunk();
         // y=64 (section 8, local y=0), x=3, z=5
         c.set_biome_id(3, 64, 5, 42);
@@ -413,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn block_set_get() {
+    fn block_states_are_stored_per_position() {
         let mut c = make_chunk();
         c.set_block_state(3, 64, 5, 0, BlockRuntimeId(10));
         assert_eq!(c.block_state(3, 64, 5, 0), BlockRuntimeId(10));
@@ -433,7 +432,7 @@ mod tests {
     }
 
     #[test]
-    fn coordinates() {
+    fn chunk_exposes_position_and_height_bounds() {
         let chunk = Chunk::empty_overworld(ChunkPosition::new(3, -7));
         let c = WorldgenChunk::new(chunk);
         assert_eq!(c.x(), 3);

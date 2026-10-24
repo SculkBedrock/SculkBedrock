@@ -1,18 +1,6 @@
-//! Overworld biome picking (`OverworldBiomePicker` + `OverworldBiomeResult`).
+//! 主世界生物群系选择器与查询结果。
 //!
-//! Port notes:
-//! - The upstream constructor takes a `Level`; this port decouples it,
-//!   pulling density functions (continents/erosion/ridges) and noises
-//!   (temperature/humidity) directly from [`NormalObjectHolder`], with the
-//!   heightmap injected as a `Box<dyn Fn(i32,i32)->i32>` callback.
-//! - The upstream base-class random field goes unused during overworld picking
-//!   (only the nether picker forks it); it is kept for structural parity with
-//!   `#[allow(dead_code)]`.
-//! - The two `pick`/`pickRaw` overloads (with/without FunctionContext) become
-//!   `pick` / `pick_with_context` / `pick_raw` / `pick_raw_with_context`.
-//! - Float fidelity: `f`-suffixed literals map to `f32`; unsuffixed double
-//!   literals (`-0.19`/`-0.11`/`0.03`/`0.3`) compare as float-widened-to-double.
-//! - `correct` / `reset` mirror chaining `return this` via `&mut Self`.
+//! Overworld biome picker and query result.
 
 use crate::worldgen::biome::biome_id::*;
 use crate::worldgen::biome::{BiomePicker, BiomeResult};
@@ -37,7 +25,9 @@ pub const SEA_LEVEL: i32 = 63;
 // OverworldBiomeResult
 // ---------------------------------------------------------------------------
 
-/// Java: `OverworldBiomeResult extends BiomeResult`(L12-62).
+/// 主世界生物群系查询结果，保存当前与原始生物群系 ID。
+///
+/// Overworld biome query result holding the current and original biome IDs.
 #[derive(Clone, Debug)]
 pub struct OverworldBiomeResult {
     biome_id: i32,
@@ -141,10 +131,9 @@ pub const CONTINENT_NEAR_INLAND: i32 = 4;
 pub const CONTINENT_MID_INLAND: i32 = 5;
 pub const CONTINENT_FAR_INLAND: i32 = 6;
 
-/// Java: `OverworldBiomePicker extends BiomePicker<OverworldBiomeResult>`(L14-420).
+/// 主世界生物群系选择器：由密度函数与噪声决定方块位置的生物群系。
 ///
-/// Level-decoupled: density functions and noises come from [`NormalObjectHolder`],
-/// the heightmap arrives as a callback.
+/// Overworld biome picker deciding the biome at a block position from density functions and noise.
 pub struct OverworldBiomePicker {
     /// Continents density.
     continents: Arc<dyn DensityFunction>,
@@ -1337,12 +1326,19 @@ mod tests {
     }
 
     #[test]
-    fn continent_level_thresholds() {
-        // Continental threshold boundaries.
+    fn picked_biome_id_stays_within_the_overworld_set() {
         let p = make_picker(SEA_LEVEL);
-        // continental < -1.05 → level 0 (MUSHROOM)
-        let r0 = p.pick_raw(0, SEA_LEVEL, 0);
-        // pick returns a valid biome id without panicking.
-        let _ = r0.biome_id();
+        let r = p.pick_raw(0, SEA_LEVEL, 0);
+        let id = r.biome_id();
+        assert!(
+            (0..=49).contains(&id),
+            "picked biome id {id} is outside the overworld biome set"
+        );
+        assert!(r.continental.is_finite());
+        assert!(r.temperature.is_finite());
+        assert!(r.humidity.is_finite());
+        assert!(r.erosion.is_finite());
+        assert!(r.weirdness.is_finite());
+        assert!(r.pv.is_finite());
     }
 }

@@ -1,9 +1,15 @@
+//! 输入框编辑状态：字符缓冲、光标、历史与补全弹层。
+//!
+//! 纯内存操作（无 IO），可单元测试；渲染层只读取该状态。
+//!
 //! Input-box edit state: char buffer, cursor, history, and completion popup.
 //!
 //! Pure in-memory operations (no IO), unit-testable; the render layer only reads this state.
 
 use crate::completion::CompletionItem;
 
+/// 补全弹层状态。
+///
 /// Completion popup state.
 #[derive(Clone, Debug, Default)]
 pub struct CompletionState {
@@ -31,6 +37,8 @@ impl CompletionState {
     }
 }
 
+/// 单行编辑器（`buffer` 按 `char` 存储，光标是字符索引，CJK 安全）。
+///
 /// Single-line editor (`buffer` stored per `char`, cursor as a char index, CJK safe).
 #[derive(Clone, Debug, Default)]
 pub struct EditorState {

@@ -28,6 +28,8 @@ const NACK_RETRY_INTERVAL_SECS: u64 = 1;
 /// to close and let the peer reconnect and resume.
 pub(crate) const ORDERED_GAP_TTL_SECS: u64 = 10;
 
+/// 接收路径失败。
+///
 /// Receive-path failure.
 #[derive(Debug, Clone, ScError)]
 pub enum RecvQueueError {
@@ -146,6 +148,8 @@ pub struct RecvQueue {
     ignored_ordered: u64,
 }
 
+/// 单个会话某时刻的接收健康度，用于日志与测试。
+///
 /// Point-in-time receive health of one session, for logs and tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct RecvHealth {

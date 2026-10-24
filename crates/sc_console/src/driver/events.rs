@@ -1,8 +1,13 @@
-//! Console driver: per-frame event drain and boot-skip helpers (split from `driver.rs`; re-exported at `crate::driver`).
+//! 控制台驱动：逐帧事件抽取与开场跳过辅助（由 `driver.rs` 拆出；在 `crate::driver` 重新导出）。
+//!
+//! Console driver: per-frame event extraction and boot-skip helpers
+//! (split out of `driver.rs`; re-exported from `crate::driver`).
 
 use super::*;
 
-/// Per-frame event scan result (unit-testable).
+/// 每帧事件扫描结果。
+///
+/// Per-frame event scan result.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct EventBatch {
     /// Key events seen this frame, in order.
@@ -12,25 +17,15 @@ pub(crate) struct EventBatch {
 }
 
 /// Main-loop per-frame event cap: drains mixed key/mouse/resize input one by one, deferring overflow.
-///
-/// 64 events per ~16ms frame is far above human input; window-drag resize floods or
-/// wheel bursts only slip by about one frame (~16-50ms), so keys are never buried.
 pub(crate) const MAIN_DRAIN_MAX: usize = 64;
 
 /// Per-frame event drain cap: keeps mouse floods from starving rendering.
-///
-/// 4096 covers ~240k events/s, far above real mouse drags (~100Hz); on overflow the frame drops
-/// the rest and continues next frame (keys slip by about one frame, ~16ms).
+/// On overflow the frame drops the rest and continues next frame.
 pub(crate) const EVENT_DRAIN_MAX: usize = 4096;
 
 /// Drain the ready events for one frame (`next` returns `None` when the queue is empty).
-///
-/// With mouse capture on, mouse moves keep producing `Event::Mouse`. Reading only one per frame
-/// drops input and buries keys behind the flood, delaying them by seconds.
-/// Drain the whole frame here (bounded by `EVENT_DRAIN_MAX`); the caller keeps
+/// Drains at most `EVENT_DRAIN_MAX` events; the caller keeps
 /// key detail (code plus modifiers) for stage handling.
-///
-/// Pure logic (the `next` event closure is injected) for unit tests.
 pub(crate) fn drain_events(mut next: impl FnMut() -> Option<Event>) -> EventBatch {
     let mut batch = EventBatch {
         keys: Vec::new(),

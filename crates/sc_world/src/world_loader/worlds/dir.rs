@@ -1,7 +1,7 @@
 use crate::data_reader::{WorldDataReader, WorldDataReaderError};
 use crate::leveldb::LevelDbWorldStorage;
 use crate::manager::MinecraftWorldId;
-use crate::storage::{EmptyWorldStorage, WorldChunkProvider, WorldStorage};
+use crate::storage::{NoSaveWorldStorage, WorldChunkProvider, WorldStorage};
 use crate::world::MinecraftWorld;
 use log::{info, warn};
 use sc_log::t_log;
@@ -9,7 +9,12 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// `db` 目录是否已含 LevelDB 状态。
+///
 /// Whether a `db` directory already holds LevelDB state.
+///
+/// LevelDB 自身的产物是 `CURRENT`、`MANIFEST-*` 与 `*.log`；`LOCK` 和
+/// `LOG` 由失败/空的打开尝试创建，不携带存档数据。
 ///
 /// LevelDB's own artifacts are `CURRENT`, `MANIFEST-*` and `*.log`; `LOCK` and
 /// `LOG` are created by a failed/empty open attempt and carry no save data.
@@ -31,11 +36,18 @@ fn directory_has_database_state(db_path: &std::path::Path) -> bool {
 pub struct DirectoryWorld;
 
 impl DirectoryWorld {
+    /// 在不触碰 `level.dat` 或 LevelDB 的情况下取世界目录显示名
+    /// （`levelname.txt`，回退规则与 [`DirectoryWorld::get_world`] 完全一致）。
+    ///
     /// Display name of a world directory without touching `level.dat` or the
     /// LevelDB (`levelname.txt`, falling back exactly like [`DirectoryWorld::get_world`]).
     ///
-    /// Used by the startup wait loop so polling for a missing overworld is a
-    /// cheap file read instead of an open/close cycle per world per second.
+    /// - `dir`: 世界目录路径
+    ///
+    /// 启动等待循环每秒轮询本方法；单次调用只是一次廉价文件读取。
+    ///
+    /// The startup wait loop polls this every second; one call is a cheap
+    /// file read.
     pub(crate) fn peek_name(dir: &std::path::Path) -> String {
         let mut level_name_path = dir.to_path_buf();
         level_name_path.push("levelname.txt");
@@ -59,6 +71,9 @@ impl DirectoryWorld {
         //   world path cannot silently produce an empty save.
         let mut db_path = path.clone();
         db_path.push("db");
+        if !db_path.exists() {
+            let _ = fs::create_dir_all(&db_path);
+        }
         let storage: Arc<dyn WorldStorage> = if db_path.is_dir() {
             let create = !directory_has_database_state(&db_path);
             let opened = if create {
@@ -88,7 +103,7 @@ impl DirectoryWorld {
             }
         } else {
             info!("{}", t_log!("console.world.db_no_dir", name = world_name));
-            Arc::new(EmptyWorldStorage)
+            Arc::new(NoSaveWorldStorage)
         };
         let chunk_provider = WorldChunkProvider::new(storage);
 

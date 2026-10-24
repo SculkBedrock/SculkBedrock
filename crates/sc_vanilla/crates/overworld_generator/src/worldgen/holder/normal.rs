@@ -42,10 +42,11 @@ use sc_world::chunk::BlockRuntimeId;
 // AquiferMaterialFiller: aquifer branch of the material chain
 // ---------------------------------------------------------------------------
 
+/// 材质链的含水层分支。持有共享的 `Rc<RefCell<Option<Aquifer>>>` 含水层状态，以及包装后的（单元格缓存的）密度函数。
+///
 /// Aquifer branch of the material chain.
 ///
-/// Holds shared `Rc<RefCell<Option<Aquifer>>>` aquifer state plus the wrapped
-/// (cell-cached) density function.
+/// Holds shared `Rc<RefCell<Option<Aquifer>>>` aquifer state plus the wrapped (cell-cached) density function.
 struct AquiferMaterialFiller {
     aquifer: Rc<RefCell<Option<Aquifer>>>,
     wrapped: Arc<dyn DensityFunction>,
@@ -67,6 +68,8 @@ impl MaterialFiller for AquiferMaterialFiller {
 // StoneMaterialFiller: stone branch of the material chain
 // ---------------------------------------------------------------------------
 
+/// 材质链的石头分支：密度为正处填充石头。
+///
 /// Stone branch of the material chain: stone where the density is positive.
 struct StoneMaterialFiller {
     wrapped: Arc<dyn DensityFunction>,
@@ -87,6 +90,8 @@ impl MaterialFiller for StoneMaterialFiller {
 // NormalObjectHolder
 // ---------------------------------------------------------------------------
 
+/// 根 holder，持有生物群系、地形、地表、地表覆盖与特征 holder。
+///
 /// Root holder owning the biome, terrain, surface, overwrite, and feature holders.
 pub struct NormalObjectHolder {
     random: Xoroshiro128,
@@ -143,6 +148,8 @@ impl ObjectHolder for NormalObjectHolder {}
 // BiomeHolder
 // ---------------------------------------------------------------------------
 
+/// 生物群系噪声 holder（大陆性/温度/湿度/侵蚀/怪异度/偏移/锯齿）。
+///
 /// Biome noise holder (continentalness/temperature/humidity/erosion/weirdness/offset/jagged).
 pub struct BiomeHolder {
     random: Xoroshiro128,
@@ -246,9 +253,9 @@ impl BiomeHolder {
 // TerrainHolder
 // ---------------------------------------------------------------------------
 
-/// Terrain density-function holder (continents/erosion/ridges/caves/veins/materials/aquifer).
+/// 地形密度函数容器：大陆、侵蚀、山脊、洞穴、矿脉、材料与含水层。
 ///
-/// Reads biome noise through the explicitly passed `&BiomeHolder`.
+/// Terrain density-function holder covering continents, erosion, ridges, caves, veins, materials, and the aquifer.
 #[allow(dead_code)]
 pub struct TerrainHolder {
     random: Xoroshiro128,
@@ -711,6 +718,8 @@ impl TerrainHolder {
 // SurfaceHolder
 // ---------------------------------------------------------------------------
 
+/// 供地表数据阶段使用的地表噪声 holder。
+///
 /// Surface-noise holder for the surface-data stage.
 pub struct SurfaceHolder {
     random: Xoroshiro128,
@@ -744,6 +753,8 @@ impl SurfaceHolder {
 // SurfaceOverwriteHolder
 // ---------------------------------------------------------------------------
 
+/// 地表覆盖噪声 holder 及惰性构建的陶瓦层带缓存。
+///
 /// Surface-overwrite noise holder plus the lazily built clay-band cache.
 pub struct SurfaceOverwriteHolder {
     random: Xoroshiro128,
@@ -859,6 +870,8 @@ impl SurfaceOverwriteHolder {
 // FeatureHolder
 // ---------------------------------------------------------------------------
 
+/// 特征噪声 holder（陶瓦/垂滴叶、滴水石、苔藓、幽匿、海带、硫磺）。
+///
 /// Feature-noise holder (clay/dripleaf, dripstone, moss, sculk, kelp, sulfur).
 pub struct FeatureHolder {
     random: Xoroshiro128,

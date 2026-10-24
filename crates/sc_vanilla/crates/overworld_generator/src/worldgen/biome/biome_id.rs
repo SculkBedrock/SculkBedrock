@@ -1,10 +1,6 @@
-//! Biome ID constants.
+//! 生物群系整数 ID 常量表。
 //!
-//! Mirrors upstream integer IDs as pub const i32 for picker matching.
-//! Uses i32 (not an exhaustive enum) since pickers return i32.
-//! Uses i32 (not an exhaustive enum) since pickers return i32. //
-//!
-//! Values match 1.26.40; numbering is sparse (e.g. 50..128 missing).
+//! Integer biome ID constants.
 
 // --- Base biomes (0..49) ---
 pub const OCEAN: i32 = 0;

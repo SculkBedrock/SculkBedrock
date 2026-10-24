@@ -23,15 +23,14 @@ pub(super) fn render_boot_input(buf: &mut String, f: &Frame, boot: &BootFrame, w
 // ================= Completion popup appear animation =================
 
 /// Popup appear duration (ms): rows pop upward from the input box while logs push up.
-/// 240ms at 60fps is about 14 frames, so each row slides into view over ~4 frames: visible but never sluggish.
 pub(crate) const POPUP_APPEAR_MS: u64 = 240;
-/// Per-row slide columns (easeOutCubic, same easing as the marker slide; 8 columns read clearly).
+/// Per-row slide columns (easeOutCubic, same easing as the marker slide).
 pub(super) const POPUP_SLIDE_COLS: usize = 8;
 /// Birth span: row i emerges at `p = i/n*0.7` (every row is born before 0.7),
 /// then slides plus fades into place within 0.3 units (same schedule as [`animated_popup_count`]).
 pub(super) const POPUP_BIRTH_SPAN: f32 = 0.7;
-/// Popup fade start (pure black): mid-animation foreground and selection backgrounds interpolate from black,
-/// which reads as fade-in on dark terminals; on light terminals the first frame is readable black text.
+/// Popup fade start (pure black): mid-animation foreground and selection backgrounds
+/// interpolate from black (fade-in on dark terminals; black text on light terminals).
 pub(super) const POPUP_FADE_FROM: Rgb = Rgb(0, 0, 0);
 /// Popup text steady color approximations (bright cyan/yellow): animation interpolation only,
 /// steady still uses theme colors (switches back with no jump); description gray reuses the exact 245 gray.
@@ -42,8 +41,7 @@ pub(super) const POPUP_SELECTED_BG: Rgb = Rgb(58, 58, 58);
 
 /// Popup visible rows (popping upward): grows from 0 to `target` with appear age while logs push up instead of jumping.
 ///
-/// Same birth schedule as [`popup_row_anim`]: count of born rows (indexes `i` with `birth_i` below `p`);
-/// pure function (explicit clock) for unit tests.
+/// Same birth schedule as [`popup_row_anim`]: count of born rows (indexes `i` with `birth_i` below `p`).
 pub(crate) fn animated_popup_count(age_ms: Option<u64>, target: usize) -> usize {
     let Some(age) = age_ms else {
         return target;

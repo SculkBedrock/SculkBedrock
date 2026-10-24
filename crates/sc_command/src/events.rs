@@ -1,3 +1,10 @@
+//! 命令事件流：`RawCommandInput -> CommandInvocation -> CommandFeedback`。
+//!
+//! 网络层（CommandRequest 包）与控制台把原始输入提交为 [`RawCommandInput`]；
+//! dispatch 负责分词、解析别名、校验权限，随后发出 [`CommandInvocation`]；
+//! 每条命令系统（内置或插件）消费调用事件并发出 [`CommandFeedback`]；
+//! 反馈分别由控制台日志器与网络 CommandOutput 发送器路由。
+//!
 //! Command event flow: `RawCommandInput -> CommandInvocation -> CommandFeedback`.
 //!
 //! The network layer (CommandRequest packet) and the console submit raw input as [`RawCommandInput`];
@@ -9,6 +16,8 @@ use sc_ecs::entity::EntityId;
 use sc_ecs::event::Event;
 use uuid::Uuid;
 
+/// 命令调用者。
+///
 /// Command invoker.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CommandOrigin {
@@ -16,6 +25,8 @@ pub enum CommandOrigin {
     Console,
 }
 
+/// 来自 CommandRequest 包的回执上下文，CommandOutput 包会原样回写。
+///
 /// Receipt context from the CommandRequest packet, echoed verbatim by the CommandOutput packet.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommandRequestContext {

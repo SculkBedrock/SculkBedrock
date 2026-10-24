@@ -1,4 +1,10 @@
+//! 只读方块访问。
+//!
 //! Read-only block access.
+//!
+//! 读取经由 `WorldChunkProvider` 的 `ChunkColumn` 缓存
+//! （命中 = 缓存读锁 + `Arc` 克隆 + 列读锁，无数据拷贝）。
+//! 写入见 [`crate::write`]（单写者队列）。
 //!
 //! Reads go through the `WorldChunkProvider` `ChunkColumn` cache
 //! (cache hit = cache read lock + `Arc` clone + column read lock, no data copy).
@@ -10,9 +16,18 @@ use sc_world::world::MinecraftWorld;
 
 use crate::position::BlockPosition;
 
+/// 只读方块读取 trait（世界侧实现，逻辑侧只依赖此接口）。
+///
+/// Read-only block access trait (implemented by the world side; logic depends only
+/// on this interface).
 pub trait BlockRead {
+    /// 读取一个方块（layer 0）。`Ok(None)` = 区块缺失或 y 越界；
+    /// `Ok(Some(air))` = 已生成区块内的空气。
+    ///
     /// Reads one block (layer 0). `Ok(None)` = chunk missing or y out of range;
     /// `Ok(Some(air))` = air inside a generated chunk.
+    ///
+    /// - `position`: 目标方块坐标
     fn get_block(
         &self,
         position: BlockPosition,
@@ -20,6 +35,12 @@ pub trait BlockRead {
 }
 
 impl BlockRead for MinecraftWorld {
+    /// 读取一个方块：先查垂直边界，再经区块缓存定位所在区块并读取 layer 0。
+    ///
+    /// Reads one block: checks vertical bounds first, then locates the owning chunk
+    /// via the chunk cache and reads layer 0.
+    ///
+    /// - `position`: 目标方块坐标
     fn get_block(
         &self,
         position: BlockPosition,

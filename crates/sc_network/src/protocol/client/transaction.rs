@@ -5,14 +5,24 @@ use sc_binary::interfaces::{Reader, Writer};
 use sc_binary::{ByteReader, ByteWriter};
 use sc_network_macros::MinecraftPacket;
 
-/// Empty Bedrock items always encode as runtime 0 / block 0 /
-/// usingNetId=false (`ItemData.AIR`), never from the version-pack palette:
-/// empty slots send the `ItemData.AIR` constant directly, while
-/// usingNetId=true applies only to non-empty items (replaced at the call
-/// site). A palette air id such as -158 is an internal id, not a wire
-/// empty value.
+/// 空 Bedrock 物品始终编码为 runtime 0 / block 0 / usingNetId=false
+/// （`ItemData.AIR`），绝不取自版本包调色板：空格直接发送 `ItemData.AIR`
+/// 常量，而 usingNetId=true 仅适用于非空物品（在调用点替换）。
+/// 类似 -158 的调色板空气 id 是内部 id，不是线上的空值。
+///
+/// Empty Bedrock items always encode as runtime 0 / block 0 / usingNetId=false
+/// (`ItemData.AIR`), never from the version-pack palette: empty slots send the
+/// `ItemData.AIR` constant directly, while usingNetId=true applies only to
+/// non-empty items (replaced at the call site). A palette air id such as -158 is
+/// an internal id, not a wire empty value.
 static SHIELD_ITEM_RUNTIME_ID: AtomicU16 = AtomicU16::new(u16::MAX);
 
+/// 由当前版本包配置盾牌物品的 runtime id。
+///
+/// 客户端从 ItemRegistry 包得出 `ShieldItemID`，并对该物品把实例物品附加数据切换
+/// 为 `ItemExtraDataWithBlockingTick`（一个额外的小端 i64），因此每当序列化物品是
+/// 盾牌时，编码器必须追加 blocking tick 字段。
+///
 /// Configures the shield item runtime id from the active version pack.
 ///
 /// Clients derive `ShieldItemID` from the ItemRegistry packet and switch the
@@ -27,7 +37,7 @@ fn configured_shield_item_runtime() -> u16 {
     SHIELD_ITEM_RUNTIME_ID.load(Ordering::Relaxed)
 }
 
-// Wire-protocol namespace mirrors official docs.
+// Casing mirrors the wire-protocol names.
 #[allow(non_snake_case)]
 pub mod TransactionType {
     pub const NORMAL: u32 = 0;
@@ -37,7 +47,7 @@ pub mod TransactionType {
     pub const ITEM_RELEASE: u32 = 4;
 }
 
-// Wire-protocol namespace mirrors official docs.
+// Casing mirrors the wire-protocol names.
 #[allow(non_snake_case)]
 pub mod ItemUseAction {
     pub const CLICK_BLOCK: i32 = 0;
@@ -45,22 +55,24 @@ pub mod ItemUseAction {
     pub const BREAK: i32 = 2;
 }
 
+/// 物品交互所用的手（协议 2225 及之后）。
+///
 /// Hand used for an item interaction (protocol 2225 and later).
-// Wire-protocol namespace mirrors official docs.
+// Casing mirrors the wire-protocol names.
 #[allow(non_snake_case)]
 pub mod TransactionHand {
     pub const MAINHAND: u8 = 0;
     pub const OFFHAND: u8 = 1;
 }
 
-// Wire-protocol namespace mirrors official docs.
+// Casing mirrors the wire-protocol names.
 #[allow(non_snake_case)]
 pub mod ItemUseOnActorAction {
     pub const INTERACT: i32 = 0;
     pub const ATTACK: i32 = 1;
 }
 
-// Wire-protocol namespace mirrors official docs.
+// Casing mirrors the wire-protocol names.
 #[allow(non_snake_case)]
 pub mod ItemReleaseAction {
     pub const RELEASE: i32 = 0;
@@ -75,7 +87,10 @@ pub struct ItemData {
     pub has_net_id: bool,
     pub net_id: i32,
     pub block_runtime_id: u32,
-    /// Serialized item user-data payload.  `None` means the canonical empty
+    /// 序列化后的物品 user-data 载荷。`None` 表示规范的空 user-data 段
+    /// （空 NBT 标记 + 空的 CanPlaceOn/CanDestroy 数组），而非省略了协议字段。
+    ///
+    /// Serialized item user-data payload. `None` means the canonical empty
     /// user-data section (empty NBT marker + empty CanPlaceOn/CanDestroy
     /// arrays), not an omitted protocol field.
     pub user_data: Option<Vec<u8>>,
@@ -101,6 +116,8 @@ pub struct InventoryActionData {
 pub struct InventoryTransaction {
     pub legacy_request_id: i32,
     pub transaction_type: u32,
+    /// 为既有游戏处理器保留；解码器需要这一段。
+    ///
     /// Kept for existing game handlers. Decoders require this section.
     pub has_value: bool,
     pub actions: Vec<InventoryActionData>,
@@ -113,6 +130,8 @@ pub struct InventoryTransaction {
     pub block_z: i32,
     pub face: u8,
     pub slot: i32,
+    /// 所用的手（主手/副手）。仅协议 2225 及之后在线上出现，其余置零。
+    ///
     /// Used hand (mainhand/offhand). Present on the wire for protocol 2225
     /// and later, zero otherwise.
     pub hand: u8,
@@ -130,6 +149,8 @@ pub struct InventoryTransaction {
     // TYPE_USE_ITEM_ON_ENTITY
     pub entity_runtime_id: u64,
     pub entity_action_type: i32,
+    /// 所用的手（主手/副手）。仅协议 2225 及之后在线上出现，其余置零。
+    ///
     /// Used hand (mainhand/offhand). Present on the wire for protocol 2225
     /// and later, zero otherwise.
     pub entity_hand: u8,
@@ -145,6 +166,8 @@ pub struct InventoryTransaction {
     pub head_x: f32,
     pub head_y: f32,
     pub head_z: f32,
+    /// 所用的手（主手/副手）。仅协议 2225 及之后在线上出现，其余置零。
+    ///
     /// Used hand (mainhand/offhand). Present on the wire for protocol 2225
     /// and later, zero otherwise.
     pub release_hand: u8,
@@ -177,6 +200,8 @@ fn read_source(buf: &mut ByteReader) -> Result<(u32, i32, u32), Error> {
     Ok((source_type, container_id, flag))
 }
 
+/// 读取 Bedrock 的 NetworkItemStackDescriptor。
+///
 /// Reads Bedrock's NetworkItemStackDescriptor.
 pub(crate) fn read_item_data(buf: &mut ByteReader) -> Result<ItemData, Error> {
     let runtime_id = buf.read_u16_le()?;
@@ -475,19 +500,28 @@ impl Writer for InventoryTransaction {
     }
 }
 
+/// 写入背包包、交易与实体装备所用的普通 NetworkItemStackDescriptor。
+///
 /// Writes the ordinary NetworkItemStackDescriptor used by inventory packets,
 /// transactions and entity equipment.
 pub(crate) fn write_item_data(buf: &mut ByteWriter, item: &ItemData) -> Result<(), Error> {
     write_network_item_stack_descriptor(buf, item)
 }
 
+/// 写入一个 Bedrock 网络物品栈描述符。
+///
+/// 空格直接发送 `ItemData.AIR` 常量（runtime 0 / count 0 / damage 0 /
+/// usingNetId=false / block 0 / default userData）。usingNetId=true 仅适用于
+/// 非空物品。方块 runtime id 是哈希后的方块状态 id，因此不得经由旧版方块调色板
+/// 重映射（非空物品原样透传；空格写 0）。
+///
 /// Writes a Bedrock network item stack descriptor.
 ///
-/// Empty slots send the `ItemData.AIR` constant directly (runtime 0 /
-/// count 0 / damage 0 / usingNetId=false / block 0 / default userData).
-/// usingNetId=true applies only to non-empty items. Block runtime ids are
-/// hashed block-state ids and therefore must not be remapped through the
-/// legacy block palette (non-empty items pass through; empty slots write 0).
+/// Empty slots send the `ItemData.AIR` constant directly (runtime 0 / count 0 /
+/// damage 0 / usingNetId=false / block 0 / default userData). usingNetId=true
+/// applies only to non-empty items. Block runtime ids are hashed block-state ids
+/// and therefore must not be remapped through the legacy block palette (non-empty
+/// items pass through; empty slots write 0).
 pub(crate) fn write_network_item_stack_descriptor(
     buf: &mut ByteWriter,
     item: &ItemData,
@@ -516,12 +550,51 @@ pub(crate) fn write_network_item_stack_descriptor(
     Ok(())
 }
 
+/// 写入物品描述符所用的 user-data 字段。
+///
+/// 缺省值由其语义字段生成：`ByteWriter::write_slice` 先写必需的长度前缀，随后写
+/// 小端空 NBT 标记，再接零长的 CanPlaceOn 与 CanDestroy 数组。
+///
 /// Writes the user-data field used by item descriptors.
 ///
-/// The default is generated from its semantic fields rather than copied from
-/// a packet dump: `ByteWriter::write_slice` emits the required length prefix,
-/// then writes the little-endian empty NBT marker followed by zero-length
-/// CanPlaceOn and CanDestroy arrays.
+/// The default is generated from its semantic fields: `ByteWriter::write_slice`
+/// emits the required length prefix, then writes the little-endian empty NBT
+/// marker followed by zero-length CanPlaceOn and CanDestroy arrays.
+/// 构造携带 `Damage` NBT 标签的物品 user-data。
+///
+/// 基岩版客户端的物品耐久条直接依据 NBT 中的 `Damage` (int) 标签渲染；
+/// 若 NBT 为空或缺失 `Damage` 键，客户端视为满耐久（不显示耐久条）。
+/// 构造携带指定 NBT 复合标签的物品 user-data。
+pub(crate) fn build_compound_user_data(tag: &sc_nbt::CompoundNbt, damage: u32) -> Vec<u8> {
+    use sc_nbt::local::BedrockLocalNbt;
+    use sc_nbt::writer::NbtWriter;
+
+    let mut compound = tag.clone();
+    if damage > 0 && !compound.contains_key("Damage") {
+        compound.insert("Damage", sc_nbt::NbtValue::Int(damage as i32));
+    }
+
+    let mut nbt_writer = ByteWriter::new();
+    let mut writer = NbtWriter::from_writer(&mut nbt_writer);
+    let _ = writer.write::<BedrockLocalNbt>(&sc_nbt::NbtValue::Compound(compound));
+    let nbt_bytes = nbt_writer.as_slice();
+
+    let mut ud = Vec::with_capacity(nbt_bytes.len() + 11);
+    ud.extend_from_slice(&0xFFFFu16.to_le_bytes()); // has_nbt = true
+    ud.push(1); // nbt version
+    ud.extend_from_slice(nbt_bytes);
+    ud.extend_from_slice(&0i32.to_le_bytes()); // can_place_on
+    ud.extend_from_slice(&0i32.to_le_bytes()); // can_destroy
+    ud
+}
+
+/// 构造仅携带 `Damage` NBT 标签的物品 user-data。
+pub(crate) fn build_damage_user_data(damage: u32) -> Vec<u8> {
+    let mut tag = sc_nbt::CompoundNbt::new(None);
+    tag.insert("Damage", sc_nbt::NbtValue::Int(damage as i32));
+    build_compound_user_data(&tag, damage)
+}
+
 fn write_item_user_data(buf: &mut ByteWriter, payload: Option<&[u8]>) -> Result<(), Error> {
     if let Some(payload) = payload {
         return buf.write_slice(payload);
@@ -534,6 +607,8 @@ fn write_item_user_data(buf: &mut ByteWriter, payload: Option<&[u8]>) -> Result<
     buf.write_slice(defaults.as_slice())
 }
 
+/// 写入 CreativeContent 所用的实例物品描述符。
+///
 /// Writes the instance-item descriptor used by CreativeContent.
 pub(crate) fn write_instance_item(buf: &mut ByteWriter, item: &ItemData) -> Result<(), Error> {
     let is_empty = item.is_empty();
@@ -574,6 +649,8 @@ mod tests {
     use super::*;
     use sc_binary::interfaces::{Reader, Writer};
 
+    /// has_net_id=true 布局：`bool(1) + varint id`（无变体前缀）。
+    ///
     /// has_net_id=true layout: `bool(1) + varint id` (no variant prefix).
     #[test]
     fn net_id_descriptor_round_trip() {
@@ -599,6 +676,10 @@ mod tests {
         assert_eq!(decoded.count, 3);
     }
 
+    /// 空格是 `ItemData.AIR` 字面量：runtime 0 / count 0 / damage 0 /
+    /// usingNetId=false / block 0 / default userData，共 18 字节，无
+    /// netIdVariant 前缀。
+    ///
     /// Empty slots are the `ItemData.AIR` literal: runtime 0 / count 0 /
     /// damage 0 / usingNetId=false / block 0 / default userData, 18 bytes
     /// total, with no netIdVariant prefix.
@@ -661,6 +742,9 @@ mod tests {
         }
     }
 
+    /// 手字节仅在协议 2193 及之后（ITEM_USE）或 2225 及之后（其它变体）出现，
+    /// 位于 slot 与 item 之间。旧编码在将 hand 置零后可往返。
+    ///
     /// Hand byte is present for protocol 2193 and later (ITEM_USE) or 2225
     /// and later (other variants), between slot and item. Older encodings
     /// round-trip with hand zeroed.
@@ -692,5 +776,28 @@ mod tests {
         });
         assert_eq!(new_decoded.hand, TransactionHand::OFFHAND);
         assert_eq!(new_decoded.block_x, 1);
+    }
+}
+
+#[cfg(test)]
+mod user_data_tests {
+    use super::*;
+    use sc_nbt::item_nbt;
+
+    #[test]
+    fn build_compound_user_data_embeds_damage_and_custom_facets() {
+        let tag = item_nbt! {
+            "display" => {
+                "Name" => "Legendary Pickaxe",
+            }
+        };
+        let bytes = build_compound_user_data(&tag, 15);
+        assert!(bytes.len() > 28);
+        assert_eq!(&bytes[..2], &0xFFFFu16.to_le_bytes()); // has_nbt
+        assert_eq!(bytes[2], 1); // nbt version
+        // Contains "Damage" and "Legendary Pickaxe"
+        let s = String::from_utf8_lossy(&bytes);
+        assert!(s.contains("Damage"));
+        assert!(s.contains("Legendary Pickaxe"));
     }
 }

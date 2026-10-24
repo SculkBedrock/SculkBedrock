@@ -149,10 +149,7 @@ pub fn async_system(attr: TokenStream, input: TokenStream) -> TokenStream {
 //
 // Layout code = repr prefix + struct name + alphabetically ordered
 // `field:type` list, all normalized to a spaceless form
-// (`Vec < T >` -> `Vec<T>`). It is a pure function of the source: host and
-// cdylib plugins built from the same source derive the same ResourceId, so
-// cross-DLL resource lookup hits, and equal IDs by themselves prove equal
-// layouts (layout certificate).
+// (`Vec < T >` -> `Vec<T>`).
 // ---------------------------------------------------------------------------
 
 /// Renders a token stream as a spaceless canonical string.
@@ -263,11 +260,10 @@ pub fn resource_derive(input: TokenStream) -> TokenStream {
     };
     let layout_lit = syn::LitStr::new(&layout, span);
 
-    // Generic params are only placeholder tokens in the compile-time layout
-    // string; the instantiated concrete type is appended as a runtime
-    // `type_name` suffix (e.g. `Foo{...}<crate::Bar>`): same-source build
-    // copies share the type_name, while different instantiations stay
-    // distinguishable by suffix.
+    // Generic params are placeholder tokens in the compile-time layout
+    // string; the instantiated concrete types are appended as a runtime
+    // `type_name` suffix (e.g. `Foo{...}<crate::Bar>`), keeping
+    // instantiations distinct.
     let params: Vec<syn::Ident> = input
         .generics
         .type_params()
@@ -283,10 +279,8 @@ pub fn resource_derive(input: TokenStream) -> TokenStream {
         impl #impl_generics #ecs_path::resource::Resource for #name #type_generics #where_clause {
             fn resource_id() -> #ecs_path::resource::ResourceId {
                 // The cache must be process-wide: a `static` inside a generic
-                // function is not isolated per monomorphized instance
-                // (observed: Events<A> and Events<B> sharing one OnceLock,
-                // so the second instance returns the first instance's ID:
-                // a type-confusion-grade bug).
+                // function is not isolated per monomorphized instance, so
+                // types are keyed by the full layout string instead.
                 #ecs_path::resource::cached_resource_id_for::<Self>(
                     || format!("{}{}", #layout_lit, #generic_suffix)
                 )
@@ -351,7 +345,6 @@ pub fn enum_events_drive(input: TokenStream) -> TokenStream {
         .iter()
         .map(|variant| variant.ident.clone())
         .collect::<Vec<_>>();
-    // Match struct or enum
 
     let ecs_path = get_path("sc_ecs", span);
 

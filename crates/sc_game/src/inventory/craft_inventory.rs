@@ -20,6 +20,8 @@ pub enum CraftContainer {
     /// Ingredient container enums differ per station (25/45/46) but all map
     /// to slot 0; the open station validates at execution.
     Furnace,
+    /// Chest slot (`slot` = 0..27 or 0..54).
+    Chest,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -29,6 +31,20 @@ pub struct CraftSlotRef {
     pub net_id: i32,
     /// FullContainerName echo (window id for grid cells only).
     pub dynamic: Option<u32>,
+    /// Container enum as received from the wire (e.g. 7 for LEVEL_ENTITY).
+    pub container_enum: Option<u8>,
+}
+
+impl CraftSlotRef {
+    pub const fn new(container: CraftContainer, slot: u8, net_id: i32) -> Self {
+        Self {
+            container,
+            slot,
+            net_id,
+            dynamic: None,
+            container_enum: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -59,6 +75,11 @@ pub enum InventoryAction {
     Consume,
     Create,
     Results,
+    MineBlock {
+        hotbar_slot: i32,
+        predicted_durability: i32,
+        stack_network_id: i32,
+    },
     Unsupported,
 }
 
@@ -70,18 +91,22 @@ pub struct CraftSlotUpdate {
     pub net_id: i32,
     /// Same echo for responses (grid only).
     pub dynamic: Option<u32>,
+    /// Container enum echo for response (defaults to LEVEL_ENTITY 7 for chest).
+    pub container_enum: Option<u8>,
 }
 
 #[derive(Clone)]
 struct State {
     extra: Vec<ItemStack>,
     ids: HashMap<usize, (u16, u32, i32)>,
+    chest_ids: HashMap<usize, (u16, u32, i32)>,
     receipts: HashMap<u64, bool>,
     order: VecDeque<u64>,
     next_id: i32,
     /// Slot indices dirtied by the last successful execution.
     /// `updates()` returns only these slots.
     dirty: BTreeSet<usize>,
+    chest_updates: Vec<CraftSlotUpdate>,
     /// Grid echo dynamic, recorded from requests and cleared on close.
     grid_dynamic: Option<u32>,
 }
@@ -91,10 +116,12 @@ impl Default for State {
         Self {
             extra: vec![ItemStack::empty(); 11],
             ids: HashMap::new(),
+            chest_ids: HashMap::new(),
             receipts: HashMap::new(),
             order: VecDeque::new(),
             next_id: 1,
             dirty: BTreeSet::new(),
+            chest_updates: Vec::new(),
             grid_dynamic: None,
         }
     }
@@ -112,7 +139,7 @@ fn ensure(world: &World, entity: EntityId) -> Option<std::sync::Arc<CraftInvento
     world.get_component::<CraftInventory>(&entity)
 }
 
-fn index(slot: CraftSlotRef, main: usize, table: bool) -> Option<usize> {
+pub(crate) fn index(slot: CraftSlotRef, main: usize, table: bool) -> Option<usize> {
     match slot.container {
         CraftContainer::Inventory | CraftContainer::CombinedInventory
             if (slot.slot as usize) < main =>
@@ -138,7 +165,11 @@ fn index(slot: CraftSlotRef, main: usize, table: bool) -> Option<usize> {
 }
 
 fn same_item(a: &ItemStack, b: &ItemStack) -> bool {
-    a.runtime_id == b.runtime_id && a.damage == b.damage && a.block_runtime_id == b.block_runtime_id
+    a.runtime_id == b.runtime_id
+        && a.damage == b.damage
+        && (a.block_runtime_id == b.block_runtime_id
+            || a.block_runtime_id == 0
+            || b.block_runtime_id == 0)
 }
 
 /// Fuel check through the item component table (missing table or
@@ -804,6 +835,47 @@ pub fn execute(world: &World, request: &CraftRequestEvent) -> bool {
                 .map(|process| process.furnace_slots());
         }
     }
+    let chest_binding = world
+        .get_component::<ContainerOpen>(&entity)
+        .and_then(|open| match &open.kind {
+            crate::inventory::ContainerKind::Chest {
+                world_id,
+                position,
+                paired_position,
+                slots,
+            } => Some((
+                world_id.clone(),
+                *position,
+                *paired_position,
+                *slots,
+                open.window_id,
+            )),
+            _ => None,
+        });
+    let touches_chest = request.actions.iter().any(|action| match action {
+        InventoryAction::Move {
+            source,
+            destination,
+            ..
+        } => crate::inventory::chest::is_chest_slot(source) || crate::inventory::chest::is_chest_slot(destination),
+        InventoryAction::Swap {
+            source,
+            destination,
+        } => crate::inventory::chest::is_chest_slot(source) || crate::inventory::chest::is_chest_slot(destination),
+        _ => false,
+    });
+    let mut chest_slots: Option<Vec<ItemStack>> = None;
+    if touches_chest {
+        if let Some((world_id, pos, paired_pos, _, _)) = chest_binding.as_ref() {
+            chest_slots = Some(crate::inventory::chest::load_chest_slots(
+                world,
+                world_id,
+                *pos,
+                *paired_pos,
+            ));
+        }
+    }
+    let old_chest_slots = chest_slots.clone();
     let valid_ref = |reference: CraftSlotRef, i: usize, current: &[ItemStack]| {
         // Stack network id check: mismatch means client>0 and server id differs;
         // zero/negative ids always pass.
@@ -829,8 +901,11 @@ pub fn execute(world: &World, request: &CraftRequestEvent) -> bool {
         }
     };
     let op_id = request.operation_id;
+    let mut mine_dirty = Vec::new();
     // Grid dynamic seen in this packet, recorded for response echo.
     let mut grid_dynamic_seen: Option<Option<u32>> = None;
+    let mut chest_dynamic_seen: Option<Option<u32>> = None;
+    let mut chest_container_enum_seen: Option<u8> = None;
     let success = (|| {
         let mut crafted = false;
         // Set by a Grant action: the scratch Output must be empty again by
@@ -874,6 +949,47 @@ pub fn execute(world: &World, request: &CraftRequestEvent) -> bool {
                             op_id,
                         ) {
                             return false;
+                        }
+                        continue;
+                    }
+                    if crate::inventory::chest::is_chest_slot(source)
+                        || crate::inventory::chest::is_chest_slot(destination)
+                    {
+                        let Some((_, _, _, total_slots, window_id)) = &chest_binding else {
+                            log::debug!(
+                                "[craft] op={op_id} Move rejected: chest slot without a bound chest window"
+                            );
+                            return false;
+                        };
+                        let Some(slots) = chest_slots.as_mut() else {
+                            log::debug!(
+                                "[craft] op={op_id} Move rejected: missing chest slot state"
+                            );
+                            return false;
+                        };
+                        if !crate::inventory::chest::chest_move(
+                            &valid_ref,
+                            &items,
+                            main,
+                            table,
+                            *window_id,
+                            *total_slots,
+                            &mut stacks,
+                            slots,
+                            *amount,
+                            source,
+                            destination,
+                            op_id,
+                        ) {
+                            return false;
+                        }
+                        for reference in [source, destination] {
+                            if reference.container == CraftContainer::Chest {
+                                chest_dynamic_seen = Some(reference.dynamic);
+                                if reference.container_enum.is_some() {
+                                    chest_container_enum_seen = reference.container_enum;
+                                }
+                            }
                         }
                         continue;
                     }
@@ -968,6 +1084,46 @@ pub fn execute(world: &World, request: &CraftRequestEvent) -> bool {
                         }
                         continue;
                     }
+                    if crate::inventory::chest::is_chest_slot(source)
+                        || crate::inventory::chest::is_chest_slot(destination)
+                    {
+                        let Some((_, _, _, total_slots, window_id)) = &chest_binding else {
+                            log::debug!(
+                                "[craft] op={op_id} Swap rejected: chest slot without a bound chest window"
+                            );
+                            return false;
+                        };
+                        let Some(slots) = chest_slots.as_mut() else {
+                            log::debug!(
+                                "[craft] op={op_id} Swap rejected: missing chest slot state"
+                            );
+                            return false;
+                        };
+                        if !crate::inventory::chest::chest_swap(
+                            &valid_ref,
+                            &items,
+                            main,
+                            table,
+                            *window_id,
+                            *total_slots,
+                            &mut stacks,
+                            slots,
+                            source,
+                            destination,
+                            op_id,
+                        ) {
+                            return false;
+                        }
+                        for reference in [source, destination] {
+                            if reference.container == CraftContainer::Chest {
+                                chest_dynamic_seen = Some(reference.dynamic);
+                                if reference.container_enum.is_some() {
+                                    chest_container_enum_seen = reference.container_enum;
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     let (Some(src), Some(dst)) = (
                         index(*source, main, table),
                         index(*destination, main, table),
@@ -1042,6 +1198,31 @@ pub fn execute(world: &World, request: &CraftRequestEvent) -> bool {
                     crafted = true;
                     grant_output = true;
                 }
+                InventoryAction::MineBlock {
+                    hotbar_slot,
+                    predicted_durability,
+                    stack_network_id: _,
+                } => {
+                    let slot_idx = *hotbar_slot as usize;
+                    if slot_idx >= 9 || slot_idx >= main {
+                        log::debug!(
+                            "[craft] op={op_id} rejected: MineBlock hotbar slot out of bounds {hotbar_slot}"
+                        );
+                        return false;
+                    }
+                    if let Some(stack) = stacks.get_mut(slot_idx) {
+                        if !stack.is_empty() {
+                            let predicted = (*predicted_durability).max(0) as u32;
+                            if predicted > stack.damage {
+                                stack.damage = predicted;
+                                if stack.tag.is_some() {
+                                    stack.set_facet(&sc_item::DamageFacet { damage: predicted as i32 });
+                                }
+                            }
+                        }
+                    }
+                    mine_dirty.push(slot_idx);
+                }
                 InventoryAction::Unsupported => {
                     log::debug!("[craft] op={op_id} rejected: contains Unsupported actions");
                     return false;
@@ -1070,6 +1251,7 @@ pub fn execute(world: &World, request: &CraftRequestEvent) -> bool {
                 .filter(|(i, stack)| old.get(*i) != Some(stack))
                 .map(|(i, _)| i),
         );
+        state.dirty.extend(mine_dirty);
         if let Some(dynamic) = grid_dynamic_seen {
             state.grid_dynamic = dynamic;
         }
@@ -1094,6 +1276,49 @@ pub fn execute(world: &World, request: &CraftRequestEvent) -> bool {
                 process.set_slot(SlotRole::Input, slots[0].clone());
                 process.set_slot(SlotRole::Fuel, slots[1].clone());
                 process.set_slot(SlotRole::Result, slots[2].clone());
+            }
+        }
+        if let (Some(slots), Some((world_id, pos, paired_pos, _, _))) =
+            (chest_slots.as_ref(), chest_binding.as_ref())
+        {
+            crate::inventory::chest::commit_chest_slots(
+                world,
+                world_id,
+                *pos,
+                *paired_pos,
+                slots,
+            );
+            if let Some(old_slots) = old_chest_slots.as_ref() {
+                for (i, stack) in slots.iter().enumerate() {
+                    if old_slots.get(i) != Some(stack) {
+                        let net_id = if stack.is_empty() {
+                            state.chest_ids.remove(&i);
+                            0
+                        } else {
+                            match state.chest_ids.get(&i).copied() {
+                                Some((id, damage, net_id))
+                                    if id == stack.runtime_id && damage == stack.damage =>
+                                {
+                                    net_id
+                                }
+                                _ => {
+                                    let id = state.next_id;
+                                    state.next_id = state.next_id.saturating_add(1);
+                                    state.chest_ids.insert(i, (stack.runtime_id, stack.damage, id));
+                                    id
+                                }
+                            }
+                        };
+                        state.chest_updates.push(CraftSlotUpdate {
+                            container: CraftContainer::Chest,
+                            slot: i as u8,
+                            stack: stack.clone(),
+                            net_id,
+                            dynamic: chest_dynamic_seen.flatten(),
+                            container_enum: chest_container_enum_seen,
+                        });
+                    }
+                }
             }
         }
         crate::inventory::crafting::bump_inventory_revision(world, &entity);
@@ -1177,8 +1402,10 @@ pub fn updates(world: &World, entity: EntityId) -> Vec<CraftSlotUpdate> {
             } else {
                 None
             },
+            container_enum: None,
         });
     }
+    updates.extend(std::mem::take(&mut state.chest_updates));
     updates
 }
 
@@ -1273,12 +1500,7 @@ mod tests {
         let inventory = PlayerInventory::new(36);
         inventory.set(0, ItemStack::new(1, 5));
         let entity = world.spawn(inventory);
-        let reference = |container, slot, net_id| CraftSlotRef {
-            container,
-            slot,
-            net_id,
-            dynamic: None,
-        };
+        let reference = CraftSlotRef::new;
         let request = |id, actions| CraftRequestEvent {
             entity,
             recipe_network_id: 0,
@@ -1357,12 +1579,7 @@ mod tests {
         let inventory = PlayerInventory::new(36);
         inventory.set(9, ItemStack::new(1, 5));
         let entity = world.spawn(inventory);
-        let reference = |container, slot, net_id| CraftSlotRef {
-            container,
-            slot,
-            net_id,
-            dynamic: None,
-        };
+        let reference = CraftSlotRef::new;
         let request = |id, actions| CraftRequestEvent {
             entity,
             recipe_network_id: 0,
@@ -1477,12 +1694,7 @@ mod tests {
         let inventory = PlayerInventory::new(36);
         inventory.set(9, ItemStack::new(2, 4));
         let entity = world.spawn(inventory);
-        let reference = |container, slot, net_id| CraftSlotRef {
-            container,
-            slot,
-            net_id,
-            dynamic: None,
-        };
+        let reference = CraftSlotRef::new;
         let request = |id, actions| CraftRequestEvent {
             entity,
             recipe_network_id: 0,
@@ -1558,12 +1770,7 @@ mod tests {
         entity: sc_ecs::entity::EntityId,
     ) -> CraftRequestEvent {
         use CraftContainer as C;
-        let reference = |container, slot, net_id| CraftSlotRef {
-            container,
-            slot,
-            net_id,
-            dynamic: None,
-        };
+        let reference = CraftSlotRef::new;
         CraftRequestEvent {
             entity,
             recipe_network_id: 0,
@@ -1667,12 +1874,7 @@ mod tests {
         // Legit take fills hotbar 0...
         assert!(execute(&world, &grant_take(1, 64, 2, entity)));
         // ...but a later drain without a fresh Grant rejects (Output empty).
-        let reference = |container, slot, net_id| CraftSlotRef {
-            container,
-            slot,
-            net_id,
-            dynamic: None,
-        };
+        let reference = CraftSlotRef::new;
         assert!(!execute(
             &world,
             &CraftRequestEvent {
@@ -1692,5 +1894,30 @@ mod tests {
             .get(1)
             .map(|stack| stack.is_empty())
             .unwrap_or(true));
+    }
+    #[test]
+    fn mine_block_action_succeeds_and_marks_hotbar_dirty() {
+        let world = World::new();
+        world.insert_resource(ItemRegistry::new());
+        let inventory = PlayerInventory::new(36);
+        inventory.set(2, ItemStack::new(1, 1));
+        let entity = world.spawn(inventory);
+        let request = CraftRequestEvent {
+            entity,
+            recipe_network_id: 0,
+            requested_count: 0,
+            operation_id: 42,
+            actions: vec![InventoryAction::MineBlock {
+                hotbar_slot: 2,
+                predicted_durability: 5,
+                stack_network_id: 0,
+            }],
+        };
+        assert!(execute(&world, &request), "MineBlock action must succeed");
+        let updates = updates(&world, entity);
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].slot, 2);
+        assert_eq!(updates[0].container, CraftContainer::Hotbar);
+        assert_eq!(updates[0].stack.damage, 5);
     }
 }

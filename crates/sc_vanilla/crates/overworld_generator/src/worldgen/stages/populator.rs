@@ -18,6 +18,13 @@ use crate::worldgen::stages::GenerateStage;
 // NormalPopulatorStage: runs structure populators and flushes buffered writes
 // ---------------------------------------------------------------------------
 
+/// 结构填充阶段。
+///
+/// apply 语义：
+/// 1. 将区块标记为已填充；
+/// 2. 按顺序运行每个 populator（方块写入经上下文队列进入根缓冲）；
+/// 3. 结束时将根缓冲一次性刷入区块。
+///
 /// Structure populator stage.
 ///
 /// Apply semantics:

@@ -1,19 +1,40 @@
-//! Player interaction (place/break) boundary events and game-domain consumption.
+//! 玩家交互（放置/破坏）边界事件与游戏域消费。
 //!
-//! Event flow (`docs/block_system_design.md` §5):
-//! Network decoding goes to per-player bounded ordered [`MiningInbox`] input / place boundary events,
-//! then plugin behavior systems (SCPluginEventUpdate, may Deny/Handle),
-//! then this module's kernel default (SCEventUpdate): validate, then [`BlockChangeQueue`] enqueue (branch A),
-//! then PostUpdate apply lands chunks, then BlockChanged, then broadcast (branch B).
+//! Player interaction (place/break) boundary events and game-domain
+//! consumption.
 //!
-//! Full implementation: face offset math, item-to-block mapping (ItemRegistry), inventory drain (PlayerInventory), 
-//! distance checks (Transform to target-block distance), two-phase breaks (START_BREAK records, STOP_BREAK commits).
+//! 事件流：网络解码进入每玩家有界有序的 [`MiningInbox`] 输入/放置边界事件，
+//! 然后插件行为系统（SCPluginEventUpdate，可 Deny/Handle），然后本模块的
+//! 内核默认（SCEventUpdate）：校验，然后入队 [`BlockChangeQueue`]（分支 A），
+//! 然后 PostUpdate apply 落地区块，然后 BlockChanged，然后广播（分支 B）。
+//! Event flow: network decoding goes to per-player bounded ordered
+//! [`MiningInbox`] input / place boundary events, then plugin behavior
+//! systems (SCPluginEventUpdate, may Deny/Handle), then this module's
+//! kernel default (SCEventUpdate): validate, then [`BlockChangeQueue`]
+//! enqueue (branch A), then PostUpdate apply lands chunks, then
+//! BlockChanged, then broadcast (branch B).
 //!
-//! Break duration is **block-data driven**: target state goes to `BlockStateId`, then the block JSON snapshot's
-//! fixed dense columns (`minecraft:destructible_by_mining` seconds x 20 rounded up;
-//! `sc:unbreakable` denies survival; undeclared states use [`FALLBACK_BREAK_TIME_TICKS`]).
-//! Survival mode lands breaks on authoritative server timing ([`advance_block_break`]); client
-//! early STOP_BREAK commits break nothing; creative mode ignores hardness.
+//! 完整实现：面偏移数学、物品到方块映射（ItemRegistry）、背包抽取
+//! （PlayerInventory）、距离检查（Transform 到目标方块的距离）、
+//! 两段式破坏（START_BREAK 记录，STOP_BREAK 提交）。
+//! Full implementation: face offset math, item-to-block mapping
+//! (ItemRegistry), inventory drain (PlayerInventory), distance checks
+//! (Transform to target-block distance), two-phase breaks (START_BREAK
+//! records, STOP_BREAK commits).
+//!
+//! 破坏时长是**方块数据驱动**的：目标状态转到 `BlockStateId`，然后查方块
+//! JSON 快照的固定稠密列（`minecraft:destructible_by_mining` 秒数 x 20
+//! 向上取整；`sc:unbreakable` 在生存模式拒绝；未声明的状态使用
+//! [`FALLBACK_BREAK_TIME_TICKS`]）。生存模式按权威服务端计时落地破坏
+//! （[`advance_block_break`]）；客户端提前的 STOP_BREAK 不破坏任何东西；
+//! 创造模式忽略硬度。
+//! Break duration is **block-data driven**: target state goes to
+//! `BlockStateId`, then the block JSON snapshot's fixed dense columns
+//! (`minecraft:destructible_by_mining` seconds x 20 rounded up;
+//! `sc:unbreakable` denies survival; undeclared states use
+//! [`FALLBACK_BREAK_TIME_TICKS`]). Survival mode lands breaks on
+//! authoritative server timing ([`advance_block_break`]); client early
+//! STOP_BREAK commits break nothing; creative mode ignores hardness.
 
 use log::{debug, info, warn};
 use sc_block::block_json::BlockJsonRegistry;
@@ -56,31 +77,59 @@ pub use breaking::handle_break_block;
 pub use mining::{advance_block_break, handle_abort_break, handle_start_break};
 pub use placing::{handle_place_block, resolve_block_placement_reservations};
 
+/// 秒到 tick 的换算基数（Bedrock 每秒 20 tick）。
+///
 /// Seconds-to-ticks conversion base (Bedrock runs 20 ticks/second).
 const TICKS_PER_SECOND: f32 = 20.0;
 
-/// **Explicit** fallback duration (ticks) for states without `minecraft:destructible_by_mining`.
+/// 没有 `minecraft:destructible_by_mining` 的状态使用的**显式**回退时长
+/// （tick）。
 ///
-/// Not a guess: the constant is named explicitly and startup logs the undeclared-state count (see
-/// `sc_bootstrap::load_block_bundle`); the fallback vanishes once authoritative data arrives.
+/// **Explicit** fallback duration (ticks) for states without
+/// `minecraft:destructible_by_mining`.
+///
+/// 不是猜测：常量被显式命名，且启动时记录未声明状态的数量（参见
+/// `sc_bootstrap::load_block_bundle`）；权威数据到达后回退即消失。
+/// Not a guess: the constant is named explicitly and startup logs the
+/// undeclared-state count (see `sc_bootstrap::load_block_bundle`); the
+/// fallback vanishes once authoritative data arrives.
 pub const FALLBACK_BREAK_TIME_TICKS: i32 = 20;
 
+/// `BlockBreakProgress` 进度分母（协议固定 0..=65535）。
+///
 /// `BlockBreakProgress` progress denominator (protocol-fixed 0..=65535).
 const BREAK_PROGRESS_MAX: i32 = 65_535;
 
-/// Tolerance between client prediction and authoritative server timing (ticks; 5 ticks = 250ms).
+/// 客户端预测与权威服务端计时的容差（tick；5 tick = 250ms）。
 ///
-/// Measured (2026-10-07 live logs): clients always submit 1-3 ticks earlier than the server
-/// (`need 60 ticks, have 58 ticks` / `need 350 ticks, have 347 ticks`) because server-side
-/// `started_at` starts on the tick the START packet arrives, later than the client press by
-/// network half-trip plus tick quantization. In-tolerance completions land directly (no rollback);
-/// out-of-tolerance ones still roll back as cheating-level early submits and keep timing.
+/// Tolerance between client prediction and authoritative server timing
+/// (ticks; 5 ticks = 250ms).
+///
+/// 实测（2026-10-07 线上日志）：由于服务端 `started_at` 从 START 包到达的
+/// tick 才开始，比客户端按下晚网络半程加 tick 量化，客户端总是比服务端
+/// 早 1-3 tick 提交（`need 60 ticks, have 58 ticks` /
+/// `need 350 ticks, have 347 ticks`）。容差内的完成直接落地（不回滚）；
+/// 超出容差的仍按作弊级早提交回滚并保留计时。
+/// Measured (2026-10-07 live logs): clients always submit 1-3 ticks earlier
+/// than the server (`need 60 ticks, have 58 ticks` /
+/// `need 350 ticks, have 347 ticks`) because server-side `started_at`
+/// starts on the tick the START packet arrives, later than the client press
+/// by network half-trip plus tick quantization. In-tolerance completions
+/// land directly (no rollback); out-of-tolerance ones still roll back as
+/// cheating-level early submits and keep timing.
 pub const BREAK_EARLY_TOLERANCE_TICKS: i32 = 5;
 
-/// Max break/place interaction distance (blocks); beyond it inputs are ignored (anti-cheat).
+/// 最大破坏/放置交互距离（格）；超出则忽略输入（反作弊）。
+///
+/// Max break/place interaction distance (blocks); beyond it inputs are
+/// ignored (anti-cheat).
 const MAX_INTERACT_DISTANCE_SQ: f32 = 36.0; // 6² = 36
 
+/// 面到偏移向量（0=down, 1=up, 2=north, 3=south, 4=west, 5=east）。
+///
 /// Face to offset vector (0=down, 1=up, 2=north, 3=south, 4=west, 5=east).
+///
+/// 面序数：DOWN=0、UP=1、NORTH=2、SOUTH=3、WEST=4、EAST=5。
 /// Face ordinals: DOWN=0, UP=1, NORTH=2, SOUTH=3, WEST=4, EAST=5.
 const FACE_OFFSETS: [(i32, i32, i32); 6] = [
     (0, -1, 0), // 0: DOWN
@@ -91,7 +140,11 @@ const FACE_OFFSETS: [(i32, i32, i32); 6] = [
     (1, 0, 0),  // 5: EAST
 ];
 
+/// 按面 id 取偏移向量；越界的面默认向上。
+///
 /// Offset by face id; out-of-range faces default to up.
+///
+/// - `face`: 面序数
 fn face_offset(face: u8) -> (i32, i32, i32) {
     FACE_OFFSETS
         .get(face as usize)
@@ -101,59 +154,144 @@ fn face_offset(face: u8) -> (i32, i32, i32) {
 
 // Boundary events.
 
-/// Start-break request (sent after the network layer decodes `PlayerAction START_BREAK`).
+/// 开始破坏请求（网络层解码 `PlayerAction START_BREAK` 后发出）。
 ///
-/// Survival two-phase break, phase one: record [`BreakingState`] only, break nothing.
+/// Start-break request (sent after the network layer decodes
+/// `PlayerAction START_BREAK`).
+///
+/// 生存两段式破坏第一阶段：只记录 [`BreakingState`]，不破坏任何方块。
+/// Survival two-phase break, phase one: record [`BreakingState`] only,
+/// break nothing.
 #[derive(Event, Clone, Debug)]
 pub struct StartBreakRequest {
+    /// 发起交互的实体。
+    ///
+    /// Entity that initiated the interaction.
     pub entity: EntityId,
+    /// 目标方块坐标。
+    ///
+    /// Target block position.
     pub position: BlockPosition,
+    /// 点击面序数。
+    ///
+    /// Clicked face ordinal.
     pub face: u8,
 }
 
-/// Abort-break request (sent after the network layer decodes `PlayerAction ABORT_BREAK`).
+/// 中止破坏请求（网络层解码 `PlayerAction ABORT_BREAK` 后发出）。
 ///
-/// Clear the matching [`BreakingState`]; `None` is only for targetless legacy-plugin cancels.
+/// Abort-break request (sent after the network layer decodes
+/// `PlayerAction ABORT_BREAK`).
+///
+/// 清除匹配的 [`BreakingState`]；`None` 仅用于无目标的旧插件取消。
+/// Clear the matching [`BreakingState`]; `None` is only for targetless
+/// legacy-plugin cancels.
 #[derive(Event, Clone, Debug)]
 pub struct AbortBreakRequest {
+    /// 发起交互的实体。
+    ///
+    /// Entity that initiated the interaction.
     pub entity: EntityId,
+    /// 目标方块坐标（可为空）。
+    ///
+    /// Target block position (optional).
     pub position: Option<BlockPosition>,
 }
 
+/// 挖掘动作：边界事件在 inbox 中的有序表示。
+///
+/// Mining action: ordered representation of boundary events in the inbox.
 #[derive(Clone, Debug)]
 pub enum MiningAction {
+    /// 开始破坏。
+    ///
+    /// Start breaking.
     Start {
+        /// 目标方块坐标。
+        ///
+        /// Target block position.
         position: BlockPosition,
+        /// 点击面序数。
+        ///
+        /// Clicked face ordinal.
         face: u8,
     },
+    /// 中止破坏。
+    ///
+    /// Abort breaking.
     Abort {
+        /// 目标方块坐标。
+        ///
+        /// Target block position.
         position: BlockPosition,
     },
+    /// 提交破坏。
+    ///
+    /// Commit a break.
     Break {
+        /// 目标方块坐标。
+        ///
+        /// Target block position.
         position: BlockPosition,
+        /// 点击面序数。
+        ///
+        /// Clicked face ordinal.
         face: u8,
+        /// 是否要求 BreakingState 匹配。
+        ///
+        /// Whether BreakingState must match.
         require_breaking_state: bool,
     },
+    /// 切换手持槽位。
+    ///
+    /// Switch the held slot.
     HeldSlot {
+        /// 目标槽位（0..8）。
+        ///
+        /// Target slot (0..8).
         slot: u8,
     },
 }
 
+/// 带世界与上下文纪元的挖掘动作（保证按世界有序处理）。
+///
+/// Mining action tagged with world and context epoch (ordered per-world
+/// processing).
 #[derive(Clone, Debug)]
 pub struct OrderedMiningAction {
+    /// 动作所属的存档世界 id。
+    ///
+    /// Save-world id the action belongs to.
     pub world_id: MinecraftWorldId,
+    /// 提交时的区块视图纪元（过期动作被丢弃）。
+    ///
+    /// Chunk-view epoch at submit time (stale actions are dropped).
     pub context_epoch: Option<u64>,
+    /// 挖掘动作。
+    ///
+    /// The mining action.
     pub action: MiningAction,
 }
 
+/// 每玩家的挖掘输入收件箱（有界、有序）。
+///
+/// Per-player mining input inbox (bounded, ordered).
 #[derive(Component, Default)]
 pub struct MiningInbox {
     pending: Mutex<VecDeque<OrderedMiningAction>>,
 }
 
 impl MiningInbox {
+    /// 收件箱容量上限。
+    ///
+    /// Inbox capacity.
     pub const MAX_ACTIONS: usize = 128;
 
+    /// 尝试入队一个动作；已满时返回 `false`（丢弃）。
+    ///
+    /// Tries to enqueue an action; returns `false` (dropped) when full.
+    ///
+    /// - `action`: 有序挖掘动作
     pub fn try_push(&self, action: OrderedMiningAction) -> bool {
         let mut pending = self
             .pending
@@ -166,6 +304,9 @@ impl MiningInbox {
         true
     }
 
+    /// 取走全部待处理动作（清空收件箱）。
+    ///
+    /// Takes all pending actions (clearing the inbox).
     fn take(&self) -> VecDeque<OrderedMiningAction> {
         std::mem::take(
             &mut *self
@@ -176,12 +317,29 @@ impl MiningInbox {
     }
 }
 
+/// 读取实体的区块视图纪元（动作新鲜度校验用）。
+///
+/// Reads an entity's chunk-view epoch (action freshness check).
+///
+/// - `world`: ECS 世界
+/// - `entity`: 实体 id
 pub fn mining_context_epoch(world: &World, entity: &EntityId) -> Option<u64> {
     world
         .get_component::<sc_world::chunk_view::ChunkView>(entity)
         .map(|view| view.read().epoch)
 }
 
+/// 排空所有玩家的挖掘收件箱并分发到对应处理器。
+///
+/// Drains every player's mining inbox and dispatches to the matching
+/// handlers.
+///
+/// 世界不匹配或纪元过期的动作被丢弃。
+/// Actions with a mismatched world or stale epoch are dropped.
+///
+/// - `world`: ECS 世界
+/// - `queue`: 方块变更队列
+/// - `outbox`: 网络 outbox
 pub fn drain_mining_actions(
     world: World,
     mut queue: ResMut<BlockChangeQueue>,
@@ -249,102 +407,231 @@ pub fn drain_mining_actions(
     }
 }
 
-/// Commit-break request (sent after the network layer decodes `PlayerAction STOP_BREAK` or
-/// `CREATIVE_PLAYER_DESTROY_BLOCK`).
+/// 提交破坏请求（网络层解码 `PlayerAction STOP_BREAK` 或
+/// `CREATIVE_PLAYER_DESTROY_BLOCK` 后发出）。
 ///
-/// With `require_breaking_state=true` (survival STOP_BREAK), the [`BreakingState`]
-/// position must match; with `false` (creative instant destroy), skip validation and break.
+/// Commit-break request (sent after the network layer decodes
+/// `PlayerAction STOP_BREAK` or `CREATIVE_PLAYER_DESTROY_BLOCK`).
+///
+/// `require_breaking_state=true`（生存 STOP_BREAK）时 [`BreakingState`]
+/// 的位置必须匹配；`false`（创造瞬间破坏）时跳过校验直接破坏。
+/// With `require_breaking_state=true` (survival STOP_BREAK), the
+/// [`BreakingState`] position must match; with `false` (creative instant
+/// destroy), skip validation and break.
 #[derive(Event, Clone, Debug)]
 pub struct BreakBlockRequest {
+    /// 发起交互的实体。
+    ///
+    /// Entity that initiated the interaction.
     pub entity: EntityId,
+    /// 目标方块坐标。
+    ///
+    /// Target block position.
     pub position: BlockPosition,
+    /// 点击面序数。
+    ///
+    /// Clicked face ordinal.
     pub face: u8,
-    /// Whether BreakingState must match (survival STOP_BREAK=true, creative destroy=false).
+    /// 是否要求 BreakingState 匹配（生存 STOP_BREAK=true，创造破坏=false）。
+    ///
+    /// Whether BreakingState must match (survival STOP_BREAK=true, creative
+    /// destroy=false).
     pub require_breaking_state: bool,
 }
 
-/// Place-block request (sent after the network layer decodes `InventoryTransaction USE_ITEM`).
+/// 放置方块请求（网络层解码 `InventoryTransaction USE_ITEM` 后发出）。
+///
+/// Place-block request (sent after the network layer decodes
+/// `InventoryTransaction USE_ITEM`).
 #[derive(Event, Clone, Debug)]
 pub struct PlaceBlockRequest {
+    /// 发起交互的实体。
+    ///
+    /// Entity that initiated the interaction.
     pub entity: EntityId,
-    /// Clicked block coordinates (place target = these plus the face offset).
+    /// 被点击的方块坐标（放置目标 = 该坐标加面偏移）。
+    ///
+    /// Clicked block coordinates (place target = these plus the face
+    /// offset).
     pub position: BlockPosition,
+    /// 点击面序数。
+    ///
+    /// Clicked face ordinal.
     pub face: u8,
+    /// 使用的快捷栏槽位。
+    ///
+    /// Hotbar slot used.
     pub hotbar_slot: i32,
+    /// 手持物品运行时 id（0 = 空气）。
+    ///
     /// Held item runtime id (0 = air).
     pub item_id: i32,
+    /// 协议给出的绝对点击点 Y；格内分数决定楼梯/活板门倒置
+    /// （0.0 即方块基部，保持旧的下半部放置）。
+    ///
     /// Absolute click-point Y from the protocol; the within-block fraction
     /// decides stairs/trapdoor upside-down (0.0, the block base, keeps the
     /// legacy bottom-half placement).
     pub click_y: f32,
 }
 
-/// Hotbar slot switch request (sent after the network layer decodes `MobEquipment`).
+/// 手持槽位切换请求（网络层解码 `MobEquipment` 后发出）。
+///
+/// Hotbar slot switch request (sent after the network layer decodes
+/// `MobEquipment`).
 #[derive(Event, Clone, Debug)]
 pub struct HeldSlotChanged {
+    /// 发起交互的实体。
+    ///
+    /// Entity that initiated the interaction.
     pub entity: EntityId,
+    /// 新手持槽位（0..8）。
+    ///
     /// New hotbar slot (0..8).
     pub slot: u8,
 }
 
+/// 打开背包/容器请求。
+///
+/// Open-inventory request.
 #[derive(Event, Clone, Debug)]
 pub struct OpenInventoryRequest {
+    /// 发起交互的实体。
+    ///
+    /// Entity that initiated the interaction.
     pub entity: EntityId,
+    /// 目标容器的实体运行时 id。
+    ///
+    /// Target container entity runtime id.
     pub target_entity_id: u64,
 }
 
+/// 关闭背包/容器请求。
+///
+/// Close-inventory request.
 #[derive(Event, Clone, Debug)]
 pub struct CloseInventoryRequest {
+    /// 发起交互的实体。
+    ///
+    /// Entity that initiated the interaction.
     pub entity: EntityId,
+    /// 窗口 id。
+    ///
+    /// Window id.
     pub window_id: u8,
+    /// 容器类型字节。
+    ///
+    /// Container type byte.
     pub container_type: i8,
+    /// 是否由服务端主动发起。
+    ///
+    /// Whether the close was server-initiated.
     pub was_server_initiated: bool,
 }
 
 // Components.
 
+/// 等待权威方块写入的背包预留。
+///
 /// Inventory reservations waiting for the authoritative block write.
 #[derive(sc_ecs::resource::Resource, Default)]
 pub struct BlockPlacementReservations {
     pending: HashMap<u64, InventoryReservation>,
 }
 
+/// 单条背包预留：放置落地后要扣除的物品。
+///
+/// One inventory reservation: the item to deduct once the placement lands.
 struct InventoryReservation {
+    /// 预留所属实体。
+    ///
+    /// Entity owning the reservation.
     entity: EntityId,
+    /// 预留时点的背包快照。
+    ///
+    /// Inventory snapshot taken at reservation time.
     inventory: PlayerInventory,
+    /// 槽位索引。
+    ///
+    /// Slot index.
     slot: usize,
+    /// 预留的物品栈。
+    ///
+    /// Reserved item stack.
     item: ItemStack,
 }
 
+/// 玩家正在破坏的方块状态（挂在玩家实体上的组件）。
+///
 /// Block state a player is breaking (component on the player entity).
 ///
-/// Survival: START_BREAK starts authoritative server timing (durations from the block JSON dense columns,
-/// see [`MiningProfile`]); each tick [`advance_block_break`] advances it, and expiry
-/// lands the break. Client STOP_BREAK only commits once timing completes; early commits are rejected.
-/// Creative: CREATIVE_PLAYER_DESTROY_BLOCK commits directly (no BreakingState,
-/// no mining-time check, matching creative bedrock breaking).
+/// 生存模式：START_BREAK 启动权威服务端计时（时长取自方块 JSON 稠密列，
+/// 参见 [`MiningProfile`]）；每 tick [`advance_block_break`] 推进它，
+/// 到期即落地破坏。客户端 STOP_BREAK 只在计时完成后才提交；提前提交被拒绝。
+/// 创造模式：CREATIVE_PLAYER_DESTROY_BLOCK 直接提交（无 BreakingState、
+/// 无挖掘时长检查，与创造模式基岩版破坏一致）。
+/// Survival: START_BREAK starts authoritative server timing (durations from
+/// the block JSON dense columns, see [`MiningProfile`]); each tick
+/// [`advance_block_break`] advances it, and expiry lands the break. Client
+/// STOP_BREAK only commits once timing completes; early commits are
+/// rejected. Creative: CREATIVE_PLAYER_DESTROY_BLOCK commits directly (no
+/// BreakingState, no mining-time check, matching creative bedrock breaking).
 #[derive(Component, Clone, Debug, Default)]
 pub struct BreakingState {
+    /// 正在破坏的位置（None = 未在破坏）。
+    ///
     /// Position under breaking (None = not breaking).
     pub position: Option<BlockPosition>,
+    /// 破坏开始时的面（用于日志/调试）。
+    ///
     /// Face at break start (for logs/debugging).
     pub face: u8,
-    /// Target block at break start (rechecked on commit/expiry so changed targets never break).
+    /// 破坏开始时的目标方块（提交/到期时复查，目标变化绝不破坏）。
+    ///
+    /// Target block at break start (rechecked on commit/expiry so changed
+    /// targets never break).
     pub target: Option<BlockRuntimeId>,
+    /// 破坏该状态所需 tick 数（取自方块 JSON 挖掘秒数列）。
+    ///
     /// Ticks to break this state (from the block JSON mining-seconds column).
     pub required_ticks: i32,
+    /// 由单调耗时换算的 tick 数，仅用于诊断。
+    ///
     /// Ticks converted from monotonic elapsed time, diagnostics only.
     pub elapsed_ticks: i32,
+    /// 破坏所属的存档世界。
+    ///
+    /// Save world the break belongs to.
     pub world_id: Option<MinecraftWorldId>,
+    /// 破坏开始时的区块视图纪元。
+    ///
+    /// Chunk-view epoch at break start.
     pub context_epoch: Option<u64>,
+    /// 破坏开始时的世界实例号。
+    ///
+    /// World incarnation at break start.
     pub incarnation: u128,
+    /// 破坏开始时的手持物快照。
+    ///
+    /// Hand snapshot at break start.
     pub hand: sc_block::mining_drops::HandSnapshot,
+    /// 是否为创造模式破坏。
+    ///
+    /// Whether the break is creative-mode.
     pub creative: bool,
-    /// Monotonic time when the owner accepted the break start; client clocks cannot advance it.
+    /// 所有者接受破坏开始时的单调时间；客户端时钟无法推进它。
+    ///
+    /// Monotonic time when the owner accepted the break start; client clocks
+    /// cannot advance it.
     pub started_at: Option<Instant>,
 }
 
 impl BreakingState {
+    /// 到 `now` 为止经过的 tick 数（由单调时钟换算）。
+    ///
+    /// Elapsed ticks as of `now` (converted from the monotonic clock).
+    ///
+    /// - `now`: 当前单调时间
     fn elapsed_at(&self, now: Instant) -> i32 {
         self.started_at
             .map(|start| {
@@ -353,6 +640,11 @@ impl BreakingState {
             .unwrap_or(0)
     }
 
+    /// 到 `now` 为止是否已完成破坏计时。
+    ///
+    /// Whether the break timing is complete as of `now`.
+    ///
+    /// - `now`: 当前单调时间
     fn complete_at(&self, now: Instant) -> bool {
         self.elapsed_at(now) >= self.required_ticks.max(1)
     }
@@ -360,22 +652,39 @@ impl BreakingState {
 
 // Break durations (block JSON data-driven).
 
-/// Mining decision for one state (from fixed block JSON dense columns, not hardcoded tables).
+/// 一个状态的挖掘判定（取自固定的方块 JSON 稠密列，而非硬编码表）。
+///
+/// Mining decision for one state (from fixed block JSON dense columns, not
+/// hardcoded tables).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MiningProfile {
-    /// Ticks to mine (`minecraft:destructible_by_mining` seconds x 20 rounded up,
-    /// or `sc:mining` `base/(tool*enchant)` conversion).
+    /// 挖掘所需 tick 数（`minecraft:destructible_by_mining` 秒数 x 20
+    /// 向上取整，或 `sc:mining` `base/(tool*enchant)` 换算）。
+    ///
+    /// Ticks to mine (`minecraft:destructible_by_mining` seconds x 20
+    /// rounded up, or `sc:mining` `base/(tool*enchant)` conversion).
     pub required_ticks: i32,
+    /// `sc:unbreakable`：生存模式不可破坏。
+    ///
     /// `sc:unbreakable`: unbreakable in survival.
     pub unbreakable: bool,
-    /// Whether the duration comes from declared data (false = undeclared, uses the explicit fallback).
+    /// 时长是否来自声明数据（false = 未声明，使用显式回退）。
+    ///
+    /// Whether the duration comes from declared data (false = undeclared,
+    /// uses the explicit fallback).
     pub declared: bool,
-    /// `sc:mining` `can_mine` (`false` = this tool is refused in survival; creative bypasses).
+    /// `sc:mining` `can_mine`（`false` = 该工具在生存模式被拒；创造绕过）。
+    ///
+    /// `sc:mining` `can_mine` (`false` = this tool is refused in survival;
+    /// creative bypasses).
     pub can_mine: bool,
 }
 
 impl MiningProfile {
-    /// Explicit fallback for undeclared mining seconds (constant and countable).
+    /// 未声明挖掘秒数的显式回退（常量且可统计）。
+    ///
+    /// Explicit fallback for undeclared mining seconds (constant and
+    /// countable).
     pub const fn fallback() -> Self {
         Self {
             required_ticks: FALLBACK_BREAK_TIME_TICKS,
@@ -385,6 +694,8 @@ impl MiningProfile {
         }
     }
 
+    /// 不可破坏（`sc:unbreakable`）。
+    ///
     /// Unbreakable (`sc:unbreakable`).
     pub const fn unbreakable() -> Self {
         Self {
@@ -395,7 +706,10 @@ impl MiningProfile {
         }
     }
 
-    /// Tool cannot mine (`sc:mining` `can_mine=false`; refused in survival, creative bypasses).
+    /// 工具无法挖掘（`sc:mining` `can_mine=false`；生存拒绝，创造绕过）。
+    ///
+    /// Tool cannot mine (`sc:mining` `can_mine=false`; refused in survival,
+    /// creative bypasses).
     pub const fn denied() -> Self {
         Self {
             required_ticks: i32::MAX,
@@ -405,7 +719,12 @@ impl MiningProfile {
         }
     }
 
-    /// Seconds to ticks (rounded up, at least 1 tick; non-finite/negative counts as undeclared).
+    /// 秒转 tick（向上取整，至少 1 tick；非有限/负值视为未声明）。
+    ///
+    /// Seconds to ticks (rounded up, at least 1 tick; non-finite/negative
+    /// counts as undeclared).
+    ///
+    /// - `seconds`: 秒数
     pub fn from_seconds(seconds: f32) -> Self {
         if !seconds.is_finite() || seconds < 0.0 {
             return Self::fallback();
@@ -522,7 +841,7 @@ pub fn mining_profile_with_hand(
 /// Entities without Transform (not yet initialized) skip validation and may act.
 fn in_reach(world: &World, entity: &EntityId, target: &BlockPosition) -> bool {
     let Some(transform) = world.get_component::<Transform>(entity) else {
-        return true; // 无位置信息，跳过校验
+        return true; // No position info; skip the reach check.
     };
     let pos = { transform.read().position };
     let dx = pos.x - (target.x as f32 + 0.5);
@@ -842,14 +1161,61 @@ fn close_open_container(world: &World, request: &CloseInventoryRequest) {
     // feeds tracking cleanup). The inventory window keeps -1.
     let container_type = if open.is_player_inventory() {
         -1
+    } else if let Some((world_id, pos, _)) = open.chest_info() {
+        crate::inventory::crafting::container_type_at(&world, &world_id, pos).unwrap_or(0)
     } else {
         open.workstation()
             .and_then(|(_, world_id, pos)| {
-                crate::inventory::crafting::workstation_decl_at(&world, &world_id, pos)
+                crate::inventory::crafting::container_type_at(&world, &world_id, pos)
             })
-            .map(|decl| decl.container)
             .unwrap_or(0)
     };
+    if let Some((world_id, (x, y, z), paired)) = open.chest_info() {
+        let remaining_viewers = crate::inventory::chest_viewer_count(
+            world,
+            &world_id,
+            (x, y, z),
+            paired,
+            Some(request.entity),
+        );
+        if remaining_viewers == 0 {
+            let (sound_x, sound_y, sound_z) = if let Some((px, _, pz)) = paired {
+                (
+                    (x as f32 + px as f32) / 2.0 + 0.5,
+                    y as f32 + 0.5,
+                    (z as f32 + pz as f32) / 2.0 + 0.5,
+                )
+            } else {
+                (x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5)
+            };
+            IntentPublisher::new(&mut outbox).publish(crate::net::PlaySound {
+                cue: crate::net::SoundCue::ChestClose,
+                world_id: world_id.clone(),
+                data: -1,
+                x: sound_x,
+                y: sound_y,
+                z: sound_z,
+            });
+            IntentPublisher::new(&mut outbox).publish(crate::net::PlayBlockAnimation {
+                world_id: world_id.clone(),
+                cue: crate::net::BlockAnimationCue::ChestLid,
+                data: 0,
+                x,
+                y,
+                z,
+            });
+            if let Some((px, py, pz)) = paired {
+                IntentPublisher::new(&mut outbox).publish(crate::net::PlayBlockAnimation {
+                    world_id: world_id.clone(),
+                    cue: crate::net::BlockAnimationCue::ChestLid,
+                    data: 0,
+                    x: px,
+                    y: py,
+                    z: pz,
+                });
+            }
+        }
+    }
     IntentPublisher::new(&mut outbox).publish(ClosePlayerInventory {
         entity_id: runtime_id,
         window_id: open.window_id,
@@ -1543,7 +1909,6 @@ mod tests {
             "minecraft:block": {
                 "description": {"identifier": "minecraft:air", "states": {}},
                 "components": {},
-                "sc:default_state": {},
                 "sc:protocol_runtime_ids": [0]
             }
         }"#;
@@ -1552,15 +1917,10 @@ mod tests {
             "minecraft:block": {
                 "description": {"identifier": "minecraft:crafting_table", "states": {}},
                 "components": {
-                    "sc:workstation": {
-                        "station": "crafting_table",
-                        "container": 1,
-                        "window": true,
-                        "grid": 3,
-                        "slots": []
+                    "sc:crafting_table": {
+                        "grid": 3
                     }
                 },
-                "sc:default_state": {},
                 "sc:protocol_runtime_ids": [50]
             }
         }"#;
@@ -1583,6 +1943,7 @@ mod tests {
             network_id_mode: "hashed".to_string(),
             fingerprint: fingerprint_bundle(&refs, "hashed"),
             files,
+            loot_tables: Default::default(),
         };
         let snapshot = compile_bundle(&bundle, "test", &budgets, &|_| None, &|_| true)
             .expect("应编译")
@@ -1660,7 +2021,7 @@ mod tests {
     /// Break progress is a **per-tick increment** (accumulated by clients); the step formula matches `65535 / breakTick`.
     #[test]
     fn break_progress_step_matches_formula() {
-        assert_eq!(break_progress_step(20), 65_535 / 20); // 旧常量行为（回退时长）
+        assert_eq!(break_progress_step(20), 65_535 / 20); // legacy constant (fallback duration)
         assert_eq!(break_progress_step(30), 65_535 / 30); // stone 1.5s
         assert_eq!(break_progress_step(60), 65_535 / 60); // coal_ore 3s
         assert_eq!(break_progress_step(2000), 65_535 / 2000); // water 100s
@@ -1729,7 +2090,6 @@ mod tests {
             "minecraft:block": {
                 "description": {"identifier": "minecraft:air", "states": {}},
                 "components": {"minecraft:destructible_by_mining": {"value": 0.0}},
-                "sc:default_state": {},
                 "sc:protocol_runtime_ids": [0]
             }
         }"#;
@@ -1738,7 +2098,6 @@ mod tests {
             "minecraft:block": {
                 "description": {"identifier": "minecraft:stone", "states": {}},
                 "components": {"minecraft:destructible_by_mining": {"value": 1.5}},
-                "sc:default_state": {},
                 "sc:protocol_runtime_ids": [7]
             }
         }"#;
@@ -1747,7 +2106,6 @@ mod tests {
             "minecraft:block": {
                 "description": {"identifier": "minecraft:bedrock", "states": {}},
                 "components": {"sc:unbreakable": {}},
-                "sc:default_state": {},
                 "sc:protocol_runtime_ids": [9]
             }
         }"#;
@@ -1756,7 +2114,6 @@ mod tests {
             "minecraft:block": {
                 "description": {"identifier": "test:undeclared", "states": {}},
                 "components": {},
-                "sc:default_state": {},
                 "sc:protocol_runtime_ids": [11]
             }
         }"#;
@@ -1778,6 +2135,7 @@ mod tests {
             network_id_mode: "hashed".to_string(),
             fingerprint: fingerprint_bundle(&refs, "hashed"),
             files,
+            loot_tables: Default::default(),
         };
         let snapshot = compile_bundle(&bundle, "test", &budgets, &|_| None, &|_| true)
             .expect("应编译")
@@ -1836,7 +2194,6 @@ mod tests {
             "minecraft:block": {
                 "description": {"identifier": "minecraft:air", "states": {}},
                 "components": {},
-                "sc:default_state": {},
                 "sc:protocol_runtime_ids": [0]
             }
         }"#;
@@ -1854,7 +2211,6 @@ mod tests {
                         ]
                     }
                 },
-                "sc:default_state": {},
                 "sc:protocol_runtime_ids": [32000]
             }
         }"#;
@@ -1874,6 +2230,7 @@ mod tests {
             network_id_mode: "hashed".to_string(),
             fingerprint: fingerprint_bundle(&refs, "hashed"),
             files,
+            loot_tables: Default::default(),
         };
         // Item existence: test items pass.
         let allow = |id: &str| {
@@ -1980,7 +2337,8 @@ mod tests {
             ),
             MineDecision::Mine {
                 required_ticks: 18,
-                harvested: true
+                harvested: true,
+                correct_tool: true
             }
         );
         // Efficiency III (exact formula): speed=5+(9+1)=15, 4.5/15=0.3s goes to 6 ticks.
@@ -1995,7 +2353,8 @@ mod tests {
             ),
             MineDecision::Mine {
                 required_ticks: 6,
-                harvested: true
+                harvested: true,
+                correct_tool: true
             }
         );
         // Unmatched tools take default (unharvested): 3*5/1=15s goes to 300 ticks.
@@ -2010,7 +2369,8 @@ mod tests {
             ),
             MineDecision::Mine {
                 required_ticks: 300,
-                harvested: false
+                harvested: false,
+                correct_tool: false
             }
         );
         // base 0 goes to the 1-tick floor.
@@ -2020,7 +2380,8 @@ mod tests {
             mining_decision(&instant, &HandSnapshot::default()),
             MineDecision::Mine {
                 required_ticks: 1,
-                harvested: false
+                harvested: false,
+                correct_tool: false
             }
         );
     }

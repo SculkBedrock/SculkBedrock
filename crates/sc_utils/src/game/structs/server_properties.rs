@@ -26,6 +26,8 @@ pub struct ServerProperties {
     pub log_file_name_format: String,
     pub log_flush_interval_ms: u64,
     /// 日志级别（`[log] log_level`）：`info` 或 `debug`，改完重启生效。
+    ///
+    /// Log level (`[log] log_level`): `info` or `debug`, applied after restart.
     pub log_level: String,
 
     // Game
@@ -276,8 +278,8 @@ impl ServerProperties {
         };
         let log_flush_interval_ms =
             optional_u64(log, "flush_interval_ms", "log.flush_interval_ms", 200)?;
-        // 可选（缺省 debug，保持此前硬编码行为）；只接受小写 info/debug，
-        // 写错直接启动失败，比静默跑错级别好。
+        // Optional (defaults to debug); only lowercase "info"/"debug" are accepted,
+        // so a typo fails startup instead of silently running at the wrong level.
         let log_level = optional_string(log, "log_level", "log.log_level", "debug")?;
         if log_level != "info" && log_level != "debug" {
             return Err(
@@ -330,7 +332,7 @@ impl ServerProperties {
         let chunk = optional_section(&toml, "chunk")?;
         let view_distance =
             optional_i32_non_negative(chunk, "view_distance", "chunk.view_distance", 10)?;
-        let chunks_per_tick = optional_u32(chunk, "chunks_per_tick", "chunk.chunks_per_tick", 4)?;
+        let chunks_per_tick = optional_u32(chunk, "chunks_per_tick", "chunk.chunks_per_tick", 128)?;
         let spawn_threshold = optional_u32(chunk, "spawn_threshold", "chunk.spawn_threshold", 56)?;
 
         let debug = optional_section(&toml, "debug")?;

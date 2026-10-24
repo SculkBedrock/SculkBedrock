@@ -8,14 +8,25 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// 由信号处理器置位（只做原子存储，async-signal-safe），任何线程可读——
 /// 包括主循环启动前阻塞在启动期等待（如等世界）里的逻辑，那里收不到
 /// `SCExit` 事件，只能轮询此标志。
+///
+/// Set once an OS shutdown request (Ctrl+C / SIGTERM / SIGHUP) has arrived.
+///
+/// The signal handler sets it (atomic store only, async-signal-safe) and any
+/// thread may read it — including logic blocked in startup waits (e.g. waiting
+/// for a world) before the main loop starts, where no `SCExit` event is
+/// delivered and only this flag can be polled.
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// 记录一次关闭请求（信号处理器调用）。
+///
+/// Records one shutdown request (called from the signal handler).
 pub fn note_shutdown_requested() {
     SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
 }
 
 /// 是否收到过关闭请求。
+///
+/// Whether a shutdown request has been received.
 pub fn shutdown_requested() -> bool {
     SHUTDOWN_REQUESTED.load(Ordering::Relaxed)
 }

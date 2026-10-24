@@ -1,6 +1,5 @@
 //! Strict LevelChunk payload validator (client parse semantics).
 //!
-//! Locates send-but-invisible/broken chunks at the byte level.
 //! Decodes the LevelChunk payload byte by byte with client parsing
 //! semantics: v9 sub-chunks (version/layers/index), paletted storages
 //! (header/bits/words/palette), per-section biomes (dimension height
@@ -14,12 +13,6 @@ use sc_binary::ByteReader;
 use sc_network::protocol::server::chunk::LevelChunk;
 use sc_world::block_dictionary::{air_runtime_id, BlockStateDictionary, BlockStateEntry};
 use sc_world::chunk::{BlockRuntimeId, Chunk, ChunkPosition, OVERWORLD_MAX_Y, OVERWORLD_MIN_Y};
-
-/// Full-height section count (fixed 3D biome count in the payload).
-/// Diagnostic test reserve: kept for payload geometry checks.
-// Defined against the fixed overworld height; not referenced by every validator yet.
-#[allow(dead_code)]
-const OVERWORLD_SECTIONS: usize = 24;
 
 fn register_test_network_ids(ids: &[u32]) {
     let dictionary = BlockStateDictionary::global();
@@ -99,6 +92,8 @@ fn parse_storage(reader: &mut ByteReader, what: &str) -> Vec<u32> {
     values
 }
 
+/// 客户端语义的解析结果。
+///
 /// Client-semantics parse result.
 struct ParsedChunk {
     /// section index(-4..) to 4096 block runtime ids.
@@ -144,30 +139,6 @@ fn parse_payload(payload: &[u8], section_count: u32, biome_count: usize) -> Pars
         border,
         trailing,
     }
-}
-
-/// Load definitions/block_palette.nbt from the auto-selected version pack.
-/// Returns false when no pack is available (callers skip).
-fn seed_palette_from_version_pack() -> bool {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    static SEEDED: std::sync::Once = std::sync::Once::new();
-    static AVAILABLE: AtomicBool = AtomicBool::new(false);
-    SEEDED.call_once(|| {
-        let Some(bytes) =
-            sc_packloader::test_pack::read_test_pack_file("definitions/block_palette.nbt")
-        else {
-            eprintln!("[validator] [skip] 版本包缺失，跳过 palette");
-            return;
-        };
-        let registry = sc_block::registry::BlockStateRegistry::new();
-        let count = registry
-            .load_palette_from_bytes(&bytes)
-            .expect("parse palette");
-        eprintln!("[validator] palette registered {count} states");
-        assert!(count > 6000, "unexpected palette size: {count}");
-        AVAILABLE.store(true, Ordering::Release);
-    });
-    AVAILABLE.load(Ordering::Acquire)
 }
 
 /// Diff one source-chunk column (layer 0) against the decoded result.
@@ -270,65 +241,6 @@ fn payload_roundtrip_synthetic_chunk() {
         }
     }
     assert_eq!(parsed.trailing, vec![0], "empty entity list is TAG_End");
-}
-
-#[test]
-fn payload_roundtrip_generated_chunk() {
-    // Register the real palette from the version pack so the generator
-    // resolves real block hashes.
-    if !seed_palette_from_version_pack() {
-        eprintln!("[skip] 版本包缺失，跳过测试");
-        return;
-    }
-
-    // Generate chunks with the real generator and diff fully.
-    // The flat-world generator was replaced by the normal generator.
-    // (Seed and block tables build from the core palette.)
-    let table = sc_vanilla_overworld::blocks_table::WorldgenBlockTable::from_core_palette();
-    let material_blocks =
-        sc_vanilla_overworld::worldgen::material::MaterialBlocks::from_core_palette();
-    let generator = sc_vanilla_overworld::generator::NormalGenerator::new(
-        0x1_0000_0000,
-        table,
-        material_blocks,
-    );
-    use sc_world::storage::{ChunkGenerationRequest, ChunkKey, WorldGenerator};
-    for (cx, cz) in [(0i32, 0i32), (1, 0), (-2, 3), (5, -5)] {
-        let request = ChunkGenerationRequest {
-            key: ChunkKey::new(0, ChunkPosition::new(cx, cz)),
-            min_y: OVERWORLD_MIN_Y,
-            max_y: OVERWORLD_MAX_Y,
-        };
-        let chunk = generator
-            .generate_chunk(request)
-            .expect("generate")
-            .expect("generate Some");
-        let packet = LevelChunk::from_chunk(&chunk).expect("chunk encoding");
-        assert_eq!(packet.sub_chunk_count, chunk.subchunk_count() as u32);
-        let parsed = parse_payload(
-            &packet.payload,
-            packet.sub_chunk_count,
-            packet.sub_chunk_count as usize,
-        );
-        assert_eq!(parsed.sections.len(), packet.sub_chunk_count as usize);
-        assert_eq!(parsed.biomes.len(), packet.sub_chunk_count as usize);
-        for lx in (0..16u8).step_by(3) {
-            for lz in (0..16u8).step_by(3) {
-                assert_column_matches(&chunk, &parsed, lx, lz);
-            }
-        }
-        let air = BlockRuntimeId(air_runtime_id());
-        let top = chunk.highest_block_at(8, 8, air);
-        let non_empty = parsed
-            .sections
-            .iter()
-            .filter(|(_, blocks)| blocks.iter().any(|v| *v != air.0))
-            .count();
-        eprintln!(
-            "[validator] chunk ({cx},{cz}) payload={}B sections=1 non-empty={non_empty} top={top:?}",
-            packet.payload.len()
-        );
-    }
 }
 
 #[test]

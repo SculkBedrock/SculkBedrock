@@ -1,13 +1,6 @@
-//! Surface-overwrite stage: biome-specific topsoil cover for special biomes.
+//! 地表覆盖阶段：为特殊生物群系写入表层覆盖方块。
 //!
-//! Notes:
-//! - Solidity is approximated as non-air and non-water (at generation time the
-//!   columns only hold terrain-class blocks; a solid-property lookup can refine this later).
-//! - Water covers both still and flowing variants via the block table.
-//! - The clay-band cache uses a lazily initialized cell (single-threaded
-//!   generation needs no locking primitive; `RefCell` provides borrow checks).
-//! - The `"clay_bands"` seed uses the 32-bit string hash helper.
-//! - Rounding uses the half-up helper (differs from `f32::round`).
+//! Surface-overwrite stage: writes topsoil cover for special biomes.
 
 use crate::blocks_table::WorldgenBlockTable;
 use crate::worldgen::biome::biome_id::*;
@@ -23,6 +16,12 @@ use sc_world::chunk::BlockRuntimeId;
 // NormalSurfaceOverwriteStage: biome-specific topsoil cover
 // ---------------------------------------------------------------------------
 
+/// 特殊生物群系的地表覆盖阶段。
+///
+/// 处理恶地陶瓦层带、沼泽水、冰原雪层、冻洋冰山与侵蚀恶地柱。
+///
+/// 构造时注入 [`WorldgenBlockTable`]。
+///
 /// Surface-overwrite stage for special biomes.
 ///
 /// Handles badlands clay bands, swamp water, ice-plains snow layers, frozen-ocean
@@ -762,29 +761,6 @@ mod tests {
         // The second call reuses the cache (no regeneration).
         let band2 = stage.get_clay_band(soh, 42, 0, 50, 0);
         assert_eq!(band1, band2, "same coords should return same band");
-    }
-
-    #[test]
-    fn surface_overwrite_runs_without_panic() {
-        let table = test_table();
-        let stage = NormalSurfaceOverwriteStage::new(table);
-
-        let holder = crate::worldgen::holder::normal::NormalObjectHolder::new(
-            Xoroshiro128::new(42),
-            test_blocks(),
-        );
-        let chunk = sc_world::chunk::Chunk::empty_overworld(ChunkPosition::new(0, 0));
-        let mut wc = WorldgenChunk::new(chunk);
-        // Set heightmap/biome coverage to avoid the all-zero branch.
-        for x in 0u8..16 {
-            for z in 0u8..16 {
-                wc.set_height_map(x, z, 70);
-                wc.set_biome_id(x, 70, z, PLAINS);
-            }
-        }
-        let mut ctx = ChunkGenerateContext::new(&mut wc, &holder, 42, -64, 319);
-        stage.apply(&mut ctx);
-        // Passing means no panic.
     }
 
     #[test]

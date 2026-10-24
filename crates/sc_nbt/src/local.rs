@@ -179,6 +179,8 @@ impl NbtReadTrait for BedrockLocalNbt {
 }
 
 impl BedrockLocalNbt {
+    /// 写字符串：u16 LE 长度 + UTF-8 字节（与 read_string 对应）。
+    ///
     /// Write a string: u16 LE length + UTF-8 bytes (mirrors read_string).
     #[inline]
     fn write_string(writer: &mut ByteWriter, string: &str) -> io::Result<()> {
@@ -226,6 +228,8 @@ impl BedrockLocalNbt {
         }
     }
 
+    /// 写 List：元素类型（u8）+ i32 LE 长度 + 元素载荷。
+    ///
     /// Write a List: element type (u8) + i32 LE length + element payloads.
     #[inline]
     fn write_list(writer: &mut ByteWriter, vec: &[NbtValue]) -> io::Result<()> {
@@ -249,6 +253,8 @@ impl BedrockLocalNbt {
         Ok(())
     }
 
+    /// 写 compound 内容（条目 + TAG_End），不含名称。
+    ///
     /// Write compound content (entries + TAG_End) without the name.
     #[inline]
     fn write_compound_content(writer: &mut ByteWriter, compound: &CompoundNbt) -> io::Result<()> {
@@ -263,6 +269,8 @@ impl BedrockLocalNbt {
 }
 
 impl NbtWriteTrait for BedrockLocalNbt {
+    /// 写根标签：标签类型（u8）+ 根名（u16 LE 字符串）+ 载荷。
+    ///
     /// Write the root tag: tag type (u8) + root name (u16 LE string) + payload.
     fn write(writer: &mut ByteWriter, value: &NbtValue) -> io::Result<()> {
         match value {
@@ -285,11 +293,12 @@ impl NbtWriteTrait for BedrockLocalNbt {
     }
 }
 
+/// 按 `i8` 切片重解释为 `u8` 的精确字节写出。
+///
 /// Write an `i8` slice with the exact bytes of its `u8` reinterpretation.
 ///
 /// `i8`/`u8` share value bytes, so writing each element preserves the wire
-/// encoding of the previous `unsafe { from_raw_parts }` cast without aliasing
-/// a borrowed slice.
+/// encoding without aliasing a borrowed slice.
 #[inline]
 fn write_i8_slice_raw(writer: &mut ByteWriter, values: &[i8]) -> io::Result<()> {
     for value in values {

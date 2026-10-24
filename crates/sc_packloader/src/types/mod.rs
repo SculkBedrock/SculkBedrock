@@ -1,3 +1,7 @@
+//! 资源包解析用的通用数据类型。
+//!
+//! Shared data types used when deserializing resource packs.
+
 pub mod block_specifier;
 pub mod block_states;
 pub mod entity_types;

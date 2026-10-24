@@ -6,21 +6,68 @@ use sc_utils::game::experiment::ExperimentData;
 use std::io::Error;
 use uuid::Uuid;
 
+/// ResourcePacksInfoPacket：向客户端通告可用资源包列表。
+///
+/// ResourcePacksInfoPacket: announces the available resource packs to the
+/// client.
+///
+/// 布局随协议版本变化：729 起不再拆分行为包/资源包，898 起去掉
+/// force_server_packs 等旧字段。
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct ResourcePackInfo {
+    /// 目标协议版本号。
+    ///
+    /// Target protocol version.
     pub protocol_version: u32,
+    /// 是否必须接受（拒绝即断开）。
+    ///
+    /// Whether acceptance is mandatory (refusal disconnects).
     pub must_accept: bool,
+    /// 是否包含脚本包。
+    ///
+    /// Whether scripting packs are included.
     pub scripting: bool,
+    /// 是否强制禁用鲜艳视觉效果。
+    ///
     /// Whether to force-disable vibrant visuals.
     pub force_disable_vibrant_visuals: bool,
+    /// 世界模板 UUID。
+    ///
+    /// World template UUID.
     pub world_template_id: Uuid,
+    /// 世界模板版本字符串。
+    ///
+    /// World template version string.
     pub world_template_version: String,
+    /// 是否包含附加包。
+    ///
+    /// Whether addon packs are included.
     pub has_addon_packs: bool,
+    /// 是否强制使用服务端包。
+    ///
+    /// Whether server packs are forced.
     pub force_server_packs: bool,
+    /// 行为包列表。
+    ///
+    /// Behavior packs.
     pub behavior_packs: Vec<ResourcePack>,
+    /// 资源包列表。
+    ///
+    /// Resource packs.
     pub resource_packs: Vec<ResourcePack>,
 }
 
+/// 编码一组包的元信息列表。
+///
+/// Encodes the metadata list of one pack stack.
+///
+/// - `buf`: 输出字节写入器
+/// - `packs`: 包列表
+/// - `behavior`: 是否为行为包（影响旧协议的光线追踪标志位置）
+/// - `protocol_version`: 目标协议版本
+///
+/// # Errors
+/// 写入缓冲区失败时返回 IO 错误。
 fn encode_packs(
     buf: &mut ByteWriter,
     packs: &Vec<ResourcePack>,
@@ -39,7 +86,7 @@ fn encode_packs(
         buf.write_string(&information.version.to_string())?;
         buf.write_u64_le(information.pack_len as u64)?;
         buf.write_string(&information.encryption_key)?;
-        buf.write_string("")?; //TODO: sub-pack name
+        buf.write_string("")?; // sub-pack name (unused)
         if !information.encryption_key.is_empty() {
             buf.write_string(&information.uuid.to_string())?;
         } else {
@@ -52,7 +99,7 @@ fn encode_packs(
             buf.write_bool(false)?; //raytracing capable
             if protocol_version >= 748 {
                 // CDN URL field.
-                buf.write_string("")?; //TODO: cdnUrl
+                buf.write_string("")?; // cdnUrl (unused)
             }
         } else {
             if !behavior {
@@ -64,6 +111,15 @@ fn encode_packs(
 }
 
 impl Writer for ResourcePackInfo {
+    /// 写入 ResourcePacksInfo 包体（含调试日志与版本分支）。
+    ///
+    /// Writes the ResourcePacksInfo body (with debug logging and
+    /// version-dependent branches).
+    ///
+    /// - `buf`: 输出字节写入器
+    ///
+    /// # Errors
+    /// 写入缓冲区失败时返回 IO 错误。
     fn write(&self, buf: &mut ByteWriter) -> Result<(), Error> {
         log::debug!(
             "ResourcePackInfo write: protocol={}, behavior_packs={}, resource_packs={}",
@@ -122,6 +178,12 @@ impl Writer for ResourcePackInfo {
 }
 
 impl Reader<ResourcePackInfo> for ResourcePackInfo {
+    /// 不支持解码：服务端只发送资源包信息。
+    ///
+    /// Decoding is unsupported: the server only sends pack info.
+    ///
+    /// # Errors
+    /// 始终返回 [`std::io::ErrorKind::Unsupported`] 错误。
     fn read(_buf: &mut ByteReader) -> Result<ResourcePackInfo, Error> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
@@ -130,18 +192,51 @@ impl Reader<ResourcePackInfo> for ResourcePackInfo {
     }
 }
 
+/// ResourcePackStackPacket：通告最终生效的资源包栈。
+///
+/// ResourcePackStackPacket: announces the final effective resource pack
+/// stack.
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct ResourcePackStack {
+    /// 目标协议版本号。
+    ///
+    /// Target protocol version.
     pub protocol_version: u32,
+    /// 是否必须接受。
+    ///
+    /// Whether acceptance is mandatory.
     pub must_accept: bool,
+    /// 行为包栈（仅 898 前协议发送）。
+    ///
+    /// Behavior pack stack (sent only before protocol 898).
     pub behavior_pack_stack: Vec<ResourcePack>,
+    /// 资源包栈。
+    ///
+    /// Resource pack stack.
     pub resource_pack_stack: Vec<ResourcePack>,
+    /// 实验列表。
+    ///
+    /// Experiments.
     pub experiments: Vec<ExperimentData>,
+    /// 游戏版本字符串。
+    ///
+    /// Game version string.
     pub game_version: String,
+    /// 是否包含编辑器包。
+    ///
+    /// Whether editor packs are included.
     pub is_has_editor_packs: bool,
 }
 
 impl Writer for ResourcePackStack {
+    /// 写入 ResourcePackStack 包体。
+    ///
+    /// Writes the ResourcePackStack packet body.
+    ///
+    /// - `buf`: 输出字节写入器
+    ///
+    /// # Errors
+    /// 写入缓冲区失败时返回 IO 错误。
     fn write(&self, buf: &mut ByteWriter) -> Result<(), Error> {
         buf.write_bool(self.must_accept)?;
         // The behavior pack stack was removed; only the resource stack follows.
@@ -151,7 +246,7 @@ impl Writer for ResourcePackStack {
                 let information = &pack.manifest.information;
                 buf.write_string(&information.uuid.to_string())?;
                 buf.write_string(&information.version.to_string())?;
-                buf.write_string("")?; //TODO: sub-pack name
+                buf.write_string("")?; // sub-pack name (unused)
             }
         }
 
@@ -160,7 +255,7 @@ impl Writer for ResourcePackStack {
             let information = &pack.manifest.information;
             buf.write_string(&information.uuid.to_string())?;
             buf.write_string(&information.version.to_string())?;
-            buf.write_string("")?; //TODO: sub-pack name
+            buf.write_string("")?; // sub-pack name (unused)
         }
 
         buf.write_string(self.game_version.as_str())?;
@@ -176,6 +271,12 @@ impl Writer for ResourcePackStack {
 }
 
 impl Reader<ResourcePackStack> for ResourcePackStack {
+    /// 不支持解码：服务端只发送资源包栈。
+    ///
+    /// Decoding is unsupported: the server only sends the pack stack.
+    ///
+    /// # Errors
+    /// 始终返回 [`std::io::ErrorKind::Unsupported`] 错误。
     fn read(_buf: &mut ByteReader) -> Result<ResourcePackStack, Error> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
@@ -184,19 +285,55 @@ impl Reader<ResourcePackStack> for ResourcePackStack {
     }
 }
 
+/// ResourcePackDataInfoPacket：单个资源包的数据信息（分块传输前导）。
+///
+/// ResourcePackDataInfoPacket: data info of a single pack (sent before the
+/// chunked transfer).
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct ResourcePackDataInfo {
+    /// 包 UUID。
+    ///
+    /// Pack UUID.
     pub pack_id: Uuid,
+    /// 包版本字符串。
+    ///
+    /// Pack version string.
     pub pack_version: String,
+    /// 单个分片大小（字节）。
+    ///
+    /// Chunk size in bytes.
     pub max_chunk_size: u32,
+    /// 分片总数。
+    ///
+    /// Total number of chunks.
     pub chunk_count: u32,
+    /// 压缩后的包总大小（字节）。
+    ///
+    /// Compressed pack size in bytes.
     pub compressed_pack_size: u64,
+    /// 包内容 SHA-256。
+    ///
+    /// SHA-256 of the pack content.
     pub sha256: Vec<u8>,
+    /// 是否为付费包。
+    ///
+    /// Whether the pack is premium.
     pub is_premium: bool,
+    /// 包类型（0=资源包，1=行为包）。
+    ///
+    /// Pack type (0 = resource, 1 = behavior).
     pub pack_type: u8,
 }
 
 impl Writer for ResourcePackDataInfo {
+    /// 写入 ResourcePackDataInfo 包体（含调试日志）。
+    ///
+    /// Writes the ResourcePackDataInfo body (with debug logging).
+    ///
+    /// - `buf`: 输出字节写入器
+    ///
+    /// # Errors
+    /// 写入缓冲区失败时返回 IO 错误。
     fn write(&self, buf: &mut ByteWriter) -> Result<(), Error> {
         let pos_start = buf.as_slice().len();
         buf.write_string(&format!("{}_{}", self.pack_id, self.pack_version))?;
@@ -216,6 +353,12 @@ impl Writer for ResourcePackDataInfo {
 }
 
 impl Reader<ResourcePackDataInfo> for ResourcePackDataInfo {
+    /// 不支持解码：服务端只发送包数据信息。
+    ///
+    /// Decoding is unsupported: the server only sends pack data info.
+    ///
+    /// # Errors
+    /// 始终返回 [`std::io::ErrorKind::Unsupported`] 错误。
     fn read(_buf: &mut ByteReader) -> Result<ResourcePackDataInfo, Error> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
@@ -224,16 +367,42 @@ impl Reader<ResourcePackDataInfo> for ResourcePackDataInfo {
     }
 }
 
+/// ResourcePackChunkDataPacket：资源包分片数据。
+///
+/// ResourcePackChunkDataPacket: a resource pack data chunk.
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct ResourcePackChunkData {
+    /// 包 UUID。
+    ///
+    /// Pack UUID.
     pub pack_id: Uuid,
+    /// 包版本字符串。
+    ///
+    /// Pack version string.
     pub pack_version: String,
+    /// 分片序号。
+    ///
+    /// Chunk index.
     pub chunk_index: u32,
+    /// 传输进度（字节）。
+    ///
+    /// Transfer progress in bytes.
     pub progress: u64,
+    /// 分片原始数据。
+    ///
+    /// Raw chunk data.
     pub data: Vec<u8>,
 }
 
 impl Writer for ResourcePackChunkData {
+    /// 写入 ResourcePackChunkData 包体。
+    ///
+    /// Writes the ResourcePackChunkData packet body.
+    ///
+    /// - `buf`: 输出字节写入器
+    ///
+    /// # Errors
+    /// 写入缓冲区失败时返回 IO 错误。
     fn write(&self, buf: &mut ByteWriter) -> Result<(), Error> {
         buf.write_string(&format!("{}_{}", self.pack_id, self.pack_version))?;
         buf.write_u32_le(self.chunk_index)?;
@@ -244,6 +413,12 @@ impl Writer for ResourcePackChunkData {
 }
 
 impl Reader<ResourcePackChunkData> for ResourcePackChunkData {
+    /// 不支持解码：服务端只发送分片数据。
+    ///
+    /// Decoding is unsupported: the server only sends chunk data.
+    ///
+    /// # Errors
+    /// 始终返回 [`std::io::ErrorKind::Unsupported`] 错误。
     fn read(_buf: &mut ByteReader) -> Result<ResourcePackChunkData, Error> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,

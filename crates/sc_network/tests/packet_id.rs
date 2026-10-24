@@ -1,22 +1,14 @@
 //! Regression tests for `MinecraftPackets::packet_id()` / `packet_name()`.
 //!
-//! Background: `MinecraftPackets::id()` used to serialize the whole packet
-//! with `write_to_bytes()` just to read the first two bytes, which
-//! serializes kilobytes per send for large payloads such as `LevelChunk`.
-//! The send path also used to clone whole packets to read ids; the concrete
-//! packet type to id mapping now avoids that clone.
-//!
-//! `id()` now comes from the `MinecraftPackets` derive macro reading
-//! `#[repr(u16)]` discriminants as `packet_id()`, and
-//! `packet_id_for_type::<P>()` frees send sites from constructing the enum.
-//! Both id sources must always agree:
+//! `packet_id()` comes from the `MinecraftPackets` derive macro reading
+//! `#[repr(u16)]` discriminants, and `packet_id_for_type::<P>()` resolves the
+//! id from the concrete packet type. Both id sources must always agree:
 //!
 //! - `MinecraftPackets` derive (`sc_network_macros`) — the object under test;
 //! - `BinaryIo` derive — the real encode path, parsing the same
 //!   `#[repr(u16)]` literals and failing compilation on non-integer
 //!   discriminants.
 //!
-//! Both read the same source, so they cannot diverge in principle; but
 //! `BinaryIo` implicitly derives `discrim + 1` for default discriminants
 //! while `packet_id()` refuses to generate in that case (falling back to
 //! the `id()` serialization path). The tests below pin both boundaries.

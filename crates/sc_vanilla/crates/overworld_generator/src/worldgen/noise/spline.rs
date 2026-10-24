@@ -19,7 +19,9 @@ use std::sync::{Arc, OnceLock};
 // IEvaluator interface as a trait.
 // ---------------------------------------------------------------------------
 
-/// Java: `SplineGenerator.IEvaluator`(L8-10).
+/// 样条控制点取值的求值接口。
+///
+/// Evaluation interface for spline control-point values.
 pub trait IEvaluator: Send + Sync {
     /// Java: `double evaluate(Map<String, Double> parameters)`.
     fn evaluate(&self, parameters: &HashMap<String, f64>) -> f64;
@@ -29,7 +31,9 @@ pub trait IEvaluator: Send + Sync {
 // Point
 // ---------------------------------------------------------------------------
 
-/// Java: `SplineGenerator.Point`(L12-26).
+/// 样条控制点：位置、取值与导数。
+///
+/// A spline control point: location, value, and derivative.
 pub struct Point {
     /// Java: `public final double location`.
     pub location: f64,
@@ -64,7 +68,9 @@ impl Point {
 // StaticValue
 // ---------------------------------------------------------------------------
 
-/// Java: `SplineGenerator.StaticValue`(L28-38).
+/// 忽略参数并返回固定值的样条取值。
+///
+/// Spline value that ignores parameters and returns a fixed value.
 pub struct StaticValue {
     /// Java: `private final double value`.
     pub(crate) value: f64,
@@ -81,7 +87,9 @@ impl IEvaluator for StaticValue {
 // Spline
 // ---------------------------------------------------------------------------
 
-/// Java: `SplineGenerator.Spline`(L40-86).
+/// 按命名坐标在控制点之间插值的样条。
+///
+/// Spline interpolating between control points along a named coordinate.
 pub struct Spline {
     /// Java: `private final List<Point> points`.
     points: Vec<Point>,

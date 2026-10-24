@@ -9,6 +9,8 @@
 use super::function::FunctionContext;
 use std::rc::Rc;
 
+/// 样条取值接口（此处 `C` 固定为 `dyn FunctionContext`）。
+///
 /// Spline value interface (here `C` is fixed to `dyn FunctionContext`).
 pub trait CubicValue {
     /// Java: `double apply(C input)`.
@@ -21,7 +23,9 @@ pub trait CubicValue {
     fn max_value(&self) -> f64;
 }
 
-/// Java: `record Point<C>(double location, Value<C> value, double derivative)`(L107-108).
+/// 三次样条控制点：位置、取值与导数。
+///
+/// Cubic spline control point: location, value and derivative.
 pub struct CubicPoint {
     /// Java: `public final double location`.
     pub location: f64,
@@ -31,6 +35,8 @@ pub struct CubicPoint {
     pub derivative: f64,
 }
 
+/// 三次样条密度函数（特化为 `dyn FunctionContext`）。
+///
 /// Cubic spline density function (specialized to `dyn FunctionContext`).
 pub struct CubicSpline {
     /// Java: `private final ToDoubleFunction<C> coordinate`(L10).
@@ -151,7 +157,9 @@ impl CubicSpline {
     }
 }
 
-/// Java: `public static final class Builder<C>`(L110-130).
+/// 三次样条构建器。
+///
+/// Cubic spline builder.
 pub struct CubicSplineBuilder {
     /// Java: `private final ToDoubleFunction<C> coordinate`(L111).
     coordinate: Rc<dyn Fn(&dyn FunctionContext) -> f64>,
@@ -186,7 +194,9 @@ impl CubicSplineBuilder {
     }
 }
 
-/// Java: `private record ConstantValue<C>(double value) implements Value<C>`(L136-151).
+/// 样条区间内的常量取值。
+///
+/// Constant value within a spline interval.
 struct ConstantValue {
     value: f64,
 }

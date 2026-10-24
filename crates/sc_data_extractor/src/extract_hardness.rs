@@ -1,17 +1,27 @@
+//! 提取方块硬度（`split-blocks --hardness` 的输入）。
+//!
+//! 读取方块类的 `getHardness()`（基类默认 10；`-1` 表示不可破坏，对应
+//! `getHardness() != -1` 的可破坏判定）。未覆写的类沿 `extends` 链继承；
+//! 父类不在链上、存在多处覆写、方法体非字面量时跳过该条目并记录，不做
+//! 猜测。硬度是按类型静态确定的值，写入基础 `components`（`sc:mining` /
+//! `sc:unbreakable`，由 schema 保证互斥）。
+//!
+//! 输出扁平 JSON（`{identifier: {"hardness": h} | {"unbreakable": true}}`，
+//! 由 split 直接消费），并附带来源侧车文件（identifier 到类文件，用于审计）。
+//!
 //! Extracts hardness (`split-blocks --hardness` input).
 //!
-//! Source: `Block.getHardness()` (base default 10; `-1` means unbreakable, matching the
-//! `getHardness() != -1` breakable semantics).
-//! Classes without an override inherit along the `extends` chain (explicit walk with Java semantics;
-//! off-chain superclasses, multiple overrides, and non-literal bodies are loudly skipped, never guessed).
-//! Hardness is a per-type static value written to base `components` (`sc:mining` /
-//! `sc:unbreakable`, mutually exclusive by schema).
+//! Reads `getHardness()` of block classes (base default 10; `-1` means
+//! unbreakable, matching the `getHardness() != -1` breakable check). Classes
+//! without an override inherit along the `extends` chain; off-chain
+//! superclasses, multiple overrides, and non-literal bodies are skipped and
+//! recorded rather than guessed. Hardness is a per-type static value written
+//! to base `components` (`sc:mining` / `sc:unbreakable`, mutually exclusive
+//! by schema).
 //!
-//! Outputs flat JSON (`{identifier: {"hardness": h} | {"unbreakable": true}}`, consumed directly
-//! by split) plus a source sidecar (identifier to class file, for auditing).
-//!
-//! Shares the Java scanning base (paren matching/top-level splitting) in
-//! [`crate::extract_defaults`] (same crate, no external deps).
+//! Outputs flat JSON (`{identifier: {"hardness": h} | {"unbreakable": true}}`,
+//! consumed directly by split) plus a source sidecar (identifier to class
+//! file, for auditing).
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -22,6 +32,8 @@ use sc_packloader::block::{BlockHardness, LegacyPaletteEntry};
 
 use crate::extract_defaults::{find_matching, split_top};
 
+/// 硬度提取报告（`hardness` 仅收录可静态判定的条目）。
+///
 /// Hardness extraction report (`hardness` holds only statically decidable entries).
 #[derive(Clone, Debug, Default)]
 pub struct HardnessReport {
@@ -185,6 +197,8 @@ pub fn run(args: &[String]) {
     );
 }
 
+/// 把方法体解析为字面 f64（单个 `return <num>;` 语句；外部注释可容忍）。
+///
 /// Parses a method body as a literal f64 (single `return <num>;` statement; comments tolerated outside).
 fn parse_literal_body(body: &str) -> Option<f64> {
     // Strips line comments.
@@ -230,6 +244,8 @@ fn is_ident_char(b: u8) -> bool {
     matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'$')
 }
 
+/// 文件中第一个顶层 `class X [extends Y]`。
+///
 /// First top-level `class X [extends Y]` in a file.
 fn class_decl(text: &str) -> Option<(String, Option<String>)> {
     let mut search = 0usize;

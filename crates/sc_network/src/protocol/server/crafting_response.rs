@@ -1,33 +1,53 @@
-//! `ItemStackResponse` (0x94).
+//! ItemStackResponsePacket (0x94)：合成/容器操作的结果回包。
 //!
-//! Layout: single-entry array; per entry `u8 result` (SUCCESS=0, ERROR=1),
-//! zigzag varint request id, unconditional `bool(true)`, then the containers
-//! presence bool followed by the container array when present.
-//! This packet always carries a single entry (one `CraftResponse` per
-//! request): `slots` grouped by container are `containers`, and
-//! `success=false` encodes ERROR (no containers). Container and slot
-//! encoding: `FullContainerName` is `u8 containerEnum +
-//! Optional(dynamicId)` (absent dynamic id is a single `bool(false)` byte);
-//! slot is `u8 requestedSlot + u8 slot + u8 count + varint netId + string
-//! customName + varint durabilityCorrection`.
+//! ItemStackResponsePacket (0x94): result reply for crafting/container
+//! operations.
+//!
+//! 布局：单元素数组；每项 `u8 result`（SUCCESS=0、ERROR=1）、zigzag
+//! varint 请求 id、无条件 `bool(true)`，随后是容器存在性 bool，存在时
+//! 跟容器数组。该包始终只携带单元素（一次请求对应一个
+//! `CraftResponse`）：`slots` 按容器分组后成为 `containers`，
+//! `success=false` 编码 ERROR（无容器）。容器与槽位编码：
+//! `FullContainerName` 为 `u8 containerEnum + Optional(dynamicId)`
+//! （缺失 dynamic id 时为单个 `bool(false)` 字节）；槽位为
+//! `u8 requestedSlot + u8 slot + u8 count + varint netId + string
+//! customName + varint durabilityCorrection`。
 use sc_binary::interfaces::{Reader, Writer};
 use sc_binary::{ByteReader, ByteWriter};
 use sc_network_macros::MinecraftPacket;
 use std::io::{Error, ErrorKind};
 
+/// 服务端下发的一条 `ItemStackResponse` 记录。
+///
 /// One server-issued `ItemStackResponse` entry.
 ///
-/// `MinecraftPackets::ItemStackResponse` is always a single entry at the
-/// packet-array level, so the struct carries all slot updates for one
-/// request directly, with no extra entries layer.
+/// `MinecraftPackets::ItemStackResponse` 在包数组层面始终只有单元素，
+/// 因此该结构体直接承载一次请求的全部槽位更新，没有额外的条目层。
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct ItemStackResponse {
+    /// 本次请求涉及的槽位更新列表。
+    ///
+    /// Slot updates covered by this request.
     pub slots: Vec<sc_game::craft_inventory::CraftSlotUpdate>,
+    /// 对应请求 id（zigzag varint32）。
+    ///
+    /// Matching request id (zigzag varint32).
     pub request_id: i32,
+    /// 是否成功（false 编码为 ERROR）。
+    ///
+    /// Whether the request succeeded (false encodes ERROR).
     pub success: bool,
 }
 
 impl Writer for ItemStackResponse {
+    /// 写入 ItemStackResponse 包体（按容器分组槽位）。
+    ///
+    /// Writes the ItemStackResponse body (slots grouped by container).
+    ///
+    /// - `buf`: 输出字节写入器
+    ///
+    /// # Errors
+    /// 写入缓冲区失败时返回 IO 错误。
     fn write(&self, buf: &mut ByteWriter) -> Result<(), Error> {
         use sc_game::craft_inventory::CraftContainer;
 
@@ -59,6 +79,8 @@ impl Writer for ItemStackResponse {
                 // Furnace slots sync via SyncFurnaceWindow, never through
                 // ItemStackResponse updates (see `updates()`).
                 CraftContainer::Furnace => continue,
+                // Bedrock FullContainerName containerEnum for LEVEL_ENTITY (chests, barrels) is 7.
+                CraftContainer::Chest => slot.container_enum.unwrap_or(7),
             };
             containers.entry(kind).or_default().push(slot);
         }
@@ -76,8 +98,18 @@ impl Writer for ItemStackResponse {
     }
 }
 
-/// `helper::writeItemStackResponseContainer`:
-/// `FullContainerName` + slot array.
+/// `helper::writeItemStackResponseContainer`：写入一个容器组
+/// （`FullContainerName` + 槽位数组）。
+///
+/// `helper::writeItemStackResponseContainer`: writes one container group
+/// (`FullContainerName` + slot array).
+///
+/// - `buf`: 输出字节写入器
+/// - `kind`: 容器枚举值
+/// - `slots`: 该容器下的槽位更新
+///
+/// # Errors
+/// 写入缓冲区失败时返回 IO 错误。
 fn write_container(
     buf: &mut ByteWriter,
     kind: u8,
@@ -101,17 +133,21 @@ fn write_container(
     Ok(())
 }
 
-/// Slot entry layout: `u8 slot + u8 hotbarSlot + u8 count + bool + optional
-/// varint netId + string customName + optional filteredName + varint
-/// durabilityCorrection`.
+/// 槽位条目布局：`u8 slot + u8 hotbarSlot + u8 count + bool + 可选
+/// varint netId + string customName + 可选 filteredName + varint
+/// durabilityCorrection`。
 ///
-/// Notes:
-/// - `slot` and `hotbarSlot` carry the same network slot value twice;
-/// - `writeBoolean(true)` is unconditional; the netId varint follows only
-///   when the id is positive, otherwise a second `false`;
-/// - `customName` is always one (here empty) string; absent
-///   `filteredCustomName` writes only `false`; durabilityCorrection carries
-///   the item damage.
+/// Slot entry layout: `u8 slot + u8 hotbarSlot + u8 count + bool +
+/// optional varint netId + string customName + optional filteredName +
+/// varint durabilityCorrection`.
+///
+/// 注意：
+/// - `slot` 与 `hotbarSlot` 携带相同的网络槽位值，写两遍；
+/// - `writeBoolean(true)` 无条件写入；netId varint 仅在 id 为正时跟上，
+///   否则写第二个 `false`；
+/// - `customName` 始终是一个（此处为空）字符串；缺失
+///   `filteredCustomName` 时只写 `false`；durabilityCorrection 携带
+///   物品耐久。
 fn write_slot(
     buf: &mut ByteWriter,
     slot: &sc_game::craft_inventory::CraftSlotUpdate,
@@ -131,6 +167,12 @@ fn write_slot(
 }
 
 impl Reader<ItemStackResponse> for ItemStackResponse {
+    /// 不支持解码：该包仅由服务端下发。
+    ///
+    /// Decoding is unsupported: this packet is server-only.
+    ///
+    /// # Errors
+    /// 始终返回 [`std::io::ErrorKind::Unsupported`] 错误。
     fn read(_: &mut ByteReader) -> Result<Self, Error> {
         Err(Error::new(ErrorKind::Unsupported, "server-only response"))
     }
@@ -170,6 +212,7 @@ mod tests {
                     stack: sc_item::ItemStack::new(1, 1),
                     net_id: 7,
                     dynamic: None,
+                    container_enum: None,
                 },
                 CraftSlotUpdate {
                     container: C::Grid,
@@ -177,6 +220,7 @@ mod tests {
                     stack: sc_item::ItemStack::empty(),
                     net_id: 0,
                     dynamic: None,
+                    container_enum: None,
                 },
                 CraftSlotUpdate {
                     container: C::Cursor,
@@ -184,6 +228,7 @@ mod tests {
                     stack: sc_item::ItemStack::empty(),
                     net_id: 0,
                     dynamic: None,
+                    container_enum: None,
                 },
                 CraftSlotUpdate {
                     container: C::Output,
@@ -191,6 +236,7 @@ mod tests {
                     stack: sc_item::ItemStack::empty(),
                     net_id: 0,
                     dynamic: None,
+                    container_enum: None,
                 },
             ],
         }
@@ -219,6 +265,7 @@ mod tests {
                 stack: sc_item::ItemStack::new(1, 2),
                 net_id: 9,
                 dynamic: Some(1),
+                container_enum: None,
             }],
         }
         .write(&mut writer)
@@ -230,6 +277,34 @@ mod tests {
                 13, 1, 1, 0, 0, 0, 1, // Grid + dynamic(1) + 1 slot
                 32, 32, 2, 1, 1, 18, 0, 0,
                 0, // slot,hotbar,count,bools,net 9,custom,durability
+            ]
+        );
+    }
+
+    #[test]
+    fn chest_container_encodes_level_entity() {
+        use sc_game::craft_inventory::{CraftContainer as C, CraftSlotUpdate};
+        let mut writer = ByteWriter::new();
+        ItemStackResponse {
+            request_id: 42,
+            success: true,
+            slots: vec![CraftSlotUpdate {
+                container: C::Chest,
+                slot: 5,
+                stack: sc_item::ItemStack::new(10, 3),
+                net_id: 15,
+                dynamic: None,
+                container_enum: Some(7),
+            }],
+        }
+        .write(&mut writer)
+        .unwrap();
+        assert_eq!(
+            writer.as_slice(),
+            &[
+                1, 0, 84, 1, 1, 1, // 1 entry, ok, zigzag 42 (= 84), true, true, 1 container
+                7, 0, 1, // container 7 (LEVEL_ENTITY) + dynamic(false) + 1 slot
+                5, 5, 3, 1, 1, 30, 0, 0, 0, // slot 5, hotbar 5, count 3, bools, net_id 15 (zigzag 30), custom, durability
             ]
         );
     }

@@ -66,7 +66,9 @@ pub fn nether<R: RandomSourceProvider>(random: &mut R) -> Arc<dyn DensityFunctio
     old_blended_noise(random, 0.25, 0.375, 80.0, 60.0, 8.0)
 }
 
-/// Java: `private record OldBlendedNoise(...) implements DensityFunction`(L63-156).
+/// 旧版混合噪声密度函数。
+///
+/// Legacy blended-noise density function.
 pub struct OldBlendedNoise {
     pub min_limit_noise: OctavePerlinNoiseSampler,
     pub max_limit_noise: OctavePerlinNoiseSampler,

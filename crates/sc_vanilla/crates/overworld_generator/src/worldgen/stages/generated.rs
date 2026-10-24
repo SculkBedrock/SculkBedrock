@@ -1,10 +1,6 @@
-//! Post-terrain marker stage: flags the chunk as terrain-generated.
+//! 地形完成标记阶段：将区块状态置为已生成。
 //!
-//! Notes:
-//! - Sets the chunk state to `Generated`.
-//! - Dirty/save flags live in the runtime storage layer, so this stage sets no dirty marker.
-//! - Pending sub-chunk updates belong to the runtime networking layer and are skipped here.
-//! - Stages run synchronously in order, so this stage exposes no executor.
+//! Post-terrain marker stage: sets the chunk state to generated.
 
 use crate::worldgen::chunk::ChunkState;
 use crate::worldgen::context::ChunkGenerateContext;
@@ -14,6 +10,10 @@ use crate::worldgen::stages::GenerateStage;
 // GeneratedStage: marks the chunk as terrain-generated
 // ---------------------------------------------------------------------------
 
+/// 地形生成完成标记阶段。
+///
+/// 将区块标记为地形已生成（状态变为 `Generated`），后续 populate/feature 阶段依赖该状态。
+///
 /// Marker stage for completed terrain generation.
 ///
 /// Marks the chunk as terrain-generated (state becomes `Generated`).

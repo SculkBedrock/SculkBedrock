@@ -35,7 +35,9 @@ pub const MIN_VEIN_Y: i32 = -60;
 /// Java: `public static final int MAX_VEIN_Y = VeinType.COPPER.maxY`(L27).
 pub const MAX_VEIN_Y: i32 = 50;
 
-/// Java: `private enum VeinType`(L112-141).
+/// 矿脉类型：铜或铁。
+///
+/// Vein type: copper or iron.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum VeinType {
     Copper,
@@ -82,7 +84,9 @@ impl VeinType {
     }
 }
 
-/// Java: `final class OreVeinifier`(L16-141).
+/// 矿脉化器：按密度函数与种子在深部区域生成铜矿脉和铁矿脉。
+///
+/// Ore veinifier placing copper and iron veins in deep regions from density functions and a seed.
 pub struct OreVeinifier {
     vein_toggle: Arc<dyn DensityFunction>,
     vein_ridged: Arc<dyn DensityFunction>,

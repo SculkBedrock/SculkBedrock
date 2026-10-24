@@ -1,3 +1,15 @@
+//! 控制台配置：模式选择以及全部有界预算。
+//!
+//! 环境变量（由 `ConsoleConfig::from_env` 读取；显式构造优先）：
+//!
+//! - `SC_CONSOLE` / `SC_CONSOLE_MODE`：`auto | gui | plain | off`
+//!   （默认 `auto`；两者同时设置时以 `SC_CONSOLE` 为准）。
+//! - `SC_CONSOLE_BOOT_ANIM`：开场动画开关，`1/true/on/yes` 开启，
+//!   `0/false/off/no/none/disabled` 关闭（默认开启；未知值告警并保留默认）。
+//! - `SC_CONSOLE_WELCOME`：欢迎页开关（同样的布尔值，默认开启；关闭则直接进入控制台）。
+//! - `SC_CONSOLE_LANG`：控制台界面语言（`en-US` / `zh-CN`，默认 `en-US`；
+//!   跳过欢迎页语言选择器；首次运行提示仍然拦截服务加载）。
+//!
 //! Console configuration: mode selection plus all bounded budgets.
 //!
 //! Environment variables (read by `ConsoleConfig::from_env`; explicit construction wins):
@@ -17,7 +29,7 @@ pub const LANG_ZH_CN: &str = "zh-CN";
 pub const DEFAULT_LANG: &str = LANG_EN_US;
 /// Supported console locales, in selector order (adding a language: append the
 /// code here plus a whole `locales/{code}.yml` with the full `tui.*` key set;
-/// missing keys fall back to en-US, and the completeness test fails until whole).
+/// missing keys fall back to en-US).
 pub const SUPPORTED_LANGS: &[&str] = &[LANG_EN_US, LANG_ZH_CN];
 /// Env override for the console language (never persisted).
 pub(crate) const LANG_ENV: &str = "SC_CONSOLE_LANG";
@@ -26,10 +38,9 @@ pub(crate) const LANG_ENV: &str = "SC_CONSOLE_LANG";
 /// press-any-key and the selector and auto-enter after the animation).
 /// Delete it to choose again.
 ///
-/// This marker carries NO language id (empty file): the id lives only in
-/// `server_properties.toml` (`[server] language`), which the TUI reads via
-/// the host (`ConsoleConfig::initial_lang`) and updates through the host on
-/// confirm. The console thread never parses or rewrites host-owned config.
+/// The marker is an empty file with no language id: the id lives only in
+/// `server_properties.toml` (`[server] language`), read/written through the
+/// host. The console thread never parses or rewrites host-owned config.
 pub(crate) const MARKER_FILE_NAME: &str = ".sc_initialled";
 
 /// Normalize user input to a supported canonical code (`None` = unsupported).
@@ -56,7 +67,7 @@ pub(crate) fn marker_file_path() -> Option<std::path::PathBuf> {
     std::env::current_dir().ok().map(|d| d.join(MARKER_FILE_NAME))
 }
 
-/// Marker check at an explicit path (unit-testable; production uses [`has_chosen_marker`]).
+/// Marker check at an explicit path (production uses [`has_chosen_marker`]).
 pub(crate) fn marker_exists_at(path: &std::path::Path) -> bool {
     std::fs::metadata(path).is_ok()
 }
@@ -92,9 +103,7 @@ pub(crate) fn resolve_lang(forced: Option<String>, initial: Option<String>) -> S
 }
 
 /// Selector order: supported codes that actually loaded, mains first.
-///
-/// `available_locales!` resolves against this crate's `i18n!` table, so a code
-/// listed without its yml never appears (honest by construction).
+/// A code listed in `SUPPORTED_LANGS` without its locale yml never appears.
 pub(crate) fn selector_order() -> Vec<String> {
     let loaded: Vec<String> = rust_i18n::available_locales!()
         .into_iter()
@@ -107,6 +116,8 @@ pub(crate) fn selector_order() -> Vec<String> {
         .collect()
 }
 
+/// 控制台运行模式（显式选择）。
+///
 /// Console run mode (explicitly selected).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ConsoleMode {
@@ -133,6 +144,8 @@ impl ConsoleMode {
     }
 }
 
+/// 解析后的实际运行模式。
+///
 /// Resolved effective run mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResolvedMode {
@@ -141,7 +154,9 @@ pub enum ResolvedMode {
     Off,
 }
 
-/// All queue/cache caps (architecture rule: every queue/cache needs limits).
+/// 全部队列/缓存的容量上限。
+///
+/// All queue and cache caps.
 #[derive(Clone, Debug)]
 pub struct ConsoleConfig {
     pub mode: ConsoleMode,
@@ -159,7 +174,7 @@ pub struct ConsoleConfig {
     pub max_completions: usize,
     /// UI frame interval (event poll timeout).
     pub frame_ms: u64,
-    /// Per-tick/per-frame drain cap (shared by log rendering and input send; avoids long stalls).
+    /// Per-tick/per-frame drain cap (shared by log rendering and input send).
     pub drain_per_frame: usize,
     /// TUI boot animation switch (default on): clears the screen first, then the title/input bars
     /// ease out from left to edge, followed by the title typewriter plus CPU/MEM fade-in
@@ -202,7 +217,7 @@ impl Default for ConsoleConfig {
 
 /// Parse a boolean switch (for `SC_CONSOLE_BOOT_ANIM`; case-insensitive).
 ///
-/// Pure function for easy unit tests: true values are `1/true/yes/on`, false values
+/// True values are `1/true/yes/on`, false values
 /// are `0/false/no/off/none/disabled`; anything else returns `None` (caller warns and keeps the default).
 pub fn parse_bool_switch(s: &str) -> Option<bool> {
     match s.trim().to_ascii_lowercase().as_str() {
@@ -312,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn mode_parsing() {
+    fn console_mode_parses_known_labels_and_rejects_unknown() {
         assert_eq!(ConsoleMode::parse("GUI"), Some(ConsoleMode::Gui));
         assert_eq!(ConsoleMode::parse("off"), Some(ConsoleMode::Off));
         assert_eq!(ConsoleMode::parse("bogus"), None);

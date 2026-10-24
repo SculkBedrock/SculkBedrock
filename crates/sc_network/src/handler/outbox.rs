@@ -27,14 +27,15 @@ use std::sync::{Arc, OnceLock};
 use crate::player_connection::{PacketSendOutcome, PlayerConnection, PlayerConnectionStatus};
 use crate::protocol::client::container::ContainerClose;
 use crate::protocol::client::transaction::ItemData;
-use crate::protocol::server::block::UpdateBlock;
+use crate::protocol::server::block::{BlockEvent, UpdateBlock};
 use crate::protocol::server::effects::{LevelEvent, LevelSoundEvent};
 use crate::protocol::server::entity::{actor_event, EntityEvent};
 use crate::protocol::server::inventory::{
-    ContainerOpen, ContainerSetData, InventoryContent, InventorySlot,
+    ContainerOpen, ContainerSetData, InventoryContent, InventorySlot, MobEquipment,
 };
 use crate::protocol::server::item_entity::{AddItemEntity, TakeItemEntity};
-use crate::protocol::server::misc::{EntityMetadataEntry, Respawn};
+use crate::protocol::server::entity_metadata::{EntityFlags, EntityKeys, EntityMetadataExt};
+use crate::protocol::server::misc::{EntityMetadataEntry, Respawn, SetEntityData};
 use crate::protocol::server::movement::{
     MoveEntityAbsolute, MovePlayer, MovePlayerMode, RemoveEntity, SetEntityMotion,
 };
@@ -42,7 +43,9 @@ use sc_world::chunk::ChunkPosition;
 use sc_world::chunk_view::ChunkView;
 use sc_world::storage::ChunkKey;
 
-/// A packet waiting to be sent (local enum, avoids Box<dyn>).
+/// 等待发送的数据包。
+///
+/// A packet waiting to be sent.
 #[derive(Clone)]
 enum OutPacket {
     ItemStackResponse(crate::protocol::server::crafting_response::ItemStackResponse),
@@ -58,11 +61,14 @@ enum OutPacket {
     LevelEvent(LevelEvent),
     LevelSoundEvent(LevelSoundEvent),
     UpdateBlock(UpdateBlock, Option<BlockDeliveryTicket>),
+    BlockEvent(BlockEvent),
     ContainerOpen(ContainerOpen),
     ContainerClose(ContainerClose),
     InventoryContent(InventoryContent),
     InventorySlot(InventorySlot),
+    MobEquipment(MobEquipment),
     ContainerSetData(ContainerSetData),
+    SetEntityData(SetEntityData),
 }
 
 #[derive(Clone)]
@@ -75,6 +81,8 @@ struct BlockDeliveryTicket {
     generation: u64,
 }
 
+/// 一个有序出站批次：一次意图排空、钩子快照与 World 句柄。
+///
 /// One ordered outbound batch: a single drain of intents + hook snapshot + World handle.
 struct OrderedOutboxBatch {
     intents: Vec<NetworkIntent>,
@@ -567,6 +575,29 @@ async fn process_outbox_batch(batch: OrderedOutboxBatch) {
                     sends.push((*player, OutPacket::LevelEvent(packet.clone())));
                 }
             }
+            NetworkIntent::PlayBlockAnimation(sc_game::net::PlayBlockAnimation {
+                world_id,
+                cue,
+                data,
+                x,
+                y,
+                z,
+            }) => {
+                let packet = BlockEvent {
+                    x,
+                    y,
+                    z,
+                    event_type: match cue {
+                        sc_game::net::BlockAnimationCue::ChestLid => {
+                            BlockEvent::TYPE_CHANGE_CHEST_STATE
+                        }
+                    },
+                    event_data: data,
+                };
+                for player in players.iter().filter(|p| same_world(&world, p, &world_id)) {
+                    sends.push((*player, OutPacket::BlockEvent(packet.clone())));
+                }
+            }
             NetworkIntent::SpawnItemEntity(sc_game::net::SpawnItemEntity {
                 world_id,
                 runtime_id,
@@ -693,6 +724,27 @@ async fn process_outbox_batch(batch: OrderedOutboxBatch) {
                     }),
                 ));
             }
+            NetworkIntent::SyncHeldItem(sc_game::net::SyncHeldItem {
+                entity_id,
+                slot,
+                stack,
+            }) => {
+                // Authoritative held-item copy: refreshes the in-hand/hotbar item so
+                // in-place state changes (durability) become visible.
+                let Some(player) = runtime_entity(&runtime_routes, entity_id) else {
+                    continue;
+                };
+                sends.push((
+                    player,
+                    OutPacket::MobEquipment(MobEquipment {
+                        runtime_entity_id: entity_id,
+                        item: stack_to_item_data(stack),
+                        hotbar_slot: slot,
+                        inventory_slot: slot,
+                        window_id: 0,
+                    }),
+                ));
+            }
             NetworkIntent::ResyncInventory(sc_game::net::ResyncInventory { entity_id }) => {
                 // Authoritative resync: resolve the player entity from the runtime id, read its
                 // PlayerInventory -> encode a 36-slot InventoryContent back to itself (rolls back client prediction).
@@ -737,6 +789,9 @@ async fn process_outbox_batch(batch: OrderedOutboxBatch) {
                 let Some(player) = runtime_entity(&runtime_routes, entity_id) else {
                     continue;
                 };
+                if let Some(conn) = world.get_component::<PlayerConnection>(&player) {
+                    conn.clear_container_window(window_id);
+                }
                 sends.push((
                     player,
                     OutPacket::ContainerClose(ContainerClose {
@@ -760,6 +815,9 @@ async fn process_outbox_batch(batch: OrderedOutboxBatch) {
                 // Window type resolved from the workstation decl by game at
                 // open time; the network layer only encodes it.
                 if let Some(player) = runtime_entity(&runtime_routes, entity_id) {
+                    if let Some(conn) = world.get_component::<PlayerConnection>(&player) {
+                        conn.clear_container_window(window_id);
+                    }
                     sends.push((
                         player,
                         OutPacket::ContainerOpen(ContainerOpen {
@@ -787,6 +845,31 @@ async fn process_outbox_batch(batch: OrderedOutboxBatch) {
                     }
                 }
             }
+            NetworkIntent::OpenContainerWindow(sc_game::net::OpenContainerWindow {
+                entity_id,
+                window_id,
+                container_type,
+                x,
+                y,
+                z,
+            }) => {
+                if let Some(player) = runtime_entity(&runtime_routes, entity_id) {
+                    if let Some(conn) = world.get_component::<PlayerConnection>(&player) {
+                        conn.clear_container_window(window_id);
+                    }
+                    sends.push((
+                        player,
+                        OutPacket::ContainerOpen(ContainerOpen {
+                            window_id,
+                            container_type,
+                            x,
+                            y,
+                            z,
+                            entity_id: -1,
+                        }),
+                    ));
+                }
+            }
             NetworkIntent::SyncFurnaceProgress(sc_game::net::SyncFurnaceProgress {
                 entity_id,
                 window_id,
@@ -797,9 +880,11 @@ async fn process_outbox_batch(batch: OrderedOutboxBatch) {
                 // One progress value per furnace property (0 = cook count,
                 // 1 = lit time, 2 = lit duration); the client drives the
                 // arrow and flame icons from them.
+                // Diff-based delivery: only send properties whose value actually changed.
                 let Some(player) = runtime_entity(&runtime_routes, entity_id) else {
                     continue;
                 };
+                let conn = world.get_component::<PlayerConnection>(&player);
                 for (property, value) in [
                     (
                         ContainerSetData::FURNACE_TICK_COUNT,
@@ -811,14 +896,20 @@ async fn process_outbox_batch(batch: OrderedOutboxBatch) {
                         lit_duration as i32,
                     ),
                 ] {
-                    sends.push((
-                        player,
-                        OutPacket::ContainerSetData(ContainerSetData {
-                            window_id,
-                            property,
-                            value,
-                        }),
-                    ));
+                    let should_send = conn
+                        .as_ref()
+                        .map(|c| c.track_container_property(window_id, property, value))
+                        .unwrap_or(true);
+                    if should_send {
+                        sends.push((
+                            player,
+                            OutPacket::ContainerSetData(ContainerSetData {
+                                window_id,
+                                property,
+                                value,
+                            }),
+                        ));
+                    }
                 }
             }
             NetworkIntent::SyncFurnaceWindow(sc_game::net::SyncFurnaceWindow {
@@ -829,23 +920,22 @@ async fn process_outbox_batch(batch: OrderedOutboxBatch) {
                 fuel,
                 result,
             }) => {
-                // Slot containers resolve from the workstation decl at the
-                // viewer's bound block; unresolvable windows skip sync.
                 let Some(player) = runtime_entity(&runtime_routes, entity_id) else {
                     continue;
                 };
-                let Some(containers) =
-                    sc_game::furnace::window_slot_containers(&world, &player)
-                else {
+                let slots = [input, fuel, result].map(stack_to_item_data);
+                sends.push((player, furnace_window_content(window_id, slots)));
+            }
+            NetworkIntent::SyncChestWindow(sc_game::net::SyncChestWindow {
+                entity_id,
+                window_id,
+                slots,
+            }) => {
+                let Some(player) = runtime_entity(&runtime_routes, entity_id) else {
                     continue;
                 };
-                for packet in furnace_window_slots(
-                    window_id,
-                    containers,
-                    [input, fuel, result].map(stack_to_item_data),
-                ) {
-                    sends.push((player, packet));
-                }
+                let item_data_slots = slots.into_iter().map(stack_to_item_data).collect();
+                sends.push((player, chest_window_content(window_id, item_data_slots)));
             }
             NetworkIntent::CraftResponse(sc_game::net::CraftResponse {
                 slots,
@@ -874,9 +964,9 @@ async fn process_outbox_batch(batch: OrderedOutboxBatch) {
                             C::Grid => (0x7c, 13),
                             C::Cursor => (0x7c, 59),
                             C::Output => (0x7c, 60),
-                            // Furnace slots sync via SyncFurnaceWindow, never through
+                            // Furnace/Chest slots sync via SyncFurnaceWindow/SyncChestWindow, never through
                             // ItemStackResponse updates (see `updates()`).
-                            C::Furnace => continue,
+                            C::Furnace | C::Chest => continue,
                         };
                         let mut item = stack_to_item_data(slot.stack);
                         item.has_net_id = slot.net_id != 0;
@@ -1030,6 +1120,104 @@ async fn process_outbox_batch(batch: OrderedOutboxBatch) {
                     ));
                 }
             }
+            NetworkIntent::SyncPlayerSwimming(sc_game::net::SyncPlayerSwimming {
+                entity_id,
+                is_swimming,
+            }) => {
+                let Some(world_id) = runtime_world(&runtime_routes, entity_id) else {
+                    continue;
+                };
+                let mut metadata: Vec<EntityMetadataEntry> = Vec::new();
+                // Preserve default player actor flags on SetEntityData.
+                // Key 0 (FLAGS) replaces the entire 64-bit mask on the client:
+                // zeroing flags clears GRAVITY (causing continuous upward flight/floating)
+                // and clears BREATHING (causing false underwater bubble HUD).
+                metadata.set_flag(EntityFlags::CAN_SHOW_NAMETAG, true);
+                metadata.set_flag(EntityFlags::CAN_CLIMB, true);
+                metadata.set_flag(EntityFlags::HAS_COLLISION, true);
+                metadata.set_flag(EntityFlags::GRAVITY, true);
+                let is_breathing = runtime_entity(&runtime_routes, entity_id)
+                    .and_then(|player| world.get_component::<sc_game::oxygen::OxygenClock>(&player))
+                    .map(|clock| clock.inner.read().is_breathing)
+                    .unwrap_or(!is_swimming);
+                metadata.set_flag(EntityFlags::BREATHING, is_breathing);
+                metadata.set_flag(EntityFlags::SWIMMING, is_swimming);
+                metadata.set_float(
+                    EntityKeys::BOUNDING_BOX_HEIGHT,
+                    if is_swimming { 0.6 } else { 1.8 },
+                );
+                if let Some(player) = runtime_entity(&runtime_routes, entity_id) {
+                    if let Some(attrs) = world.get_component::<sc_packloader::definitions::attribute::EntityAttributes>(&player) {
+                        if let Some(air) = attrs.get(sc_packloader::definitions::attribute::EntityAttributes::AIR) {
+                            metadata.set_short(EntityKeys::AIR, air.current_value as i16);
+                            metadata.set_short(EntityKeys::MAX_AIR, air.max_value as i16);
+                        }
+                    }
+                }
+                let packet = SetEntityData {
+                    entity_runtime_id: entity_id,
+                    metadata,
+                    frame: 0,
+                };
+                if let Some(player) = runtime_entity(&runtime_routes, entity_id) {
+                    sends.push((player, OutPacket::SetEntityData(packet.clone())));
+                }
+                for player in players.iter().filter(|p| same_world(&world, p, &world_id)) {
+                    let is_self = world
+                        .get_component::<MinecraftEntityId>(player)
+                        .map(|id| id.0 == entity_id)
+                        .unwrap_or(false);
+                    if !is_self {
+                        sends.push((*player, OutPacket::SetEntityData(packet.clone())));
+                    }
+                }
+            }
+            NetworkIntent::SyncAirSupply(sc_game::net::SyncAirSupply {
+                entity_id,
+                air_supply,
+                max_air,
+                is_breathing,
+            }) => {
+                let Some(world_id) = runtime_world(&runtime_routes, entity_id) else {
+                    continue;
+                };
+                let is_swimming = runtime_entity(&runtime_routes, entity_id)
+                    .and_then(|player| world.get_component::<sc_game::movement::Swimming>(&player))
+                    .map(|s| s.is_swimming())
+                    .unwrap_or(false);
+
+                let mut metadata: Vec<EntityMetadataEntry> = Vec::new();
+                metadata.set_flag(EntityFlags::CAN_SHOW_NAMETAG, true);
+                metadata.set_flag(EntityFlags::CAN_CLIMB, true);
+                metadata.set_flag(EntityFlags::HAS_COLLISION, true);
+                metadata.set_flag(EntityFlags::GRAVITY, true);
+                metadata.set_flag(EntityFlags::BREATHING, is_breathing);
+                metadata.set_flag(EntityFlags::SWIMMING, is_swimming);
+                metadata.set_float(
+                    EntityKeys::BOUNDING_BOX_HEIGHT,
+                    if is_swimming { 0.6 } else { 1.8 },
+                );
+                metadata.set_short(EntityKeys::AIR, air_supply);
+                metadata.set_short(EntityKeys::MAX_AIR, max_air);
+
+                let packet = SetEntityData {
+                    entity_runtime_id: entity_id,
+                    metadata,
+                    frame: 0,
+                };
+                if let Some(player) = runtime_entity(&runtime_routes, entity_id) {
+                    sends.push((player, OutPacket::SetEntityData(packet.clone())));
+                }
+                for player in players.iter().filter(|p| same_world(&world, p, &world_id)) {
+                    let is_self = world
+                        .get_component::<MinecraftEntityId>(player)
+                        .map(|id| id.0 == entity_id)
+                        .unwrap_or(false);
+                    if !is_self {
+                        sends.push((*player, OutPacket::SetEntityData(packet.clone())));
+                    }
+                }
+            }
         }
     }
 
@@ -1083,11 +1271,14 @@ async fn process_outbox_batch(batch: OrderedOutboxBatch) {
                 .await
                 .map(|_| ()),
             OutPacket::UpdateBlock(p, None) => connection.send_packet(p, true).await,
+            OutPacket::BlockEvent(p) => connection.send_packet(p, true).await,
             OutPacket::ContainerOpen(p) => connection.send_packet(p, true).await,
             OutPacket::ContainerClose(p) => connection.send_packet(p, true).await,
             OutPacket::InventoryContent(p) => connection.send_packet(p, true).await,
             OutPacket::InventorySlot(p) => connection.send_packet(p, true).await,
+            OutPacket::MobEquipment(p) => connection.send_packet(p, true).await,
             OutPacket::ContainerSetData(p) => connection.send_packet(p, true).await,
+            OutPacket::SetEntityData(p) => connection.send_packet(p, true).await,
         };
         if let Err(error) = result {
             failed_targets += 1;
@@ -1171,6 +1362,12 @@ fn runtime_route_id(intent: &NetworkIntent) -> Option<u64> {
         | NetworkIntent::SyncHunger(sc_game::net::SyncHunger { entity_id })
         | NetworkIntent::RespawnPlayer(sc_game::net::RespawnPlayer { entity_id, .. })
         | NetworkIntent::HurtEntity(sc_game::net::HurtEntity { entity_id, .. })
+        | NetworkIntent::OpenContainerWindow(sc_game::net::OpenContainerWindow { entity_id, .. })
+        | NetworkIntent::SyncChestWindow(sc_game::net::SyncChestWindow { entity_id, .. })
+        | NetworkIntent::SyncFurnaceWindow(sc_game::net::SyncFurnaceWindow { entity_id, .. })
+        | NetworkIntent::SyncFurnaceProgress(sc_game::net::SyncFurnaceProgress { entity_id, .. })
+        | NetworkIntent::SyncPlayerSwimming(sc_game::net::SyncPlayerSwimming { entity_id, .. })
+        | NetworkIntent::SyncAirSupply(sc_game::net::SyncAirSupply { entity_id, .. })
         | NetworkIntent::ClosePlayerInventory(sc_game::net::ClosePlayerInventory { entity_id, .. }) => Some(*entity_id),
         _ => None,
     }
@@ -1189,6 +1386,13 @@ fn runtime_world(
 
 /// Server-side item stack -> network item descriptor.
 fn stack_to_item_data(stack: sc_item::ItemStack) -> ItemData {
+    let user_data = if let Some(tag) = stack.tag.as_ref() {
+        Some(crate::protocol::client::transaction::build_compound_user_data(tag, stack.damage))
+    } else if stack.damage > 0 {
+        Some(crate::protocol::client::transaction::build_damage_user_data(stack.damage))
+    } else {
+        None
+    };
     ItemData {
         runtime_id: stack.runtime_id,
         count: stack.count,
@@ -1199,7 +1403,7 @@ fn stack_to_item_data(stack: sc_item::ItemStack) -> ItemData {
         has_net_id: false,
         net_id: 0,
         block_runtime_id: stack.block_runtime_id,
-        user_data: None,
+        user_data,
     }
 }
 
@@ -1233,12 +1437,41 @@ fn workbench_grid_content(window_id: u8, slots: Vec<ItemData>) -> OutPacket {
     )
 }
 
+/// The 3 slots of an open furnace window: sent as a single `InventoryContent` packet.
+/// Bedrock client expects `containerId = window_id`, with the 3 furnace slots
+/// `[0 = input, 1 = fuel, 2 = result]`, and `full_container_name_id = 0`.
+fn furnace_window_content(
+    window_id: u8,
+    slots: [crate::protocol::client::transaction::ItemData; 3],
+) -> OutPacket {
+    OutPacket::InventoryContent(
+        InventoryContent::new(window_id, slots.to_vec())
+            .with_full_container_name(0)
+            .with_full_container_dynamic_id(None),
+    )
+}
+
+/// The slots of an open chest window: sent as a single `InventoryContent` packet.
+/// Bedrock client expects `containerId = window_id`, with the 27 or 54 chest slots,
+/// and `full_container_name_id = 0`.
+fn chest_window_content(
+    window_id: u8,
+    slots: Vec<crate::protocol::client::transaction::ItemData>,
+) -> OutPacket {
+    OutPacket::InventoryContent(
+        InventoryContent::new(window_id, slots)
+            .with_full_container_name(0)
+            .with_full_container_dynamic_id(None),
+    )
+}
+
 /// The 3 slots of an open furnace window: one slot packet per furnace
 /// slot, addressed exactly as the client addresses them in Take/Place
 /// (ingredient container varies by station, fuel=24, result=26; slot is the
 /// window-local furnace slot 0=input / 1=fuel / 2=result, matching the
 /// client's own request refs).
 /// Mirrors `workbench_grid_content` (window id as container id).
+#[cfg(test)]
 fn furnace_window_slots(
     window_id: u8,
     containers: [u8; 3],
@@ -1297,6 +1530,9 @@ fn sound_name(cue: SoundCue) -> &'static str {
         SoundCue::BlockBreak => "break",
         SoundCue::BlockPlace => "place",
         SoundCue::ItemPickup => "pickup",
+        SoundCue::ChestOpen => "random.chestopen",
+        SoundCue::ChestClose => "random.chestclosed",
+        SoundCue::ItemBreak => "random.break",
     }
 }
 
@@ -1477,9 +1713,45 @@ mod tests {
     }
 
     #[test]
+    fn furnace_window_content_uses_window_id_and_three_slots() {
+        let slots = [
+            ItemData::default(),
+            ItemData::default(),
+            ItemData::default(),
+        ];
+        let packet = furnace_window_content(5, slots);
+        let OutPacket::InventoryContent(content) = packet else {
+            panic!("furnace window content must be InventoryContent");
+        };
+        assert_eq!(content.container_id, 5);
+        assert_eq!(content.items.len(), 3);
+        assert_eq!(content.full_container_name_id, 0);
+        assert_eq!(content.full_container_dynamic_id, None);
+    }
+
+    #[test]
     fn block_break_progress_uses_level_event_ids() {
         assert_eq!(block_break_event_id(BlockBreakProgressCue::Start), 3_600);
         assert_eq!(block_break_event_id(BlockBreakProgressCue::Stop), 3_601);
         assert_eq!(block_break_event_id(BlockBreakProgressCue::Update), 3_602);
+    }
+
+    #[test]
+    fn container_set_data_diff_filtering_skips_unchanged_properties() {
+        let tracker = crate::player_connection::ContainerPropertyTracker::new();
+
+        // Initial send: all 3 furnace properties are new, all return true
+        assert!(tracker.track(3, ContainerSetData::FURNACE_TICK_COUNT, 0));
+        assert!(tracker.track(3, ContainerSetData::FURNACE_LIT_TIME, 1600));
+        assert!(tracker.track(3, ContainerSetData::FURNACE_LIT_DURATION, 1600));
+
+        // Next tick: only lit_time decrements from 1600 to 1599; cook (0) and duration (1600) do not change
+        assert!(!tracker.track(3, ContainerSetData::FURNACE_TICK_COUNT, 0), "cook 0 unchanged");
+        assert!(tracker.track(3, ContainerSetData::FURNACE_LIT_TIME, 1599), "lit 1599 changed");
+        assert!(!tracker.track(3, ContainerSetData::FURNACE_LIT_DURATION, 1600), "duration 1600 unchanged");
+
+        // Window close / reopen resets tracking for window 3
+        tracker.clear_window(3);
+        assert!(tracker.track(3, ContainerSetData::FURNACE_LIT_DURATION, 1600), "after clear, duration sends again");
     }
 }

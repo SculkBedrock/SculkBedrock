@@ -1,3 +1,9 @@
+//! 统一的配料 / 产物模型。
+//!
+//! Stage-1 支持的字段：物品标识符、`data`/损伤值、数量与物品标签。需要完整
+//! 物品组件或 NBT 的字段（user-data blob、`components` 条件、药水 userdata
+//! 等）不会被静默忽略：编译器会把该配方标记为 `unsupported` 并给出明确原因。
+//!
 //! Unified ingredient / output model.
 //!
 //! Stage-1 field support: item identifier, `data`/damage, count and item
@@ -11,6 +17,8 @@ use serde::{Deserialize, Serialize};
 /// Sentinel for "any data value" (`data` absent or 32767 on the wire).
 pub const DATA_WILDCARD: i32 = 32767;
 
+/// 单个配料候选项。
+///
 /// A single ingredient alternative.
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
 pub enum IngredientChoice {
@@ -25,6 +33,8 @@ pub enum IngredientChoice {
     Tag { tag: String },
 }
 
+/// 拆分 BedrockBeta 的 `"<namespace>:<name>:<data>"` 语法糖
+///
 /// Split BedrockBeta `"<namespace>:<name>:<data>"` sugar
 /// (e.g. furnace `"input": "minecraft:log:0"`, `"output": "minecraft:coal:1"`).
 ///
@@ -56,6 +66,8 @@ impl IngredientChoice {
     }
 }
 
+/// 一个配料槽：候选项中有且仅有一个匹配即成立，消耗 `count` 个物品。
+///
 /// One ingredient slot: exactly one of the choices must match, consuming
 /// `count` items.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -87,6 +99,8 @@ impl IngredientSpec {
     }
 }
 
+/// 一个产物物品堆。
+///
 /// One output stack.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct OutputSpec {
@@ -117,6 +131,8 @@ impl OutputSpec {
     }
 }
 
+/// 解析单个配料取值，其形式可能是：
+///
 /// Parse one ingredient value which may be:
 /// - `"minecraft:stone"` (string shorthand)
 /// - `{"item": "...", "data"?, "count"?}`
@@ -172,6 +188,8 @@ pub fn parse_ingredient(
     }
 }
 
+/// 解析单个产物取值，可能是字符串或对象。
+///
 /// Parse one output value which may be a string or an object.
 /// Arrays are handled by the caller (multi-output).
 pub fn parse_output(
@@ -213,6 +231,8 @@ pub fn parse_output(
     }
 }
 
+/// 当原始 JSON 对象携带需要完整物品组件/NBT 的字段时返回 true
+///
 /// Returns true when the raw JSON object carries fields that require full
 /// item components / NBT to evaluate (`components`, `nbt`, `user_data`,
 /// `can_place_on`, ...). Such recipes must be quarantined, never matched

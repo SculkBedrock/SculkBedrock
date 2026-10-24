@@ -25,6 +25,7 @@ use log::warn;
 use rusty_leveldb::{Compressor, CompressorList, Options, Status, WriteBatch, DB};
 
 use crate::chunk::{dimension_bounds, Chunk, SubChunk, SubChunkIndex, SUBCHUNK_SIZE};
+use crate::generation::{GeneratorDescriptor, PersistedGenerationRecord};
 use crate::storage::{
     ChunkKey, GeneratedChunkCommit, SpilloverJournalEntry, SpilloverOperationId, WorldStorage,
     WorldStorageError,
@@ -160,6 +161,25 @@ enum Request {
         spillover_acks: Vec<SpilloverOperationId>,
         reply: mpsc::SyncSender<Result<(), WorldStorageError>>,
     },
+    LoadGeneratorDescriptor {
+        dimension: i32,
+        reply: mpsc::SyncSender<Result<Option<GeneratorDescriptor>, WorldStorageError>>,
+    },
+    SaveGeneratorDescriptor {
+        dimension: i32,
+        descriptor: GeneratorDescriptor,
+        reply: mpsc::SyncSender<Result<(), WorldStorageError>>,
+    },
+    LoadGenerationRecord {
+        key: ChunkKey,
+        reply: mpsc::SyncSender<Result<Option<PersistedGenerationRecord>, WorldStorageError>>,
+    },
+    CommitFinalChunk {
+        key: ChunkKey,
+        chunk: Chunk,
+        record: PersistedGenerationRecord,
+        reply: mpsc::SyncSender<Result<(), WorldStorageError>>,
+    },
     Shutdown,
 }
 
@@ -271,6 +291,18 @@ impl LevelDbWorldStorage {
                                 &[],
                                 false,
                             ));
+                        }
+                        Request::LoadGeneratorDescriptor { dimension, reply } => {
+                            let _ = reply.send(load_generator_descriptor_blocking(&mut db, dimension));
+                        }
+                        Request::SaveGeneratorDescriptor { dimension, descriptor, reply } => {
+                            let _ = reply.send(save_generator_descriptor_blocking(&mut db, dimension, &descriptor));
+                        }
+                        Request::LoadGenerationRecord { key, reply } => {
+                            let _ = reply.send(load_generation_record_blocking(&mut db, key));
+                        }
+                        Request::CommitFinalChunk { key, chunk, record, reply } => {
+                            let _ = reply.send(commit_final_chunk_blocking(&mut db, key, chunk, record));
                         }
                         Request::Shutdown => break,
                     }
@@ -522,6 +554,70 @@ impl WorldStorage for LevelDbWorldStorage {
             spillover_acks,
         )
     }
+
+    fn load_generator_descriptor(
+        &self,
+        dimension: i32,
+    ) -> Result<Option<GeneratorDescriptor>, WorldStorageError> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .lock()
+            .map_err(|_| WorldStorageError::backend("leveldb sender poisoned".into()))?
+            .send(Request::LoadGeneratorDescriptor { dimension, reply })
+            .map_err(|_| WorldStorageError::backend("leveldb thread is gone".into()))?;
+        await_reply(&receiver, "load generator descriptor")
+    }
+
+    fn save_generator_descriptor(
+        &self,
+        dimension: i32,
+        descriptor: &GeneratorDescriptor,
+    ) -> Result<(), WorldStorageError> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .lock()
+            .map_err(|_| WorldStorageError::backend("leveldb sender poisoned".into()))?
+            .send(Request::SaveGeneratorDescriptor {
+                dimension,
+                descriptor: descriptor.clone(),
+                reply,
+            })
+            .map_err(|_| WorldStorageError::backend("leveldb thread is gone".into()))?;
+        await_reply(&receiver, "save generator descriptor")
+    }
+
+    fn load_generation_record(
+        &self,
+        key: ChunkKey,
+    ) -> Result<Option<PersistedGenerationRecord>, WorldStorageError> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .lock()
+            .map_err(|_| WorldStorageError::backend("leveldb sender poisoned".into()))?
+            .send(Request::LoadGenerationRecord { key, reply })
+            .map_err(|_| WorldStorageError::backend("leveldb thread is gone".into()))?;
+        await_reply(&receiver, "load generation record")
+    }
+
+    fn commit_final_chunk(
+        &self,
+        key: ChunkKey,
+        chunk: Chunk,
+        record: PersistedGenerationRecord,
+    ) -> Result<(), WorldStorageError> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .lock()
+            .map_err(|_| WorldStorageError::backend("leveldb sender poisoned".into()))?
+            .send(Request::CommitFinalChunk {
+                key,
+                chunk,
+                record,
+                reply,
+            })
+            .map_err(|_| WorldStorageError::backend("leveldb thread is gone".into()))?;
+        await_reply(&receiver, "commit final chunk")
+    }
 }
 
 impl Drop for LevelDbWorldStorage {
@@ -717,7 +813,7 @@ fn commit_generation_blocking(
             !chunk.biomes.is_empty() && chunk.data_3d_heightmap.is_none(),
             &[],
             outgoing,
-            true,
+            false,
         )?;
         chunk
     };
@@ -806,6 +902,95 @@ fn write_chunk_blocking(
             WorldStorageError::backend(format!("leveldb write chunk batch: {status}"))
         })?;
     journal.committed(additions, key, removed);
+    Ok(())
+}
+
+fn load_generator_descriptor_blocking(
+    db: &mut DB,
+    dimension: i32,
+) -> Result<Option<GeneratorDescriptor>, WorldStorageError> {
+    let key = format::generator_descriptor_key(dimension);
+    match db.get(&key) {
+        Some(bytes) => Ok(Some(format::decode_generator_descriptor(&bytes)?)),
+        None => Ok(None),
+    }
+}
+
+fn save_generator_descriptor_blocking(
+    db: &mut DB,
+    dimension: i32,
+    descriptor: &GeneratorDescriptor,
+) -> Result<(), WorldStorageError> {
+    let key = format::generator_descriptor_key(dimension);
+    let bytes = format::encode_generator_descriptor(descriptor)?;
+    let mut batch = WriteBatch::default();
+    batch.put(&key, &bytes);
+    db.write(batch, true).map_err(|status| {
+        WorldStorageError::backend(format!("save generator descriptor: {status}"))
+    })?;
+    Ok(())
+}
+
+fn load_generation_record_blocking(
+    db: &mut DB,
+    key: ChunkKey,
+) -> Result<Option<PersistedGenerationRecord>, WorldStorageError> {
+    let record_key = format::chunk_ready_record_key(key);
+    match db.get(&record_key) {
+        Some(bytes) => Ok(Some(format::decode_persisted_generation_record(&bytes)?)),
+        None => Ok(None),
+    }
+}
+
+fn commit_final_chunk_blocking(
+    db: &mut DB,
+    key: ChunkKey,
+    chunk: Chunk,
+    record: PersistedGenerationRecord,
+) -> Result<(), WorldStorageError> {
+    let mut batch = WriteBatch::default();
+
+    // 1) Version key
+    batch.put(&chunk_record_key(key, TAG_CHUNK_VERSION, None), &[26]);
+
+    // 2) Subchunks (v8 persistent encoding)
+    for subchunk in &chunk.subchunks {
+        let value = encode_subchunk_persistent(subchunk)?;
+        let record_key = chunk_record_key(key, TAG_SUBCHUNK_PREFIX, Some(subchunk.index.y));
+        batch.put(&record_key, &value);
+    }
+
+    // 3) Block entities
+    if !chunk.block_entities.is_empty() {
+        let record_key = chunk_record_key(key, TAG_BLOCK_ENTITY, None);
+        let mut writer = ByteWriter::new();
+        for entity in &chunk.block_entities {
+            NbtWriter::from_writer(&mut writer)
+                .write::<BedrockLocalNbt>(entity)
+                .map_err(|error| {
+                    WorldStorageError::corrupt(format!("block entity NBT encode: {error}"))
+                })?;
+        }
+        let bytes = writer.as_slice().to_vec();
+        batch.put(&record_key, &bytes);
+    }
+
+    // 4) 3D biomes & heightmap
+    let (min_y, max_y) = dimension_bounds(key.dimension);
+    let section_count = ((max_y - min_y + 1) / SUBCHUNK_SIZE) as usize;
+    let heightmap = heightmap_prefix_from_chunk(&chunk);
+    let data_3d = encode_data_3d(&heightmap, &chunk.biomes, section_count)?;
+    batch.put(&chunk_record_key(key, TAG_DATA_3D, None), &data_3d);
+
+    // 5) Generation completion record (SCRD)
+    let record_bytes = format::encode_persisted_generation_record(&record)?;
+    batch.put(&format::chunk_ready_record_key(key), &record_bytes);
+
+    // 6) Commit atomically to LevelDB with sync = true
+    db.write(batch, true).map_err(|status| {
+        WorldStorageError::backend(format!("commit final chunk batch: {status}"))
+    })?;
+
     Ok(())
 }
 
@@ -999,61 +1184,6 @@ mod writeback_tests {
     use std::fs;
 
     #[test]
-    #[ignore = "requires SC_PROBE_WORLD pointing to a disposable world copy"]
-    fn scan_world_subchunk_integrity() {
-        use rusty_leveldb::LdbIterator;
-        let path = PathBuf::from(std::env::var("SC_PROBE_WORLD").expect("world copy path"));
-        let mut db = DB::open(path.join("db"), bedrock_options()).unwrap();
-        let mut iter = db.new_iter().unwrap();
-        let mut records = 0;
-        let mut errors = 0;
-        while let Some((key, bytes)) = iter.next() {
-            let tag_offset = match key.len() {
-                10 => 8,
-                14 => 12,
-                _ => continue,
-            };
-            if key[tag_offset] != TAG_SUBCHUNK_PREFIX {
-                continue;
-            }
-            records += 1;
-            if let Err(error) = parse_subchunk(&bytes, key[tag_offset + 1] as i8) {
-                errors += 1;
-                if errors <= 25 {
-                    let x = i32::from_le_bytes(key[..4].try_into().unwrap());
-                    let z = i32::from_le_bytes(key[4..8].try_into().unwrap());
-                    println!(
-                        "({x}, {z}) y={} bytes={}: {error}",
-                        key[tag_offset + 1] as i8,
-                        bytes.len()
-                    );
-                }
-            }
-        }
-        println!("subchunk records={records}, decode errors={errors}");
-        assert_eq!(errors, 0, "world contains invalid subchunks");
-    }
-
-    #[test]
-    #[ignore = "requires SC_PROBE_WORLD pointing to a disposable world copy"]
-    fn probe_palette_failure_column() {
-        let path = PathBuf::from(std::env::var("SC_PROBE_WORLD").expect("world copy path"));
-        let mut db = DB::open(path.join("db"), bedrock_options()).unwrap();
-        let key = ChunkKey::new(0, ChunkPosition::new(89, 196));
-        for y in -4..20 {
-            if let Some(bytes) = db.get(&chunk_record_key(key, TAG_SUBCHUNK_PREFIX, Some(y))) {
-                println!(
-                    "y={y} bytes={} header={:02x?} result={:?}",
-                    bytes.len(),
-                    &bytes[..bytes.len().min(8)],
-                    parse_subchunk(&bytes, y).map(|s| s.layers.len())
-                );
-            }
-        }
-        load_chunk_blocking(&mut db, key).expect("column must decode");
-    }
-
-    #[test]
     fn block_entity_record_is_preserved_unless_metadata_dirty_then_deleted_if_empty() {
         let db_path = std::env::temp_dir().join(format!(
             "sc-world-block-entity-writeback-{}",
@@ -1207,5 +1337,104 @@ mod writeback_tests {
             .all(|section| section.get(0) == Some(7)));
         db.close().expect("close temporary LevelDB");
         fs::remove_dir_all(db_path).expect("remove temporary LevelDB directory");
+    }
+
+    #[test]
+    fn leveldb_descriptor_persistence_roundtrip_and_mismatch_rejection() {
+        let db_path =
+            std::env::temp_dir().join(format!("sc-world-desc-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&db_path).expect("create temporary LevelDB directory");
+        let mut options = bedrock_options();
+        options.create_if_missing = true;
+        DB::open(&db_path, options)
+            .expect("initialize temporary LevelDB")
+            .close()
+            .expect("close initial DB handle");
+
+        let storage = LevelDbWorldStorage::open(db_path.clone()).expect("open DB owner");
+        assert!(storage.load_generator_descriptor(0).unwrap().is_none());
+
+        let desc = GeneratorDescriptor::builtin_overworld(12345, 0xfeed_cafe, 0x1122_3344);
+        storage.save_generator_descriptor(0, &desc).expect("save descriptor");
+        drop(storage);
+
+        let storage = LevelDbWorldStorage::open(db_path.clone()).expect("reopen DB owner");
+        let loaded = storage.load_generator_descriptor(0).unwrap().expect("descriptor loaded");
+        assert_eq!(loaded, desc);
+
+        // Verification of admission matching
+        assert!(desc.ensure_matches_stored(Some(&loaded)).is_ok());
+
+        // Mismatched descriptor
+        let mut mismatched = desc.clone();
+        mismatched.seed = 99999;
+        assert!(mismatched.ensure_matches_stored(Some(&loaded)).is_err());
+
+        drop(storage);
+        fs::remove_dir_all(db_path).expect("cleanup");
+    }
+
+    #[test]
+    fn leveldb_atomic_final_chunk_and_generation_record_commit() {
+        let db_path =
+            std::env::temp_dir().join(format!("sc-world-final-chunk-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&db_path).expect("create temporary LevelDB directory");
+        let mut options = bedrock_options();
+        options.create_if_missing = true;
+        DB::open(&db_path, options)
+            .expect("initialize temporary LevelDB")
+            .close()
+            .expect("close initial DB handle");
+
+        let key = ChunkKey::new(0, ChunkPosition::new(3, 7));
+        let mut chunk = Chunk::empty(key.position, key.dimension, -64, 319);
+        let stone = crate::leveldb::block_hash::block_state_hash("minecraft:stone", None);
+        chunk.set_block_at(0, 4, 65, 4, crate::chunk::BlockRuntimeId(stone));
+        let section_count = 24;
+        chunk.biomes = vec![crate::chunk::PalettedBiomeStorage::Single(1); section_count];
+
+        let cert = crate::generation::ReadyCertificate {
+            base_valid: true,
+            structure_seals_complete: true,
+            decoration_seals_complete: true,
+            all_fragments_verified: true,
+            assembly_validated: true,
+            metadata_included: true,
+            owner_epoch: 1,
+        };
+        let record = PersistedGenerationRecord {
+            dimension: 0,
+            chunk_x: 3,
+            chunk_z: 7,
+            generator_fingerprint: 0xcafe_beef,
+            assembly_digest: 0x1234_5678,
+            attempt: 1,
+            certificate: cert,
+        };
+
+        let storage = LevelDbWorldStorage::open(db_path.clone()).expect("open DB owner");
+        storage.commit_final_chunk(key, chunk.clone(), record.clone()).expect("commit final chunk");
+        drop(storage);
+
+        // Verify with raw LevelDB that all keys (version, subchunk, Data3D, SCRD) were written
+        let mut raw_db = DB::open(&db_path, bedrock_options()).expect("raw open");
+        let version_key = chunk_record_key(key, TAG_CHUNK_VERSION, None);
+        assert!(raw_db.get(&version_key).is_some());
+        let scrd_key = format::chunk_ready_record_key(key);
+        assert!(raw_db.get(&scrd_key).is_some());
+        raw_db.close().expect("close raw");
+
+        // Reopen with LevelDbWorldStorage and check load methods
+        let storage = LevelDbWorldStorage::open(db_path.clone()).expect("reopen");
+        let loaded_chunk = storage.load_chunk(key).unwrap().expect("loaded chunk");
+        assert_eq!(loaded_chunk.block_at(4, 65, 4).unwrap().0, stone);
+
+        let loaded_record = storage.load_generation_record(key).unwrap().expect("loaded record");
+        assert_eq!(loaded_record, record);
+        assert_eq!(loaded_record.assembly_digest, 0x1234_5678);
+        assert_eq!(loaded_record.certificate, cert);
+
+        drop(storage);
+        fs::remove_dir_all(db_path).expect("cleanup");
     }
 }

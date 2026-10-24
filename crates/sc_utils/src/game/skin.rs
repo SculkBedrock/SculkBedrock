@@ -1,6 +1,8 @@
 use base64::prelude::{BASE64_STANDARD, BASE64_URL_SAFE_NO_PAD};
 use base64::Engine;
 
+/// 皮肤动画贴图（Login ClientData.AnimatedImageData 条目）。
+///
 /// Skin animation texture (Login ClientData.AnimatedImageData entry).
 #[derive(Clone, Debug, Default)]
 pub struct SkinAnimation {
@@ -14,6 +16,8 @@ pub struct SkinAnimation {
     pub expression_type: i32,
 }
 
+/// 外观部件（Login ClientData.PersonaPieces 条目）。
+///
 /// Persona piece (Login ClientData.PersonaPieces entry).
 #[derive(Clone, Debug, Default)]
 pub struct PersonaPiece {
@@ -25,6 +29,8 @@ pub struct PersonaPiece {
     pub product_id: String,
 }
 
+/// 外观部件上色（Login ClientData.PieceTintColors 条目）。
+///
 /// Persona piece tint (Login ClientData.PieceTintColors entry).
 #[derive(Clone, Debug, Default)]
 pub struct PersonaTint {
@@ -33,6 +39,9 @@ pub struct PersonaTint {
     pub colors: Vec<String>,
 }
 
+/// 玩家皮肤。除贴图外的外观字段在解析 Login 时保留，并在 PlayerList 中 1:1
+/// 回写；丢字段会让真实客户端构建本地玩家模型时崩溃。
+///
 /// Player skin. Appearance fields beyond textures are kept at Login parse time and echoed 1:1
 /// in PlayerList (dropping fields crashes real clients while they build the local player model).
 #[derive(Clone, Debug, Default)]
@@ -102,6 +111,8 @@ impl Skin {
         (self.width as i32, self.height as i32)
     }
 
+    /// 某些 JWT 字段是 base64 编码字符串（SkinResourcePatch / SkinGeometryData /
+    ///
     /// Some JWT fields are base64-encoded strings (SkinResourcePatch / SkinGeometryData /
     /// SkinGeometryDataEngineVersion / SkinAnimationData), decoded to plaintext.
     pub fn decode_b64_claim(value: &str) -> String {
@@ -115,6 +126,8 @@ impl Skin {
             .unwrap_or_default()
     }
 
+    /// "#RRGGBB"/"RRGGBB" 转 ARGB i32。
+    ///
     /// "#RRGGBB"/"RRGGBB" to ARGB i32.
     pub fn parse_hex_color(color: &str) -> i32 {
         if color.is_empty() {

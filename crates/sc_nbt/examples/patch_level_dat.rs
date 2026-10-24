@@ -1,3 +1,6 @@
+//! 一次性工具：读取 Bedrock level.dat，修改一个顶层 Byte 字段后写回。
+//! 用法与示例见下方英文说明。
+//!
 //! One-shot tool: read Bedrock level.dat, patch one top-level Byte field, write back.
 //! Usage: cargo run -p sc_nbt --example patch_level_dat -- <input> <output> <field> <byte_value>
 //! Example: set commandsEnabled=1

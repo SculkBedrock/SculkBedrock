@@ -1,3 +1,7 @@
+//! sc_data_extractor：离线数据转换工具。
+//!
+//! 将外部方块调色板文件转换为 SC 规范格式 `definitions/block_palette.nbt`：
+//!
 //! sc_data_extractor: offline data conversion tool.
 //!
 //! Converts an external block palette file to the SC canonical `definitions/block_palette.nbt`:
@@ -63,10 +67,10 @@ fn main() {
             "usage: sc_data_extractor <input gz nbt> <output block_palette.nbt>\n\
              e.g. sc_data_extractor block_palette_729.nbt definitions/block_palette.nbt\n\
              \n\
-             sc_data_extractor split-blocks <block_palette.nbt> <output dir> [--defaults defaults.json] [--hardness hardness.json]\n\
+             sc_data_extractor split-blocks <block_palette.nbt> <output dir> [--hardness hardness.json]\n\
              Split the legacy palette by identifier into blocks/<ns>/<path>.json\n\
-             (stock format_version + minecraft:block layout + sc:default_state/sc:protocol_runtime_ids).\n\
-             Multi-state defaults must come from --defaults (missing entries report TODO, never guessed).\n\
+             (stock format_version + minecraft:block layout + sc:protocol_runtime_ids;\n\
+             default state = first declared value of every property, no explicit field).\n\
              \n\
              sc_data_extractor extract-defaults --java-src <src/main/java> --palette <block_palette.nbt> --out <defaults.json>\n\
              Extract default states from upstream Java block sources (getDefaultState semantics),\n\
@@ -213,17 +217,18 @@ fn main() {
     eprintln!("done. Place the file at definitions/block_palette.nbt in the version pack");
 }
 
+/// `split-blocks` 子命令：把旧调色板拆为每方块一个 `.json`（原版结构）。
+///
 /// `split-blocks` subcommand: legacy palette to one `.json` per block (vanilla structure).
 ///
-/// Usage: `split-blocks <block_palette.nbt> <output dir> [--defaults defaults.json] [--hardness hardness.json]`.
+/// Usage: `split-blocks <block_palette.nbt> <output dir> [--hardness hardness.json]`.
 /// - Input palettes accept gzip or raw NBT (detected by magic);
-/// - `--defaults` is `{identifier: split state key}` JSON (authoritative defaults);
 /// - `--hardness` is `{identifier: {"hardness": n} | {"unbreakable": true}}`;
-/// - Multi-state blocks missing defaults print a `TODO_DEFAULT <identifier>` list and exit 1,
-///   writing no half-finished files and never substituting the first state;
 /// - Output uses the vanilla envelope (`format_version` plus `minecraft:block`:
-///   `description` / `components` / `permutations`)+ `sc:default_state` /
-///   `sc:protocol_runtime_ids`; undeclared components are never written (nothing guessed).
+///   `description` / `components` / `permutations`)+ `sc:protocol_runtime_ids`;
+///   the default state is the first declared value of every property (no explicit field;
+///   the former `sc:default_state` is retired); undeclared components are never written
+///   (nothing guessed).
 /// - Block tags no longer live in block files (the vanilla structure has no slot for them; tags still come
 ///   from the version-pack `definitions/block_tags.json`).
 fn split_blocks(args: &[String]) {
@@ -233,20 +238,15 @@ fn split_blocks(args: &[String]) {
     };
 
     if args.len() < 3 {
-        eprintln!("usage: split-blocks <block_palette.nbt> <output dir> [--defaults defaults.json] [--hardness hardness.json]");
+        eprintln!("usage: split-blocks <block_palette.nbt> <output dir> [--hardness hardness.json]");
         std::process::exit(2);
     }
     let input = Path::new(&args[1]);
     let out_dir = Path::new(&args[2]);
-    let mut defaults_path: Option<&str> = None;
     let mut hardness_path: Option<&str> = None;
     let mut i = 3;
     while i < args.len() {
         match args[i].as_str() {
-            "--defaults" => {
-                i += 1;
-                defaults_path = args.get(i).map(String::as_str);
-            }
             "--hardness" => {
                 i += 1;
                 hardness_path = args.get(i).map(String::as_str);
@@ -282,19 +282,6 @@ fn split_blocks(args: &[String]) {
     });
     eprintln!("read {} legacy states", entries.len());
 
-    let defaults: HashMap<String, String> = match defaults_path {
-        None => HashMap::new(),
-        Some(p) => {
-            let bytes = fs::read(p).unwrap_or_else(|e| {
-                eprintln!("failed to read defaults {p}: {e}");
-                std::process::exit(1);
-            });
-            serde_json::from_slice(&bytes).unwrap_or_else(|e| {
-                eprintln!("defaults JSON parse failed {p}: {e}");
-                std::process::exit(1);
-            })
-        }
-    };
     let hardness = match hardness_path {
         None => HashMap::new(),
         Some(p) => {
@@ -313,18 +300,8 @@ fn split_blocks(args: &[String]) {
         }
     };
 
-    let files = match split_legacy_palette(&entries, &defaults, &hardness) {
+    let files = match split_legacy_palette(&entries, &hardness) {
         Ok(files) => files,
-        Err(SplitError::MissingDefaults { ids, .. }) => {
-            for id in ids.iter() {
-                println!("TODO_DEFAULT {id}");
-            }
-            eprintln!(
-                "{} states lack authoritative defaults (multi-state defaults are never guessed; rerun with --defaults)",
-                ids.len()
-            );
-            std::process::exit(1);
-        }
         Err(SplitError::Invalid { detail: m, .. }) => {
             eprintln!("split failed: {m}");
             std::process::exit(1);
@@ -344,7 +321,7 @@ fn split_blocks(args: &[String]) {
         });
     }
     eprintln!(
-        "split done: {} files -> {} (stock envelope + sc:default_state/sc:protocol_runtime_ids; undeclared components stay undeclared)",
+        "split done: {} files -> {} (stock envelope + sc:protocol_runtime_ids; default state = first declared values; undeclared components stay undeclared)",
         files.len(),
         out_dir.display()
     );

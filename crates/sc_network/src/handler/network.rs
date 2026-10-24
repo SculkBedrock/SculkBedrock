@@ -20,6 +20,10 @@ use crate::utils::encryption::MinecraftEncryption;
 use crate::utils::ConnectionThreadManager;
 use crate::SCNetworkSettings;
 
+/// SCExit（服务端关闭）-> 向每个在线玩家发送 Disconnect 数据包并断开连接。
+/// 运行在 Last 阶段（早于 SCGamePlugin 的 on_exit_shutdown_regions）：
+/// 客户端先看到“服务器已关闭”，随后区域线程停止、日志刷新、退出流程执行。
+///
 /// SCExit (server shutdown) -> sends a Disconnect packet to every online player and drops connections.
 /// Runs in Last (before SCGamePlugin on_exit_shutdown_regions):
 /// clients see "server closed" first, then region threads stop, logs flush, and exit runs.
@@ -90,7 +94,7 @@ impl Plugin for SCNetworkHandlerPlugin {
             sc_ecs::schedule::Last,
             crate::handler::outbox::outbox_to_packets,
         );
-        // Graceful shutdown: SCExit (stop command/Ctrl+C/signal) -> Disconnect packets to all players.
+        // Shutdown sequence: SCExit (stop command/Ctrl+C/signal) -> Disconnect packets to all players.
         // Registered before SCGamePlugin on_exit_shutdown_regions (Last) -> broadcast first, then exit.
         app.add_systems(sc_ecs::schedule::Last, broadcast_disconnect_on_exit);
         // Fault-isolation consumer: game-registered terminal states disconnect here (budgeted per tick).

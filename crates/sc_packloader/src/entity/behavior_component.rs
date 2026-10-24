@@ -1,3 +1,10 @@
+//! 实体行为组件数据模型：与官方 Bedrock 实体 JSON 行为组件参考一一对应的
+//! serde 反序列化结构体，描述实体的 AI 行为目标与触发器。
+//!
+//! Entity behavior component data model: serde deserialization structs
+//! mirroring the official Bedrock entity JSON behavior component reference,
+//! describing entity AI goals and triggers.
+
 use crate::types::entity_types::MinecraftEntityTypes;
 use crate::types::event::MinecraftEvent;
 use crate::types::filter::MinecraftFilterType;
@@ -7,11 +14,9 @@ use sc_ecs::component::Component;
 use serde::Deserialize;
 use serde_inline_default::serde_inline_default;
 
-/*
- warning: All code below was AI-generated and has not been verified for correctness
- Official docs:
- https://learn.microsoft.com/en-us/minecraft/crea/aigoaltor/reference/content/entityreference/exampleslist?view=minecraft-bedrock-stable
-*/
+/// 行为组件：停步欣赏（注视）附近的掉落物。
+///
+/// Behavior component: stop and admire nearby dropped items.
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorAdmireItem {
     #[serde(default)]
@@ -25,6 +30,9 @@ pub struct BehaviorAdmireItem {
     #[serde(default)]
     pub priority: i32,
 }
+/// 行为组件：避开指定类型的方块。
+///
+/// Behavior component: avoid blocks of the specified types.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorAvoidBlock {
@@ -52,6 +60,9 @@ pub struct BehaviorAvoidBlock {
     pub walk_speed_modifier: f64,
 }
 
+/// 行为组件：躲避符合过滤条件的实体类型。
+///
+/// Behavior component: flee from entity types matching the filters.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorAvoidMobType {
@@ -87,12 +98,18 @@ pub struct BehaviorAvoidMobType {
     pub walk_speed_multiplier: f64,
 }
 
+/// 行为组件：以物易物（猪灵与玩家交换物品）。
+///
+/// Behavior component: barter (piglin trades items with players).
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorBarter {
     #[serde(default)]
     pub priority: i32,
 }
 
+/// 行为组件：乞食（狼停步仰望玩家索要食物）。
+///
+/// Behavior component: beg (wolf stops and looks up at the player for food).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorBeg {
@@ -106,6 +123,9 @@ pub struct BehaviorBeg {
     pub priority: i32,
 }
 
+/// 行为组件：繁殖（进入繁殖模式并靠近同类）。
+///
+/// Behavior component: enter breeding mode and move toward the same species.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorBreed {
@@ -115,6 +135,9 @@ pub struct BehaviorBreed {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：庆祝（跳跃并播放庆祝音效）。
+///
+/// Behavior component: celebrate by jumping and playing a celebration sound.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorCelebrate {
@@ -132,6 +155,9 @@ pub struct BehaviorCelebrate {
     pub sound_interval: MinecraftRangeType<f64>,
 }
 
+/// 行为组件：劫后庆祝（袭击/战斗结束后庆祝存活）。
+///
+/// Behavior component: celebrate surviving after a raid or fight.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorCelebrateSurvive {
@@ -149,6 +175,9 @@ pub struct BehaviorCelebrateSurvive {
     pub sound_interval: MinecraftRangeType<f64>,
 }
 
+/// 行为组件：蓄力冲撞攻击（后退蓄力后向前冲撞目标）。
+///
+/// Behavior component: charge attack (back up and charge forward at the target).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorChargeAttack {
@@ -164,6 +193,9 @@ pub struct BehaviorChargeAttack {
     pub success_rate: f64,
 }
 
+/// 行为组件：捡起并举起指定物品（如幼年海龟被捡起）。
+///
+/// Behavior component: pick up and hold the specified items.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorChargeHeldItem {
@@ -173,6 +205,9 @@ pub struct BehaviorChargeHeldItem {
     pub priority: i32,
 }
 
+/// 行为组件：绕锚点盘旋飞行（悦灵绕物品栏容器盘旋）。
+///
+/// Behavior component: circle around an anchor while flying.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorCircleAroundAnchor {
@@ -198,6 +233,9 @@ pub struct BehaviorCircleAroundAnchor {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：受玩家控制（坐骑接受玩家移动指令）。
+///
+/// Behavior component: controlled by the player (mount obeys movement input).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorControlledByPlayer {
@@ -211,6 +249,9 @@ pub struct BehaviorControlledByPlayer {
     pub priority: i32,
 }
 
+/// 行为组件：呱呱鸣叫（青蛙发出叫声）。
+///
+/// Behavior component: croak (frog emits its call sound).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorCroak {
@@ -222,6 +263,9 @@ pub struct BehaviorCroak {
     pub interval: MinecraftRangeType<f64>,
 }
 
+/// 行为组件：保卫信任的目标（如羊驼保护主人）。
+///
+/// Behavior component: defend a trusted target from attackers.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorDefendTrustedTarget {
@@ -249,6 +293,9 @@ pub struct BehaviorDefendTrustedTarget {
     pub within_radius: f64,
 }
 
+/// 行为组件：保卫村庄目标（铁傀儡反击袭击者）。
+///
+/// Behavior component: defend the village target (iron golem counterattacks raiders).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorDefendVillageTarget {
@@ -262,6 +309,9 @@ pub struct BehaviorDefendVillageTarget {
     pub priority: i32,
 }
 
+/// 行为组件：延迟攻击（带前摇后摇与寻路边界控制的近战攻击）。
+///
+/// Behavior component: delayed melee attack with wind-up, recovery and pathing bounds.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorDelayedAttack {
@@ -315,6 +365,9 @@ pub struct BehaviorDelayedAttack {
     pub y_max_head_rotation: f64,
 }
 
+/// 行为组件：挖掘（潜行/掘地行为，受惊时钻入地下）。
+///
+/// Behavior component: dig (burrow behavior when startled or suspicious).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorDig {
@@ -336,6 +389,9 @@ pub struct BehaviorDig {
     pub vibration_is_disturbance: bool,
 }
 
+/// 行为组件：喝奶（清除自身药效并进入冷却）。
+///
+/// Behavior component: drink milk to clear own effects and enter cooldown.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorDrinkMilk {
@@ -347,6 +403,9 @@ pub struct BehaviorDrinkMilk {
     pub priority: i32,
 }
 
+/// 行为组件：末影龙向玩家俯冲冲撞。
+///
+/// Behavior component: ender dragon charges at the player.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorDragonChargePlayer {
@@ -364,6 +423,9 @@ pub struct BehaviorDragonChargePlayer {
     pub turn_speed: f64,
 }
 
+/// 行为组件：末影龙死亡（播放死亡序列）。
+///
+/// Behavior component: ender dragon death sequence.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorDragondeath {
@@ -371,6 +433,9 @@ pub struct BehaviorDragondeath {
     pub priority: i32,
 }
 
+/// 行为组件：末影龙喷吐烈焰（火球与地面火焰）。
+///
+/// Behavior component: ender dragon flaming (fireball and ground flames).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorDragonflaming {
@@ -386,6 +451,9 @@ pub struct BehaviorDragonflaming {
     pub roar_time: f64,
 }
 
+/// 行为组件：末影龙保持盘旋（维持飞行高度与位置）。
+///
+/// Behavior component: ender dragon holding pattern (maintain flight position).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorDragonHoldingPattern {
@@ -393,6 +461,9 @@ pub struct BehaviorDragonHoldingPattern {
     pub priority: i32,
 }
 
+/// 行为组件：末影龙着陆（飞向传送门并降落）。
+///
+/// Behavior component: ender dragon landing.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorDragonLanding {
@@ -400,6 +471,9 @@ pub struct BehaviorDragonLanding {
     pub priority: i32,
 }
 
+/// 行为组件：末影龙盘旋扫描（搜索目标）。
+///
+/// Behavior component: ender dragon scanning for targets.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorDragonScanning {
@@ -407,6 +481,9 @@ pub struct BehaviorDragonScanning {
     pub priority: i32,
 }
 
+/// 行为组件：末影龙侧移扫射玩家（火球扫射）。
+///
+/// Behavior component: ender dragon strafes the player with fireballs.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorDragonStrafePlayer {
@@ -430,6 +507,9 @@ pub struct BehaviorDragonStrafePlayer {
     pub view_angle: f64,
 }
 
+/// 行为组件：末影龙起飞（从基岩柱起飞）。
+///
+/// Behavior component: ender dragon takeoff.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorDragonTakeoff {
@@ -437,6 +517,9 @@ pub struct BehaviorDragonTakeoff {
     pub priority: i32,
 }
 
+/// 行为组件：饮用治疗/增益药水（女巫战斗中喝药）。
+///
+/// Behavior component: drink a healing or buff potion (witch drinks in combat).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorDrinkPotionPotion {
@@ -448,6 +531,9 @@ pub struct BehaviorDrinkPotionPotion {
     pub id: i32,
 }
 
+/// 行为组件：从药水列表中按概率饮用一种药水。
+///
+/// Behavior component: drink a random potion from the potion list by chance.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorDrinkPotion {
@@ -459,6 +545,9 @@ pub struct BehaviorDrinkPotion {
     pub speed_modifier: f64,
 }
 
+/// 行为组件：向指定实体投掷掉落物作为祭品。
+///
+/// Behavior component: drop items as an offering to the target entity.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorDropItemFor {
@@ -500,6 +589,9 @@ pub struct BehaviorDropItemFor {
     pub time_of_day_range: MinecraftRangeType<f64>,
 }
 
+/// 行为组件：吃掉一种方块后替换为另一种方块的配对。
+///
+/// Behavior component: pair of a block to eat and the block to replace it with.
 #[derive(Clone, Deserialize, Debug, Default)]
 pub struct BehaviorEatBlockEatAndReplaceBlockPair {
     #[serde(default)]
@@ -508,6 +600,9 @@ pub struct BehaviorEatBlockEatAndReplaceBlockPair {
     pub replace_block: String,
 }
 
+/// 行为组件：吃掉方块并按配对表替换（绵羊吃草）。
+///
+/// Behavior component: eat a block and replace it per the pair list (sheep graze).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorEatBlock {
@@ -523,6 +618,9 @@ pub struct BehaviorEatBlock {
     pub time_until_eat: f64,
 }
 
+/// 行为组件：吃掉叼在口中的物品（狐狸吃完浆果）。
+///
+/// Behavior component: eat the item held in the mouth.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorEatCarriedItem {
@@ -532,6 +630,9 @@ pub struct BehaviorEatCarriedItem {
     pub priority: i32,
 }
 
+/// 行为组件：捕食其他实体（青蛙吃史莱姆）。
+///
+/// Behavior component: prey on and eat other mobs (frog eats slime).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorEatMob {
@@ -551,6 +652,9 @@ pub struct BehaviorEatMob {
     pub run_speed: f64,
 }
 
+/// 行为组件：从地面钻出（监守者破土而出）。
+///
+/// Behavior component: emerge from the ground (warden breaks through).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorEmerge {
@@ -564,6 +668,9 @@ pub struct BehaviorEmerge {
     pub priority: i32,
 }
 
+/// 行为组件：末影人放下携带的方块。
+///
+/// Behavior component: enderman places the block it is carrying.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorEndermanLeaveBlock {
@@ -571,6 +678,9 @@ pub struct BehaviorEndermanLeaveBlock {
     pub priority: i32,
 }
 
+/// 行为组件：末影人捡起方块。
+///
+/// Behavior component: enderman picks up a block.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorEndermanTakeBlock {
@@ -578,6 +688,9 @@ pub struct BehaviorEndermanTakeBlock {
     pub priority: i32,
 }
 
+/// 行为组件：装备物品（捡起装备并穿戴）。
+///
+/// Behavior component: equip an item (pick up gear and wear it).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorEquipItem {
@@ -585,6 +698,9 @@ pub struct BehaviorEquipItem {
     pub priority: i32,
 }
 
+/// 行为组件：探索村庄外围区域。
+///
+/// Behavior component: explore the outskirts of a village.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorExploreOutskirts {
@@ -614,6 +730,9 @@ pub struct BehaviorExploreOutskirts {
     pub timer_ratio: f64,
 }
 
+/// 行为组件：为农田施肥（村民催熟作物）。
+///
+/// Behavior component: fertilize farm blocks (villager speeds up crops).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorFertilizeFarmBlock {
@@ -635,6 +754,9 @@ pub struct BehaviorFertilizeFarmBlock {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：寻找掩体躲避（受到攻击时寻找遮蔽）。
+///
+/// Behavior component: find cover to hide from attackers.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorFindCover {
@@ -646,6 +768,9 @@ pub struct BehaviorFindCover {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：寻找可骑乘的坐骑。
+///
+/// Behavior component: find a mount to ride.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorFindMount {
@@ -663,6 +788,9 @@ pub struct BehaviorFindMount {
     pub within_radius: f64,
 }
 
+/// 行为组件：寻找水下宝藏（海豚引导玩家寻宝）。
+///
+/// Behavior component: find underwater treasure (dolphin leads to treasure).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorFindUnderwaterTreasure {
@@ -676,6 +804,9 @@ pub struct BehaviorFindUnderwaterTreasure {
     pub stop_distance: f64,
 }
 
+/// 行为组件：逃离阳光（亡灵生物白天躲避日晒）。
+///
+/// Behavior component: flee from sunlight (undead mobs avoid daylight).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorFleeSun {
@@ -685,6 +816,9 @@ pub struct BehaviorFleeSun {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：在水中漂浮（避免下沉溺水）。
+///
+/// Behavior component: float in water to avoid sinking.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorFloat {
@@ -694,6 +828,9 @@ pub struct BehaviorFloat {
     pub sink_with_passengers: bool,
 }
 
+/// 行为组件：漂浮游荡（在水中随机漂移）。
+///
+/// Behavior component: float and wander aimlessly in water.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorFloatWander {
@@ -713,6 +850,9 @@ pub struct BehaviorFloatWander {
     pub y_offset: f64,
 }
 
+/// 行为组件：跟随商队（羊驼跟随其他羊驼移动）。
+///
+/// Behavior component: follow the caravan (llamas follow other llamas).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorFollowCaravan {
@@ -741,6 +881,9 @@ pub struct BehaviorFollowCaravan {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：跟随同类实体。
+///
+/// Behavior component: follow another mob of the same type.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorFollowMob {
@@ -754,6 +897,9 @@ pub struct BehaviorFollowMob {
     pub stop_distance: f64,
 }
 
+/// 行为组件：跟随主人（距离过远时传送回来）。
+///
+/// Behavior component: follow the owner (teleport back when too far away).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorFollowOwner {
@@ -773,6 +919,9 @@ pub struct BehaviorFollowOwner {
     pub stop_distance: f64,
 }
 
+/// 行为组件：跟随父母（幼年个体跟随成年个体）。
+///
+/// Behavior component: follow the parent (young follow adults).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorFollowParent {
@@ -782,6 +931,9 @@ pub struct BehaviorFollowParent {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：跟随袭击队长（卫道士跟随灾厄旗帜持有者）。
+///
+/// Behavior component: follow the raid captain (vindicator follows the banner carrier).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorFollowTargetCaptain {
@@ -793,6 +945,9 @@ pub struct BehaviorFollowTargetCaptain {
     pub within_radius: f64,
 }
 
+/// 行为组件：前往音符盒并投掷物品（悦灵收到音符后献上物品）。
+///
+/// Behavior component: go to a noteblock and throw items (allay offers items on sound).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorGoAndGiveItemsToNoteblock {
@@ -812,6 +967,9 @@ pub struct BehaviorGoAndGiveItemsToNoteblock {
     pub vertical_throw_mul: f64,
 }
 
+/// 行为组件：奔向主人并把物品投给主人（悦灵献上物品）。
+///
+/// Behavior component: run to the owner and throw items to the owner (allay offering).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorGoAndGiveItemsToOwner {
@@ -822,7 +980,7 @@ pub struct BehaviorGoAndGiveItemsToOwner {
     #[serde_inline_default(3.0)]
     pub reach_block_distance: f64,
     #[serde_inline_default(1.0)]
-    // 数据包 schema/数据模型字段，为兼容性保留
+    // Data-pack schema field, kept for compatibility
     #[allow(dead_code)]
     pubrun_speed: f64,
     #[serde_inline_default(0.2)]
@@ -833,6 +991,9 @@ pub struct BehaviorGoAndGiveItemsToOwner {
     pub vertical_throw_mul: f64,
 }
 
+/// 行为组件：返回巢穴/家园位置。
+///
+/// Behavior component: return to the home position.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorGoHome {
@@ -852,6 +1013,9 @@ pub struct BehaviorGoHome {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：守卫者激光攻击（远古守卫者伤害更高）。
+///
+/// Behavior component: guardian laser attack (elder guardians hit harder).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorGuardianAttack {
@@ -873,6 +1037,9 @@ pub struct BehaviorGuardianAttack {
     pub y_max_head_rotation: f64,
 }
 
+/// 行为组件：收获成熟的农作物。
+///
+/// Behavior component: harvest fully grown crops.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorHarvestFarmBlock {
@@ -896,6 +1063,9 @@ pub struct BehaviorHarvestFarmBlock {
     pub priority: i32,
 }
 
+/// 行为组件：躲藏到兴趣点/掩体中（村民遇袭时逃跑躲藏）。
+///
+/// Behavior component: hide at a POI or cover when threatened (villager fleeing).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorHide {
@@ -911,6 +1081,9 @@ pub struct BehaviorHide {
     pub timeout_cooldown: f64,
 }
 
+/// 行为组件：固守阵地（保持在半径内不后退，可广播警报）。
+///
+/// Behavior component: hold ground within a radius and optionally broadcast alarms.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorHoldGround {
@@ -926,6 +1099,9 @@ pub struct BehaviorHoldGround {
     pub within_radius_event: MinecraftTrigger,
 }
 
+/// 行为组件：反击伤害来源（受击后报复攻击者）。
+///
+/// Behavior component: retaliate against the source of damage.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorHurtByTarget {
@@ -953,6 +1129,9 @@ pub struct BehaviorHurtByTarget {
     pub priority: i32,
 }
 
+/// 行为组件：查看书架（图书管理员整理工作站）。
+///
+/// Behavior component: inspect the bookshelf (librarian tidies the workstation).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorInspectBookshelf {
@@ -970,6 +1149,9 @@ pub struct BehaviorInspectBookshelf {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：调查可疑地点（循声传来的声响/振动的来源）。
+///
+/// Behavior component: investigate a suspicious location (source of a sound/vibration).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorInvestigateSuspiciousLocation {
@@ -981,6 +1163,9 @@ pub struct BehaviorInvestigateSuspiciousLocation {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：跳跃到方块上（青蛙跳上睡莲等目标方块）。
+///
+/// Behavior component: jump onto blocks (frog jumps onto lily pads and targets).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorJumpToBlock {
@@ -1008,6 +1193,9 @@ pub struct BehaviorJumpToBlock {
     pub search_width: i32,
 }
 
+/// 行为组件：击退咆哮（监守者震退范围内实体）。
+///
+/// Behavior component: knockback roar (warden pushes entities away).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorKnockbackRoar {
@@ -1037,6 +1225,9 @@ pub struct BehaviorKnockbackRoar {
     pub priority: i32,
 }
 
+/// 行为组件：躺下休息（猫、熊猫等趴下）。
+///
+/// Behavior component: lay down and rest (cat, panda, etc.).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorLayDown {
@@ -1048,6 +1239,9 @@ pub struct BehaviorLayDown {
     pub priority: i32,
 }
 
+/// 行为组件：产卵（海龟返回出生地沙滩下蛋）。
+///
+/// Behavior component: lay eggs (turtle returns to its home beach to lay eggs).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorLayEgg {
@@ -1079,6 +1273,9 @@ pub struct BehaviorLayEgg {
     pub use_default_animation: bool,
 }
 
+/// 行为组件：向目标扑跃（猫扑向玩家）。
+///
+/// Behavior component: leap at the target (cat pounces on a player).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorLeapAtTarget {
@@ -1094,6 +1291,9 @@ pub struct BehaviorLeapAtTarget {
     pub yd: f64,
 }
 
+/// 行为组件：注视符合过滤条件的实体。
+///
+/// Behavior component: look at entities matching the filters.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorLookAtEntity {
@@ -1111,6 +1311,9 @@ pub struct BehaviorLookAtEntity {
     pub probability: f64,
 }
 
+/// 行为组件：注视附近的玩家。
+///
+/// Behavior component: look at a nearby player.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorLookAtPlayer {
@@ -1130,6 +1333,9 @@ pub struct BehaviorLookAtPlayer {
     pub target_distance: f64,
 }
 
+/// 行为组件：注视当前攻击目标。
+///
+/// Behavior component: look at the current target.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorLookAtTarget {
@@ -1147,6 +1353,9 @@ pub struct BehaviorLookAtTarget {
     pub priority: i32,
 }
 
+/// 行为组件：注视正在交易的玩家。
+///
+/// Behavior component: look at the trading player.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorLookAtTradingPlayer {
@@ -1164,6 +1373,9 @@ pub struct BehaviorLookAtTradingPlayer {
     pub priority: i32,
 }
 
+/// 行为组件：求偶（被喂食后进入恋爱模式）。
+///
+/// Behavior component: make love (enter love mode after being fed).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorMakeLove {
@@ -1171,6 +1383,9 @@ pub struct BehaviorMakeLove {
     pub priority: i32,
 }
 
+/// 行为组件：近战攻击目标。
+///
+/// Behavior component: melee attack the target.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorMeleeAttack {
@@ -1224,6 +1439,9 @@ pub struct BehaviorMeleeAttack {
     pub y_max_head_rotation: f64,
 }
 
+/// 行为组件：箱形范围近战攻击（可同时命中箱体内多个目标）。
+///
+/// Behavior component: melee box attack (hits targets inside a box around the entity).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorMeleeBoxAttack {
@@ -1277,6 +1495,9 @@ pub struct BehaviorMeleeBoxAttack {
     pub y_max_head_rotation: f64,
 }
 
+/// 行为组件：与同伴嬉戏（村民社交走动）。
+///
+/// Behavior component: mingle with fellow villagers (social walking).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorMingle {
@@ -1294,6 +1515,9 @@ pub struct BehaviorMingle {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：坐骑寻路（载着骑手时的寻路行为）。
+///
+/// Behavior component: mount pathing while carrying a rider.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorMountPathing {
@@ -1307,6 +1531,9 @@ pub struct BehaviorMountPathing {
     pub track_target: bool,
 }
 
+/// 行为组件：移动到室内（村民下雨/夜晚进屋）。
+///
+/// Behavior component: move indoors (villagers shelter from rain or night).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorMoveIndoors {
@@ -1318,6 +1545,9 @@ pub struct BehaviorMoveIndoors {
     pub timeout_cooldown: f64,
 }
 
+/// 行为组件：移动到室外。
+///
+/// Behavior component: move outdoors.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorMoveOutdoors {
@@ -1337,6 +1567,9 @@ pub struct BehaviorMoveOutdoors {
     pub timeout_cooldown: f64,
 }
 
+/// 行为组件：穿过村庄移动（僵尸围城时径直穿过）。
+///
+/// Behavior component: move through the village.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorMoveThroughVillage {
@@ -1348,6 +1581,9 @@ pub struct BehaviorMoveThroughVillage {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：移动到指定方块处并可停留。
+///
+/// Behavior component: move to a target block and optionally stay there.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorMoveToBlock {
@@ -1379,6 +1615,9 @@ pub struct BehaviorMoveToBlock {
     pub tick_interval: i32,
 }
 
+/// 行为组件：移动到陆地（水生生物上岸）。
+///
+/// Behavior component: move to land (aquatic mob goes ashore).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorMoveToLand {
@@ -1394,6 +1633,9 @@ pub struct BehaviorMoveToLand {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：移动到液体旁。
+///
+/// Behavior component: move to a liquid.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorMoveToLiquid {
@@ -1413,6 +1655,9 @@ pub struct BehaviorMoveToLiquid {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：移动到随机方块处。
+///
+/// Behavior component: move to a random block.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorMoveToRandomBlock {
@@ -1426,6 +1671,9 @@ pub struct BehaviorMoveToRandomBlock {
     pub priority: i32,
 }
 
+/// 行为组件：移动到村庄。
+///
+/// Behavior component: move to a village.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorMoveToVillage {
@@ -1441,6 +1689,9 @@ pub struct BehaviorMoveToVillage {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：移动到水源。
+///
+/// Behavior component: move to water.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorMoveToWater {
@@ -1458,6 +1709,9 @@ pub struct BehaviorMoveToWater {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：向住所限制区域移动（蜜蜂回巢）。
+///
+/// Behavior component: move towards the dwelling restriction (bee returns to its hive).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorMoveTowardsDwellingRestriction {
@@ -1467,6 +1721,9 @@ pub struct BehaviorMoveTowardsDwellingRestriction {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：向家园限制区域移动。
+///
+/// Behavior component: move towards the home restriction.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorMoveTowardsHomeRestriction {
@@ -1476,6 +1733,9 @@ pub struct BehaviorMoveTowardsHomeRestriction {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：向当前目标移动。
+///
+/// Behavior component: move towards the current target.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorMoveTowardsTarget {
@@ -1485,6 +1745,9 @@ pub struct BehaviorMoveTowardsTarget {
     pub within_radius: f64,
 }
 
+/// 行为组件：打盹小睡（猫在白天睡觉）。
+///
+/// Behavior component: nap (cats sleep during the day).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorNap {
@@ -1500,6 +1763,9 @@ pub struct BehaviorNap {
     pub priority: i32,
 }
 
+/// 行为组件：寻找并攻击最近的可攻击目标。
+///
+/// Behavior component: find and attack the nearest attackable target.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorNearestAttackableTarget {
@@ -1539,6 +1805,9 @@ pub struct BehaviorNearestAttackableTarget {
     pub within_radius: f64,
 }
 
+/// 行为组件：寻找并攻击最近的优先排序目标。
+///
+/// Behavior component: find and attack the nearest prioritized attackable target.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorNearestPrioritizedAttackableTarget {
@@ -1572,6 +1841,9 @@ pub struct BehaviorNearestPrioritizedAttackableTarget {
     pub within_radius: f64,
 }
 
+/// 行为组件：豹猫坐在方块上（潜行靠近玩家）。
+///
+/// Behavior component: ocelot sits on a block.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorOcelotSitOnBlock {
@@ -1581,6 +1853,9 @@ pub struct BehaviorOcelotSitOnBlock {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：豹猫攻击（潜行接近后突袭鸡等猎物）。
+///
+/// Behavior component: ocelot attack (sneak up and pounce on prey like chickens).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorOcelotAttack {
@@ -1608,6 +1883,9 @@ pub struct BehaviorOcelotAttack {
     pub y_max_head_rotation: f64,
 }
 
+/// 行为组件：向村民献花（铁傀儡的安抚动作）。
+///
+/// Behavior component: offer a flower (iron golem calms villagers).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorOfferFlower {
@@ -1615,6 +1893,9 @@ pub struct BehaviorOfferFlower {
     pub priority: i32,
 }
 
+/// 行为组件：打开与关闭门。
+///
+/// Behavior component: open and close doors.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorOpenDoor {
@@ -1624,6 +1905,9 @@ pub struct BehaviorOpenDoor {
     pub priority: i32,
 }
 
+/// 行为组件：反击伤害主人的实体。
+///
+/// Behavior component: retaliate against whoever hurt the owner.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorOwnerHurtByTarget {
@@ -1649,6 +1933,9 @@ pub struct BehaviorOwnerHurtByTarget {
     pub walk_speed_multiplier: f64,
 }
 
+/// 行为组件：攻击主人当前注视/选定的目标。
+///
+/// Behavior component: attack whatever the owner targets.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorOwnerHurtTarget {
@@ -1674,6 +1961,9 @@ pub struct BehaviorOwnerHurtTarget {
     pub walk_speed_multiplier: f64,
 }
 
+/// 行为组件：惊慌逃跑（受伤时高速逃离）。
+///
+/// Behavior component: panic and flee when hurt.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorPanic {
@@ -1693,6 +1983,9 @@ pub struct BehaviorPanic {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：探头张望（潜影贝开合探头）。
+///
+/// Behavior component: peek (shulker opens and closes its head).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorPeek {
@@ -1700,6 +1993,9 @@ pub struct BehaviorPeek {
     pub priority: i32,
 }
 
+/// 行为组件：宠物与主人一起睡觉（猫跳上床陪睡）。
+///
+/// Behavior component: pet sleeps with the owner (cat hops onto the bed).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorPetSleepWithOwner {
@@ -1717,6 +2013,9 @@ pub struct BehaviorPetSleepWithOwner {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：拾取地上的掉落物。
+///
+/// Behavior component: pick up items from the ground.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorPickupItems {
@@ -1746,6 +2045,9 @@ pub struct BehaviorPickupItems {
     pub search_height: i32,
 }
 
+/// 行为组件：与同伴玩耍（幼年动物互相追逐嬉戏）。
+///
+/// Behavior component: play with friends (baby animals chase each other).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorPlay {
@@ -1767,6 +2069,9 @@ pub struct BehaviorPlay {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：装死（嗅梦兽受伤后倒地装死）。
+///
+/// Behavior component: play dead (sniffer lies down when hurt).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorPlayDead {
@@ -1786,6 +2091,9 @@ pub struct BehaviorPlayDead {
     pub random_start_chance: f64,
 }
 
+/// 行为组件：骑乘已驯服的坐骑。
+///
+/// Behavior component: player rides the tamed mount.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorPlayerRideTamed {
@@ -1793,6 +2101,9 @@ pub struct BehaviorPlayerRideTamed {
     pub priority: i32,
 }
 
+/// 行为组件：袭击菜园（兔子啃食胡萝卜田）。
+///
+/// Behavior component: raid the garden (rabbit eats carrot crops).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorRaidGarden {
@@ -1818,6 +2129,9 @@ pub struct BehaviorRaidGarden {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：冲撞攻击（山羊蓄力冲撞目标）。
+///
+/// Behavior component: ram attack (goat charges and knocks back the target).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorRamAttack {
@@ -1847,6 +2161,9 @@ pub struct BehaviorRamAttack {
     pub run_speed: f64,
 }
 
+/// 行为组件：随机跃出水面（海豚跃出水面又落回）。
+///
+/// Behavior component: randomly breach out of the water (dolphin jumps out).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorRandomBreach {
@@ -1864,6 +2181,9 @@ pub struct BehaviorRandomBreach {
     pub y_dist: i32,
 }
 
+/// 行为组件：随机飞行（可在树木上停落）。
+///
+/// Behavior component: fly randomly (can land on trees).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorRandomFly {
@@ -1877,6 +2197,9 @@ pub struct BehaviorRandomFly {
     pub y_dist: i32,
 }
 
+/// 行为组件：随机悬停（在范围内上下浮动）。
+///
+/// Behavior component: hover randomly within a height range.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorRandomHover {
@@ -1896,6 +2219,9 @@ pub struct BehaviorRandomHover {
     pub y_offset: f64,
 }
 
+/// 行为组件：随机张望并坐下（狼、猫的待机行为）。
+///
+/// Behavior component: look around randomly and sit (idle behavior of wolves and cats).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorRandomLookAroundAndSit {
@@ -1921,6 +2247,9 @@ pub struct BehaviorRandomLookAroundAndSit {
     pub random_look_around_cooldown: i32,
 }
 
+/// 行为组件：随机环顾四周。
+///
+/// Behavior component: look around randomly.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorRandomLookAround {
@@ -1938,6 +2267,9 @@ pub struct BehaviorRandomLookAround {
     pub probability: f64,
 }
 
+/// 行为组件：随机搜索并挖掘（嗅梦兽挖出种子）。
+///
+/// Behavior component: search randomly and dig (sniffer digs up seeds).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorRandomSearchAndDig {
@@ -1979,6 +2311,9 @@ pub struct BehaviorRandomSearchAndDig {
     pub target_dig_position_offset: f64,
 }
 
+/// 行为组件：随机坐下（猫、狼随机蹲坐）。
+///
+/// Behavior component: sit down randomly (cats and wolves sit at random).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorRandomSitting {
@@ -1994,6 +2329,9 @@ pub struct BehaviorRandomSitting {
     pub priority: i32,
 }
 
+/// 行为组件：随机漫步。
+///
+/// Behavior component: stroll around randomly.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorRandomStroll {
@@ -2009,6 +2347,9 @@ pub struct BehaviorRandomStroll {
     pub y_dist: i32,
 }
 
+/// 行为组件：随机游动（在水中随机巡游）。
+///
+/// Behavior component: swim around randomly in water.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorRandomSwim {
@@ -2026,6 +2367,9 @@ pub struct BehaviorRandomSwim {
     pub y_dist: i32,
 }
 
+/// 行为组件：远程攻击目标（骷髅射箭、流浪者射箭）。
+///
+/// Behavior component: ranged attack the target (skeleton or stray shooting arrows).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorRangedAttack {
@@ -2065,6 +2409,9 @@ pub struct BehaviorRangedAttack {
     pub y_max_head_rotation: f64,
 }
 
+/// 行为组件：限制在阳光下活动（亡灵生物躲避日晒）。
+///
+/// Behavior component: restrict movement to sunlight (undead avoid daylight).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorRestrictSun {
@@ -2072,6 +2419,9 @@ pub struct BehaviorRestrictSun {
     pub priority: i32,
 }
 
+/// 行为组件：随液体液面升降（鱼随水位浮沉）。
+///
+/// Behavior component: rise and sink with the liquid level.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorRiseToLiquidLevel {
@@ -2085,6 +2435,9 @@ pub struct BehaviorRiseToLiquidLevel {
     pub sink_delta: f64,
 }
 
+/// 行为组件：咆哮（敌对生物的威吓动作）。
+///
+/// Behavior component: roar (intimidating action of a hostile mob).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorRoar {
@@ -2092,6 +2445,9 @@ pub struct BehaviorRoar {
     pub duration: f64,
 }
 
+/// 行为组件：翻滚（熊猫翻滚动作）。
+///
+/// Behavior component: roll (panda rolling action).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorRoll {
@@ -2101,6 +2457,9 @@ pub struct BehaviorRoll {
     pub probability: f64,
 }
 
+/// 行为组件：疯狂乱跑（未驯服的马受惊后脱缰奔跑）。
+///
+/// Behavior component: run around like crazy (untamed horse bolts in panic).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorRunAroundLikeCrazy {
@@ -2110,6 +2469,9 @@ pub struct BehaviorRunAroundLikeCrazy {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：受惊逃跑（兔子受惊后窜逃）。
+///
+/// Behavior component: get scared and flee (rabbit bolts when frightened).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorScared {
@@ -2119,6 +2481,9 @@ pub struct BehaviorScared {
     pub sound_interval: i32,
 }
 
+/// 行为组件：按序列发送事件（唤魔者召唤时播放仪式）。
+///
+/// Behavior component: send events in a sequence (evoker's summoning ritual).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorSendEvent {
@@ -2132,6 +2497,9 @@ pub struct BehaviorSendEvent {
     pub sequence: Vec<String>,
 }
 
+/// 行为组件：与同类分享物品（村民互相分享食物）。
+///
+/// Behavior component: share items with fellow villagers.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorShareItems {
@@ -2149,6 +2517,9 @@ pub struct BehaviorShareItems {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：蠹虫钻回石块中躲藏。
+///
+/// Behavior component: silverfish merges back into stone to hide.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorSilverfishMergeWithStone {
@@ -2156,6 +2527,9 @@ pub struct BehaviorSilverfishMergeWithStone {
     pub priority: i32,
 }
 
+/// 行为组件：唤醒附近石块中的蠹虫同伴。
+///
+/// Behavior component: silverfish wakes up friends hidden in nearby stone.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorSilverfishWakeUpFriends {
@@ -2163,6 +2537,9 @@ pub struct BehaviorSilverfishWakeUpFriends {
     pub priority: i32,
 }
 
+/// 行为组件：骷髅马陷阱（天雷生成骷髅与骷髅骑手）。
+///
+/// Behavior component: skeleton horse trap (lightning spawns a skeleton rider).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorSkeletonHorseTrap {
@@ -2174,6 +2551,9 @@ pub struct BehaviorSkeletonHorseTrap {
     pub within_radius: f64,
 }
 
+/// 行为组件：睡觉（村民、狐狸夜间入睡）。
+///
+/// Behavior component: sleep (villagers and foxes sleep at night).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorSleep {
@@ -2195,6 +2575,9 @@ pub struct BehaviorSleep {
     pub timeout_cooldown: f64,
 }
 
+/// 行为组件：史莱姆扑向目标造成接触伤害。
+///
+/// Behavior component: slime leaps at the target to deal contact damage.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorSlimeAttack {
@@ -2210,6 +2593,9 @@ pub struct BehaviorSlimeAttack {
     pub y_max_rotation: f64,
 }
 
+/// 行为组件：史莱姆在水中漂浮并随机跳跃。
+///
+/// Behavior component: slime floats in water and jumps randomly.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorSlimeFloat {
@@ -2221,6 +2607,9 @@ pub struct BehaviorSlimeFloat {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：史莱姆持续向前跳跃。
+///
+/// Behavior component: slime keeps jumping forward.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorSlimeKeepOnJumping {
@@ -2230,6 +2619,9 @@ pub struct BehaviorSlimeKeepOnJumping {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：史莱姆随机改变移动方向。
+///
+/// Behavior component: slime changes direction randomly.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorSlimeRandomDirection {
@@ -2243,6 +2635,9 @@ pub struct BehaviorSlimeRandomDirection {
     pub priority: i32,
 }
 
+/// 行为组件：吃零食（嗅梦兽蹲下啃食种子）。
+///
+/// Behavior component: snacking (sniffer crouches and nibbles seeds).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorSnacking {
@@ -2258,6 +2653,9 @@ pub struct BehaviorSnacking {
     pub snacking_stop_chance: f64,
 }
 
+/// 行为组件：打喷嚏（嗅梦兽喷出种子）。
+///
+/// Behavior component: sneeze (sniffer blows out seeds).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorSneeze {
@@ -2283,6 +2681,9 @@ pub struct BehaviorSneeze {
     pub within_radius: f64,
 }
 
+/// 行为组件：嗅探（嗅梦兽低头嗅闻周围）。
+///
+/// Behavior component: sniff (sniffer lowers its head to smell around).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorSniff {
@@ -2300,6 +2701,9 @@ pub struct BehaviorSniff {
     pub suspicion_radius_vertical: f64,
 }
 
+/// 行为组件：声波冲击（监守者的远程音波攻击）。
+///
+/// Behavior component: sonic boom (warden's ranged sonic attack).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorSonicBoom {
@@ -2331,6 +2735,9 @@ pub struct BehaviorSonicBoom {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：鱿鱼向深处下潜。
+///
+/// Behavior component: squid dives deeper.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorSquidDive {
@@ -2338,6 +2745,9 @@ pub struct BehaviorSquidDive {
     pub priority: i32,
 }
 
+/// 行为组件：鱿鱼受惊后游开逃离。
+///
+/// Behavior component: the squid swims away to flee.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorSquidFlee {
@@ -2345,6 +2755,9 @@ pub struct BehaviorSquidFlee {
     pub priority: i32,
 }
 
+/// 行为组件：鱿鱼原地漂浮待命。
+///
+/// Behavior component: the squid idles and drifts in place.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorSquidIdle {
@@ -2352,6 +2765,9 @@ pub struct BehaviorSquidIdle {
     pub priority: i32,
 }
 
+/// 行为组件：鱿鱼远离地面方块并回到水中。
+///
+/// Behavior component: the squid moves away from ground blocks and back into water.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorSquidMoveAwayFromGround {
@@ -2359,6 +2775,9 @@ pub struct BehaviorSquidMoveAwayFromGround {
     pub priority: i32,
 }
 
+/// 行为组件：鱿鱼离水后贴附在地面上。
+///
+/// Behavior component: the squid sticks to the ground while outside water.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorSquidOutOfWater {
@@ -2366,6 +2785,9 @@ pub struct BehaviorSquidOutOfWater {
     pub priority: i32,
 }
 
+/// 行为组件：潜行接近目标，进入扑击距离后跃起扑向目标。
+///
+/// Behavior component: stalk the target and pounce on it once within pounce range.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorStalkAndPounceOnTarget {
@@ -2391,6 +2813,9 @@ pub struct BehaviorStalkAndPounceOnTarget {
     pub stuck_time: f64,
 }
 
+/// 行为组件：待在最近被敲响的音符盒附近，并把背包物品丢给它。
+///
+/// Behavior component: stay near a recently played note block and toss inventory items to it.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorStayNearNoteblock {
@@ -2406,6 +2831,9 @@ pub struct BehaviorStayNearNoteblock {
     pub stop_distance: f64,
 }
 
+/// 行为组件：坐下状态下保持原地不动，阻止其他行为移动实体。
+///
+/// Behavior component: stay put while sitting, preventing other behaviors from moving the entity.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorStayWhileSitting {
@@ -2413,6 +2841,9 @@ pub struct BehaviorStayWhileSitting {
     pub priority: i32,
 }
 
+/// 行为组件：跺脚造成范围伤害（北极熊）。
+///
+/// Behavior component: stomp AoE damage attack (polar bear).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorStompAttack {
@@ -2468,6 +2899,9 @@ pub struct BehaviorStompAttack {
     pub y_max_head_rotation: f64,
 }
 
+/// 行为组件：寻找并踩碎海龟蛋（溺尸）。
+///
+/// Behavior component: find and stomp turtle eggs (drowned).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorStompTurtleEgg {
@@ -2485,6 +2919,9 @@ pub struct BehaviorStompTurtleEgg {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：走进搜索范围内村庄的随机位置。
+///
+/// Behavior component: move into a random location within a village in the search range.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorStrollTowardsVillage {
@@ -2502,6 +2939,9 @@ pub struct BehaviorStrollTowardsVillage {
     pub start_chance: f64,
 }
 
+/// 召唤实体序列：单次召唤的实体类型、数量、延迟、寿命与排列方式。
+///
+/// Summon entity sequence: entity type, count, delay, lifespan and formation of a single summon.
 #[serde_inline_default]
 #[derive(Clone, Deserialize, Debug, Default)]
 pub struct MinecraftSummonEntitySequence {
@@ -2529,6 +2969,9 @@ pub struct MinecraftSummonEntitySequence {
     pub target: String,
 }
 
+/// 召唤实体选项：可用的召唤序列及其触发条件、权重与施法表现。
+///
+/// Summon entity choices: available summon sequences with their filters, weight and casting presentation.
 #[serde_inline_default]
 #[derive(Clone, Deserialize, Debug, Default)]
 pub struct BehaviorSummonEntitySummonChoices {
@@ -2554,6 +2997,9 @@ pub struct BehaviorSummonEntitySummonChoices {
     pub sequence: Vec<MinecraftSummonEntitySequence>,
 }
 
+/// 行为组件：召唤其他实体（唤魔者等）。
+///
+/// Behavior component: summon other entities (evoker and similar).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorSummonEntity {
@@ -2563,6 +3009,9 @@ pub struct BehaviorSummonEntity {
     pub summon_choices: BehaviorSummonEntitySummonChoices,
 }
 
+/// 行为组件：附近有目标时鼓胀蓄力（苦力怕）。
+///
+/// Behavior component: swell up when a target is nearby (creeper).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorSwell {
@@ -2574,6 +3023,9 @@ pub struct BehaviorSwell {
     pub priority: i32,
 }
 
+/// 行为组件：在水中原地待命。
+///
+/// Behavior component: go idle while swimming.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorSwimIdle {
@@ -2585,6 +3037,9 @@ pub struct BehaviorSwimIdle {
     pub success_rate: f64,
 }
 
+/// 行为组件：在水中游荡（未寻路时随机漂移）。
+///
+/// Behavior component: wander around while swimming when not path-finding.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorSwimWander {
@@ -2600,6 +3055,9 @@ pub struct BehaviorSwimWander {
     pub wander_time: f64,
 }
 
+/// 行为组件：在水中跟随另一实体一同游动（海豚）。
+///
+/// Behavior component: follow another entity while both are swimming (dolphin).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorSwimWithEntity {
@@ -2627,6 +3085,9 @@ pub struct BehaviorSwimWithEntity {
     pub success_rate: f64,
 }
 
+/// 行为组件：俯冲攻击（幻翼等飞行生物）。
+///
+/// Behavior component: swoop attack (phantom and other flying mobs).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorSwoopAttack {
@@ -2640,6 +3101,9 @@ pub struct BehaviorSwoopAttack {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：接受其他实体递来的花（村民）。
+///
+/// Behavior component: accept a flower offered by another mob (villager).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorTakeFlower {
@@ -2647,6 +3111,9 @@ pub struct BehaviorTakeFlower {
     pub priority: i32,
 }
 
+/// 行为组件：被推挤时反过来锁定推挤者为目标（铁傀儡）。
+///
+/// Behavior component: target the mob that pushed it when pushed (iron golem).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorTargetWhenPushed {
@@ -2658,6 +3125,9 @@ pub struct BehaviorTargetWhenPushed {
     pub priority: i32,
 }
 
+/// 行为组件：被手持指定物品的玩家引诱并跟随。
+///
+/// Behavior component: be tempted by a player holding the specified items and follow them.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorTempt {
@@ -2681,6 +3151,9 @@ pub struct BehaviorTempt {
     pub within_radius: f64,
 }
 
+/// 行为组件：计时标记 1，开始时触发事件，持续指定时长后结束时触发事件。
+///
+/// Behavior component: timer flag 1, fires an event on start and another when its duration elapses.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorTimerFlag1 {
@@ -2694,6 +3167,9 @@ pub struct BehaviorTimerFlag1 {
     pub on_start: MinecraftTrigger,
 }
 
+/// 行为组件：计时标记 2，开始时触发事件，持续指定时长后结束时触发事件。
+///
+/// Behavior component: timer flag 2, fires an event on start and another when its duration elapses.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorTimerFlag2 {
@@ -2707,6 +3183,9 @@ pub struct BehaviorTimerFlag2 {
     pub on_start: MinecraftTrigger,
 }
 
+/// 行为组件：计时标记 3，开始时触发事件，持续指定时长后结束时触发事件。
+///
+/// Behavior component: timer flag 3, fires an event on start and another when its duration elapses.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorTimerFlag3 {
@@ -2720,6 +3199,9 @@ pub struct BehaviorTimerFlag3 {
     pub on_start: MinecraftTrigger,
 }
 
+/// 行为组件：注视手持可交易物品的玩家并展示商品（村民）。
+///
+/// Behavior component: look at a player holding a tradable item and show trade items (villager).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorTradeInterest {
@@ -2737,6 +3219,9 @@ pub struct BehaviorTradeInterest {
     pub within_radius: f64,
 }
 
+/// 行为组件：允许玩家与该实体交易，开始时中断其寻路。
+///
+/// Behavior component: allow the player to trade with this mob, stopping its navigation while active.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorTradeWithPlayer {
@@ -2748,6 +3233,9 @@ pub struct BehaviorTradeWithPlayer {
     pub max_distance_from_player: f64,
 }
 
+/// 行为组件：把主人正在攻击的实体作为自己的目标（恼鬼）。
+///
+/// Behavior component: target the same entity its owner is targeting (vex).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorVexCopyOwnerTarget {
@@ -2757,6 +3245,9 @@ pub struct BehaviorVexCopyOwnerTarget {
     pub priority: i32,
 }
 
+/// 行为组件：像恼鬼一样随机移动。
+///
+/// Behavior component: move around randomly like the vex.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorVexRandomMove {
@@ -2764,6 +3255,9 @@ pub struct BehaviorVexRandomMove {
     pub priority: i32,
 }
 
+/// 行为组件：凋灵随机发起攻击。
+///
+/// Behavior component: the wither launches random attacks.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorWitherRandomAttackPosGoal {
@@ -2771,6 +3265,9 @@ pub struct BehaviorWitherRandomAttackPosGoal {
     pub priority: i32,
 }
 
+/// 行为组件：凋灵优先攻击对它造成伤害最多的实体。
+///
+/// Behavior component: the wither focuses on the mob that dealt it the most damage.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorWitherTargetHighestDamage {
@@ -2796,6 +3293,9 @@ pub struct BehaviorWitherTargetHighestDamage {
     pub walk_speed_multiplier: f64,
 }
 
+/// 行为组件：使用工作点（POI）从事职业工作（村民）。
+///
+/// Behavior component: use the jobsite POI to perform work (villager).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorWork {
@@ -2819,6 +3319,9 @@ pub struct BehaviorWork {
     pub priority: i32,
 }
 
+/// 行为组件：使用堆肥桶工作点把多余种子转化为骨粉（村民）。
+///
+/// Behavior component: use the composter POI to convert excess seeds into bone meal (villager).
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorWorkComposter {
@@ -2856,6 +3359,9 @@ pub struct BehaviorWorkComposter {
     pub work_in_rain_tolerance: i32,
 }
 
+/// 行为组件：停下脚步以便另一只村民与之繁殖。
+///
+/// Behavior component: stop so another villager can breed with it.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorReceiveLove {
@@ -2865,11 +3371,12 @@ pub struct BehaviorReceiveLove {
     pub speed_multiplier: f64,
 }
 
+/// 行为组件：夜间待在室内，限制开门外出。
+///
+/// Behavior component: stay indoors during night time, restricting door use.
 #[serde_inline_default]
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct BehaviorRestrictOpenDoor {
     #[serde_inline_default(0)]
     pub priority: i32,
 }
-
-//todo: minecraft:behavior.summon_entity

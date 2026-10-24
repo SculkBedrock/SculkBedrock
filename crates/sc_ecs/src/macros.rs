@@ -1,3 +1,7 @@
+/// 为插件元组实现 `Plugins`：把每个插件依次添加到 App。
+///
+/// Implements `Plugins` for tuples of plugins: adds each plugin to the
+/// app in order.
 #[macro_export]
 macro_rules! impl_plugins_tuples {
     ($(($param: ident, $plugins: ident)),*) => {
@@ -15,6 +19,10 @@ macro_rules! impl_plugins_tuples {
     }
 }
 
+/// 为普通函数实现 `SystemFunction`：支持以原始参数或注入参数调用。
+///
+/// Implements `SystemFunction` for plain functions: supports calling with
+/// either raw or injected parameters.
 #[macro_export]
 macro_rules! impl_system_function {
     ($(($P:ident, $p:ident)),*) => {
@@ -34,6 +42,10 @@ macro_rules! impl_system_function {
     }
 }
 
+/// 为系统函数元组实现 `IntoSystem`：转换为按顺序运行的 `TupleFunctionSystem`。
+///
+/// Implements `IntoSystem` for tuples of system functions: converts them
+/// into a `TupleFunctionSystem` that runs in order.
 #[macro_export]
 macro_rules! impl_tuple_system_function {
     ($(($P:ident, $p:ident, $M:ident)),*) => {
@@ -51,6 +63,10 @@ macro_rules! impl_tuple_system_function {
     }
 }
 
+/// 为系统参数元组实现 `SystemParam`：元组整体作为一个参数注入。
+///
+/// Implements `SystemParam` for tuples of parameters: the tuple is
+/// injected as a single parameter.
 #[macro_export]
 macro_rules! impl_system_param_tuple {
     ($(($P:ident, $p:ident)),*) => {
@@ -62,6 +78,10 @@ macro_rules! impl_system_param_tuple {
     }
 }
 
+/// 为系统参数状态元组实现 `SystemParamState`：任一参数缺失则整体跳过。
+///
+/// Implements `SystemParamState` for tuples of parameter states: the
+/// whole tuple is skipped when any parameter is missing.
 #[macro_export]
 macro_rules! impl_system_param_state_tuple {
     ($(($P:ident, $p:ident)),*) => {
@@ -87,6 +107,10 @@ macro_rules! impl_system_param_state_tuple {
     }
 }
 
+/// 为组件元组实现 `Bundle`：元组作为组件束一次性附加。
+///
+/// Implements `Bundle` for tuples of components: the tuple is attached
+/// as a bundle in one shot.
 #[macro_export]
 macro_rules! impl_bundle {
     ($(($P:ident, $p:ident)),*) => {
@@ -100,6 +124,10 @@ macro_rules! impl_bundle {
     }
 }
 
+/// 为整数类型实现 `SparseIndex`：直接以自身值作为索引。
+///
+/// Implements `SparseIndex` for integer types: uses the value itself as
+/// the index.
 #[macro_export]
 macro_rules! impl_sparse_index {
     ($t:ty) => {
@@ -122,6 +150,17 @@ macro_rules! impl_sparse_index {
     };
 }
 
+/// 定义一个标签 trait 及其驻留器：标签可跨 DLL 按类型名比较、哈希与驻留。
+///
+/// Defines a label trait together with its interner: labels can be
+/// compared, hashed and interned by type name across DLLs.
+///
+/// 两种形式：基础形式使用空的额外方法；扩展形式通过 `extra_methods` /
+/// `extra_methods_impl` 注入 trait 与驻留实现的额外方法。
+///
+/// Two forms: the basic form uses empty extra methods; the extended form
+/// injects extra trait/impl methods via `extra_methods` /
+/// `extra_methods_impl`.
 #[macro_export]
 macro_rules! define_label {
     (
@@ -150,26 +189,35 @@ macro_rules! define_label {
 
             $($trait_extra_methods)*
 
+            /// 克隆本标签（装箱为 trait 对象）。
+            ///
             /// Clones this `
             #[doc = stringify!($label_trait_name)]
             ///`.
             fn dyn_clone(&self) -> ::std::boxed::Box<dyn $label_trait_name>;
 
+            /// 将本值转换为可与其他类型擦除值比较的形式。
+            ///
             /// Casts this value to a form where it can be compared with other type-erased values.
             fn as_dyn_eq(&self) -> &dyn $crate::dyn_method::DynEq;
 
+            /// 稳定的跨 DLL 标识：具体标签类型的 `std::any::type_name`。
+            /// `TypeId` 与指针地址在宿主与本 crate 的静态链接 cdylib 副本之间
+            /// 不一致，因此相等性与哈希必须基于该名称。
+            ///
             /// Stable cross-DLL identity: `std::any::type_name` of the
-            /// concrete label type. Pointer address and `TypeId` both differ
+            /// concrete label type. TypeId and pointer addresses differ
             /// between the host and a statically-linked cdylib copy of this
-            /// crate (see `resource::ResourceId`), so label equality and
-            /// hashing must use this name: otherwise systems a plugin
-            /// registers via `add_systems` land in an orphaned schedule slot
-            /// that the host tick loop never visits (silent no-run).
+            /// crate, so equality and hashing must use this name.
             fn label_name(&self) -> &'static str;
 
+            /// 将本值送入给定的 [`Hasher`]。
+            ///
             /// Feeds this value into the given [`Hasher`].
             fn dyn_hash(&self, state: &mut dyn ::std::hash::Hasher);
 
+            /// 返回与 `self` 对应的 [`Interned`] 值。
+            ///
             /// Returns an [`Interned`] value corresponding to `self`.
             fn intern(&self) -> $crate::intern::Interned<dyn $label_trait_name>
             where Self: Sized {
@@ -185,6 +233,8 @@ macro_rules! define_label {
                 (**self).dyn_clone()
             }
 
+            /// 将本值转换为可与其他类型擦除值比较的形式。
+            ///
             /// Casts this value to a form where it can be compared with other type-erased values.
             fn as_dyn_eq(&self) -> &dyn $crate::dyn_method::DynEq {
                 (**self).as_dyn_eq()

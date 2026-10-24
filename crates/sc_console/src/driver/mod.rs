@@ -1,3 +1,16 @@
+//! 控制台驱动：专用线程 + 有界信道。
+//!
+//! - GUI 模式：接管终端（备用屏 + raw 模式），以事件循环渲染；
+//! - Plain 模式：阻塞式 stdin 行读取，不改动终端模式；
+//! - Off 模式：不启动任何线程（handle 仍可用，输入始终为空）。
+//!
+//! 线程安全约定：
+//!
+//! - 控制台线程从不触碰游戏状态，只通过 `input_tx` 发送拥有所有权的 `String`；
+//! - 日志/输入信道全部有界（见 [`ConsoleConfig`]），队列满时丢弃并计数；
+//! - 终端恢复分三层：正常 `shutdown()` -> `Last` 阶段的关闭系统 ->
+//!   `atexit` 兜底（`process::exit` / panic 路径）。
+//!
 //! Console driver: dedicated thread plus bounded channels.
 //!
 //! - GUI mode: takes over the terminal (alternate screen + raw mode) with event-loop rendering;
@@ -47,6 +60,8 @@ pub(crate) use self::events::MAIN_DRAIN_MAX;
 pub use self::welcome::WelcomeChoice;
 pub(crate) use self::events::drain_events;
 
+/// 对外暴露的控制台句柄（`Clone + Send + Sync`，与日志层和宿主共享）。
+///
 /// Public console handle (`Clone + Send + Sync`, shared with the log layer and host).
 #[derive(Clone)]
 pub struct ConsoleHandle {
@@ -102,8 +117,8 @@ impl ConsoleHandle {
 
     /// Set the top info bar (server version plus pack label; pushed by the host when ready).
     ///
-    /// Only update the version fields, keeping the existing subtitle (`subtitle` is maintained
-    /// independently by [`ConsoleHandle::set_subtitle`] so boot snapshots never clobber it).
+    /// Only update the version fields, keeping the existing subtitle
+    /// (maintained independently by [`ConsoleHandle::set_subtitle`]).
     pub fn set_header(&self, header: ConsoleHeader) {
         if let Ok(mut slot) = self.inner.header.write() {
             slot.core_version = header.core_version;
@@ -242,6 +257,8 @@ impl ConsoleHandle {
     }
 }
 
+/// 控制台驱动（由宿主持有；`shutdown` 恢复终端并等待线程退出）。
+///
 /// Console driver (held by the host; `shutdown` restores the terminal and joins the thread).
 pub struct ConsoleDriver {
     handle: ConsoleHandle,
@@ -288,7 +305,7 @@ impl Drop for ConsoleDriver {
 ///
 /// Shortcut with `hosted = false`; embedded hosts (Tauri/mobile) should use
 /// [`spawn_console_hosted`] with the canonical host flag
-/// (e.g. `sc_utils::host_mode::is_hosted()`); this crate keeps no global flag of its own.
+/// (e.g. `sc_utils::host_mode::is_hosted()`).
 pub fn spawn_console(config: ConsoleConfig) -> std::io::Result<ConsoleDriver> {
     spawn_console_hosted(config, false)
 }
@@ -550,7 +567,7 @@ fn gui_loop(
             now,
         );
         if popup_age.is_some() {
-            state.dirty = true; // 播放期间每帧重绘
+            state.dirty = true; // repaint every frame while the popup plays
         }
         match state.phase {
             ServerPhase::Starting
@@ -600,7 +617,7 @@ fn gui_loop(
                     }
                     None => {
                         state.boot_t0 = None;
-                        state.dirty = true; // 最后一帧：底条/文案切稳态需重绘
+                        state.dirty = true; // last frame: bar/text switch to steady state
                         None
                     }
                 }
@@ -616,7 +633,7 @@ fn gui_loop(
             }
             Some(_) => {
                 state.afterglow_t0 = None;
-                state.dirty = true; // 最后一帧：底色复原需重绘
+                state.dirty = true; // last frame: background color restored
                 0.0
             }
             None => 0.0,
@@ -628,7 +645,7 @@ fn gui_loop(
             }
             Some(_) => {
                 state.celebrate_t0 = None;
-                state.dirty = true; // 最后一帧：行消失需重绘
+                state.dirty = true; // last frame: the row disappears
                 None
             }
             None => None,
@@ -886,11 +903,11 @@ fn gui_loop(
             Some((msg, t0)) => {
                 let elapsed_ms = t0.elapsed().as_millis() as u64;
                 if elapsed_ms < crate::render::COPY_FLASH_MS {
-                    state.dirty = true; // 提示存续期间保持推进（含渐显/渐隐动画）
+                    state.dirty = true; // keep ticking while the toast exists (fade in/out)
                     Some((msg.clone(), crate::render::copy_opacity(elapsed_ms)))
                 } else {
                     state.copy_flash = None;
-                    state.dirty = true; // 最后一帧：提示消失需重绘
+                    state.dirty = true; // last frame: the toast disappears
                     None
                 }
             }
@@ -915,7 +932,7 @@ fn gui_loop(
         }
         let exit_prompt = exit_prompt_opacity(state.exit_armed, state.exit_fade_from, now_i);
         if state.exit_armed.is_some() || state.exit_fade_from.is_some() {
-            state.dirty = true; // 渐显/渐隐期间保持帧率推进
+            state.dirty = true; // keep the frame rate going during fade in/out
         }
         debug_assert!(
             !(state.exit_armed.is_some() && state.exit_fade_from.is_some()),
@@ -991,9 +1008,7 @@ fn gui_loop(
 }
 
 /// Whether to start the sweep: the server is marked done and the boot animation finished or is off.
-///
-/// Pure function (unit-testable; only used in the `Starting` branch):
-/// boot and sweep are exclusive locked-state animations that play in sequence.
+/// Boot and sweep play in sequence (only used in the `Starting` branch).
 fn should_start_sweep(server_running: bool, boot_active: bool) -> bool {
     server_running && !boot_active
 }
@@ -1013,7 +1028,7 @@ fn enter_terminal(handle: &ConsoleHandle) -> std::io::Result<()> {
 /// Enable mouse capture (after welcome: only the console needs wheel scrolling and selection).
 ///
 /// Best effort: terminals without support ignore the error; keyboard paging still works.
-/// `restore_terminal` always disables capture (a no-op when never enabled), so pairing is safe.
+/// `restore_terminal` always disables capture (a no-op when never enabled).
 fn enable_mouse_capture() {
     use crossterm::event::EnableMouseCapture;
     let _ = std::io::stdout().execute(EnableMouseCapture);

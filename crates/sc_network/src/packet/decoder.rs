@@ -24,8 +24,13 @@ impl PackerDecoder {
         self.compression_algorithm = compression_algorithm;
     }
 
+    /// 同步解码：先解密（[`RecvCipher`]），再解压，最后解析协议。
+    ///
     /// Synchronous decode: decryption ([`RecvCipher`]), then decompression,
     /// then protocol parsing.
+    ///
+    /// 加解密是微秒级的纯 CPU 工作，保持同步：调用方在 `recv_cipher.write()`
+    /// 临界区内传入 `&mut RecvCipher`，同步返回时锁即释放。
     ///
     /// Crypto is microsecond-scale pure CPU work and stays synchronous: the
     /// caller passes `&mut RecvCipher` inside the `recv_cipher.write()`

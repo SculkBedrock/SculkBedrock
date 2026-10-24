@@ -23,6 +23,8 @@ const RESEND_THRESHOLD_SECS: u64 = 2;
 const MAX_RESENDS_PER_TICK: usize = 32;
 const MAX_NACK_RESENDS_PER_PACKET: usize = 64;
 
+/// 发送路径失败。
+///
 /// Send-path failure.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, ScError)]
 pub enum SendQueueError {
@@ -140,6 +142,9 @@ impl std::error::Error for SendQueueError {
 }
 
 
+/// 该队列用于排定待发送报文的优先级。
+/// 过期的报文会被丢弃或被重新请求，具体行为由 `timeout` 属性决定。
+///
 /// This queue is used to prioritize packets being sent out
 /// Packets that are old, are either dropped or requested again.
 /// You can define this behavior with the `timeout` property.

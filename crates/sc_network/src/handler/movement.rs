@@ -1,10 +1,18 @@
+//! 网络侧的移动输入处理（游戏逻辑位于 `sc_game::movement`；本模块只做转换）。
+//!
+//! `player_auth_input`（SCConnectionUpdate）：解码 `PlayerAuthInput` ->
+//! 转换为游戏侧的 [`sc_game::net::PlayerInput`] -> 推入玩家的
+//! `PlayerMovement`（sc_game）输入缓冲区。
+//! 保留状态门控（只接受 InGame）；权威性校验由游戏侧的
+//! `movement_input_drain` 消费。
+//!
 //! Network-side movement input handling (game logic lives in `sc_game::movement`; this module only translates).
 //!
 //! `player_auth_input` (SCConnectionUpdate): decodes `PlayerAuthInput` ->
 //! translates to game-side [`sc_game::net::PlayerInput`] -> pushes into the player
 //! `PlayerMovement` (sc_game) input buffer.
 //! State gating is kept (only InGame is accepted); authoritative validation is
-//! consumed by game-side `movement_input_drain` (inbound boundary in docs/multi_world_ecs.md).
+//! consumed by game-side `movement_input_drain`.
 
 use log::warn;
 use sc_block::position::BlockPosition;
@@ -107,6 +115,8 @@ pub(crate) fn player_auth_input(
             jumping: packet.jumping(),
             sprinting: packet.sprinting(),
             flying: packet.flying(),
+            start_swimming: packet.start_swimming(),
+            stop_swimming: packet.stop_swimming(),
             tick: packet.tick,
         };
         // Hold the state lock briefly (never across await, never on hot resources).

@@ -1,19 +1,24 @@
+//! `ItemStackRequest`（0x93 = 147）边界类型（2168 协议档案）。
+//!
 //! `ItemStackRequest` (0x93 = 147) boundary type (2168 profile).
 //!
-//! Supported subset (all shapes cross-checked against bedrock-protocol-docs
-//! action values, the 1.26.40 legacy-container note and an independent
-//! Bedrock implementation for the classic pre-cereal layout):
+//! 支持的动作子集：
+//! - `Take`（0）/ `Place`（1）：数量 + 源槽位 + 目标槽位。
+//! - `Swap`（2）：源槽位 + 目标槽位。
+//! - `CraftRecipe`（10）/ `CraftRecipeAuto`（11）：配方网络 ID + 请求合成次数。
+//! - 其他任何动作类型：载荷形态未实现，整个包以有界错误被拒绝（不猜测、
+//!   绝不 panic），记录后跳过。
+//!
+//! 畸形缓冲区返回 `Err`，绝不 panic。
+//!
+//! Supported action subset:
 //! - `Take` (0) / `Place` (1): amount + source slot + destination slot.
-//!   Parsed so mixed arrange-then-craft requests stay aligned; the moves
-//!   themselves are **not** applied — the server crafts authoritatively
-//!   from the inventory multiset and resyncs (client grid prediction is
-//!   never trusted).
-//! - `Swap` (2): source slot + destination slot (same treatment as moves).
+//! - `Swap` (2): source slot + destination slot.
 //! - `CraftRecipe` (10) / `CraftRecipeAuto` (11): recipe network id +
-//!   requested craft count → craft intents.
-//! - Any other action type: the payload shape is not implemented, so the
-//!   whole packet is rejected with a bounded error (never guessed, never
-//!   panics). Such requests are logged and skipped; no craft executes.
+//!   requested craft count.
+//! - Any other action type: the payload shape is unimplemented, so the whole
+//!   packet is rejected with a bounded error (never guessed, never panics);
+//!   such requests are logged and skipped.
 //!
 //! Malformed buffers return `Err`, never panic.
 
@@ -23,9 +28,14 @@ use sc_binary::interfaces::{Reader, Writer};
 use sc_binary::{ByteReader, ByteWriter};
 use sc_network_macros::MinecraftPacket;
 
+/// 物品栏请求包的线上协议 ID。
+///
+/// The on-the-wire protocol id of the item stack request packet.
 pub const ITEM_STACK_REQUEST_PACKET_ID: u16 = 147;
 
-// Wire-protocol namespace mirrors official docs.
+/// 物品栏请求动作类型常量。
+///
+/// Item stack request action type constants.
 #[allow(non_snake_case)]
 pub mod ItemStackRequestActionType {
     pub const TAKE: u8 = 0;
@@ -35,7 +45,7 @@ pub mod ItemStackRequestActionType {
     pub const DESTROY: u8 = 4;
     pub const CONSUME: u8 = 5;
     pub const CREATE: u8 = 6;
-    // Action TYPE IDs: 7 LAB_COMBINE, 8 BEACON_PAYMENT, 9 MINE_BLOCK.
+    // Action type ids: 7 LAB_COMBINE, 8 BEACON_PAYMENT, 9 MINE_BLOCK.
     pub const LAB_TABLE_COMBINE: u8 = 7;
     pub const BEACON_PAYMENT: u8 = 8;
     pub const MINE_BLOCK: u8 = 9;
@@ -43,6 +53,8 @@ pub mod ItemStackRequestActionType {
     pub const CRAFT_RECIPE_AUTO: u8 = 11;
     pub const CRAFT_CREATIVE: u8 = 12;
     pub const CRAFT_RECIPE_OPTIONAL: u8 = 13;
+    /// 索引 13 在协议 2225 及之后承载 CraftReservedAction。
+    ///
     /// Index 13 carries CraftReservedAction on protocol 2225 and later.
     pub const CRAFT_RESERVED_ACTION: u8 = 13;
     pub const CRAFT_REPAIR: u8 = 14;
@@ -51,16 +63,40 @@ pub mod ItemStackRequestActionType {
     pub const CRAFT_RESULTS: u8 = 17;
 }
 
+/// 槽位中的容器引用（对合成逻辑不透明，仅用于保持流对齐——服务端绝不
+/// 信任客户端的槽位路由）。
+///
 /// Container reference inside a slot (opaque to crafting; only consumed
 /// for stream alignment — the server never trusts client slot routing).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RequestSlotRef {
+    /// 容器枚举值。
+    ///
+    /// The container enumeration value.
     pub container_enum: u8,
+    /// 动态槽位编号，仅当容器使用动态槽位时存在。
+    ///
+    /// The dynamic slot index; present only for containers using dynamic
+    /// slots.
     pub dynamic_slot: Option<u32>,
+    /// 静态槽位编号。
+    ///
+    /// The static slot index.
     pub slot: u8,
+    /// 槽位的网络 ID。
+    ///
+    /// The network id of the slot.
     pub net_id: i32,
 }
 
+/// 读取一个槽位引用。
+///
+/// Reads one slot reference.
+///
+/// - `buf`: 输入字节读取器
+///
+/// # Errors
+/// 缓冲区不足时返回 IO 错误。
 fn read_slot_ref(buf: &mut ByteReader) -> Result<RequestSlotRef, Error> {
     let container_enum = buf.read_u8()?;
     let dynamic_slot = if buf.read_bool()? {
@@ -78,6 +114,15 @@ fn read_slot_ref(buf: &mut ByteReader) -> Result<RequestSlotRef, Error> {
     })
 }
 
+/// 写入一个槽位引用。
+///
+/// Writes one slot reference.
+///
+/// - `buf`: 输出字节写入器
+/// - `slot`: 待写入的槽位引用
+///
+/// # Errors
+/// 写入失败时返回 IO 错误。
 fn write_slot_ref(buf: &mut ByteWriter, slot: &RequestSlotRef) -> Result<(), Error> {
     buf.write_u8(slot.container_enum)?;
     match slot.dynamic_slot {
@@ -92,67 +137,167 @@ fn write_slot_ref(buf: &mut ByteWriter, slot: &RequestSlotRef) -> Result<(), Err
     Ok(())
 }
 
+/// 一个已解析的请求动作。
+///
 /// One parsed request action.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ItemStackRequestAction {
+    /// 合成结果动作。
+    ///
+    /// A craft results action.
     CraftResults {
+        /// 合成次数。
+        ///
+        /// The number of crafts.
         times: u8,
     },
+    /// 消耗动作：从源槽位扣除指定数量。
+    ///
+    /// A consume action: removes the given amount from the source slot.
     Consume {
+        /// 消耗数量。
+        ///
+        /// The consumed amount.
         amount: u8,
+        /// 源槽位引用。
+        ///
+        /// The source slot reference.
         source: RequestSlotRef,
     },
+    /// 创建动作：在结果槽位生成物品。
+    ///
+    /// A create action: produces the item in the result slot.
     Create {
+        /// 结果槽位编号。
+        ///
+        /// The result slot index.
         result_slot: u8,
     },
+    /// 客户端侧移动（整理）。仅为对齐而解析；游戏依据权威多重集合成。
+    ///
     /// Client-side move (arrange). Parsed for alignment only; the game
     /// crafts from the authoritative multiset instead.
     Move {
+        /// 移动动作类型编号。
+        ///
+        /// The move action type ordinal.
         action_type: u8,
+        /// 移动数量；`Swap` 动作为 `None`。
+        ///
+        /// The moved amount; `None` for the `Swap` action.
         amount: Option<u8>,
+        /// 源槽位引用。
+        ///
+        /// The source slot reference.
         source: RequestSlotRef,
+        /// 目标槽位引用。
+        ///
+        /// The destination slot reference.
         destination: RequestSlotRef,
     },
+    /// 按配方合成动作。
+    ///
+    /// A craft-by-recipe action.
     CraftRecipe {
+        /// 配方网络 ID。
+        ///
+        /// The recipe network id.
         recipe_network_id: u32,
+        /// 合成次数。
+        ///
+        /// The number of crafts.
         times: u8,
     },
+    /// 自动合成动作（客户端自动选择材料）。
+    ///
+    /// An auto craft action (the client selects the ingredients).
     CraftRecipeAuto {
+        /// 配方网络 ID。
+        ///
+        /// The recipe network id.
         recipe_network_id: u32,
+        /// 合成次数。
+        ///
+        /// The number of crafts.
         times: u8,
     },
+    /// 创造模式取物（动作类型 12）：`creative_id` 是本服务端创造模式物品
+    /// 列表中从 1 开始的条目 ID。末尾的载荷字节是不透明的（并非取出的
+    /// 数量：整组取物仍携带 1）；它仅用于保持流对齐，实际发放的数量总是
+    /// 来自该请求自身中消耗输出槽的移动动作。
+    ///
     /// Creative-mode take (action type 12): `creative_id` is the 1-based
     /// entry id from this server's CreativeContent listing. The trailing
     /// payload byte is opaque (not the taken count: full-stack takes still
     /// carry 1); it is consumed for stream alignment only, and the granted
     /// amount always comes from the request's own Output-consuming Moves.
     CraftCreative {
+        /// 创造模式条目 ID。
+        ///
+        /// The creative content entry id.
         creative_id: u32,
     },
+    /// 挖掘方块消耗手持物品耐久（动作类型 9：SCREEN_HUD_MINE_BLOCK）。
+    ///
+    /// Breaking a block with tool durability loss (action type 9: SCREEN_HUD_MINE_BLOCK).
+    MineBlock {
+        hotbar_slot: i32,
+        predicted_durability: i32,
+        stack_network_id: i32,
+    },
+    /// 其他任何动作类型。其载荷形态未实现，因此无法安全对齐，整个包会被
+    /// 拒绝。
+    ///
     /// Any other action type. The payload shape is not implemented, so the
     /// request cannot be aligned safely and the packet is rejected.
     Unknown {
+        /// 未知动作的类型编号。
+        ///
+        /// The type ordinal of the unknown action.
         action_type: u8,
     },
 }
 
-/// One client request: id + bounded action list.
+/// 一个客户端请求：请求 ID + 有界的动作列表。
+///
+/// One client request: id plus a bounded action list.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemStackRequestEntry {
+    /// 请求 ID。
+    ///
+    /// The request id.
     pub request_id: i32,
+    /// 该请求携带的动作列表。
+    ///
+    /// The list of actions carried by this request.
     pub actions: Vec<ItemStackRequestAction>,
 }
 
+/// `ItemStackRequest` 包（客户端 → 服务端）。
+///
 /// `ItemStackRequest` packet (client → server).
 #[derive(Clone, Debug, Eq, PartialEq, MinecraftPacket)]
 pub struct ItemStackRequest {
+    /// 本包携带的请求列表。
+    ///
+    /// The list of requests carried by this packet.
     pub requests: Vec<ItemStackRequestEntry>,
 }
 
 impl ItemStackRequest {
+    /// 单个包允许的最大请求数。
+    ///
+    /// The maximum number of requests allowed in one packet.
     pub const MAX_REQUESTS: usize = 64;
+    /// 单个请求允许的最大动作数。
+    ///
+    /// The maximum number of actions allowed in one request.
     pub const MAX_ACTIONS: usize = 64;
 
+    /// 仅提取合成动作（配方网络 ID、次数）。供合成翻译器使用；客户端侧
+    /// 移动会被跳过（服务端依据权威多重集合成，而不是重放客户端的槽位
+    /// 移动）。
+    ///
     /// Craft actions only (recipe network id, times). Used by the crafting
     /// translator; client-side moves are skipped (the server crafts from
     /// the authoritative multiset instead of replaying client slot moves).
@@ -174,6 +319,7 @@ impl ItemStackRequest {
                     | ItemStackRequestAction::Create { .. }
                     | ItemStackRequestAction::CraftResults { .. }
                     | ItemStackRequestAction::CraftCreative { .. }
+                    | ItemStackRequestAction::MineBlock { .. }
                     | ItemStackRequestAction::Unknown { .. } => {}
                 }
             }
@@ -181,6 +327,8 @@ impl ItemStackRequest {
         out
     }
 
+    /// 是否存在携带合成动作的请求。
+    ///
     /// Whether any request carries a craft action.
     pub fn has_craft(&self) -> bool {
         self.requests.iter().any(|request| {
@@ -195,6 +343,16 @@ impl ItemStackRequest {
     }
 }
 
+/// 读取一个移动类动作。
+///
+/// Reads one move-style action.
+///
+/// - `buf`: 输入字节读取器
+/// - `action_type`: 该动作的类型编号
+/// - `with_amount`: 该动作是否携带数量字段
+///
+/// # Errors
+/// 缓冲区不足时返回 IO 错误。
 fn read_move(
     buf: &mut ByteReader,
     action_type: u8,
@@ -215,6 +373,16 @@ fn read_move(
     })
 }
 
+/// 读取一个请求动作，按动作类型分派到对应的载荷解析。
+///
+/// Reads one request action, dispatching to the matching payload parser by
+/// action type.
+///
+/// - `buf`: 输入字节读取器
+///
+/// # Errors
+/// 缓冲区不足、动作类型非法、条目数量超限或遇到未实现的动作类型时返回 IO
+/// 错误。
 fn read_action(buf: &mut ByteReader) -> Result<ItemStackRequestAction, Error> {
     let action_type = u8::try_from(buf.read_var_u32()?)
         .map_err(|_| Error::new(ErrorKind::InvalidData, "invalid action type"))?;
@@ -231,17 +399,17 @@ fn read_action(buf: &mut ByteReader) -> Result<ItemStackRequestAction, Error> {
         ItemStackRequestActionType::CREATE => Ok(ItemStackRequestAction::Create {
             result_slot: buf.read_u8()?,
         }),
-        // Unsupported actions decode their payload, then classify as
-        // Unknown (stream stays aligned; the caller answers ERROR so the
-        // client rolls its prediction back instead of stalling).
+        // Unsupported actions consume their payload first, then classify as
+        // Unknown (keeping the stream aligned); the caller replies ERROR so the
+        // client rolls back its prediction instead of stalling.
         ItemStackRequestActionType::DROP => {
-            buf.read_u8()?; // count
+            buf.read_u8()?; // amount
             read_slot_ref(buf)?;
             buf.read_bool()?;
             Ok(ItemStackRequestAction::Unknown { action_type })
         }
         ItemStackRequestActionType::DESTROY => {
-            buf.read_u8()?; // count
+            buf.read_u8()?; // amount
             read_slot_ref(buf)?;
             Ok(ItemStackRequestAction::Unknown { action_type })
         }
@@ -254,21 +422,25 @@ fn read_action(buf: &mut ByteReader) -> Result<ItemStackRequestAction, Error> {
             Ok(ItemStackRequestAction::Unknown { action_type })
         }
         ItemStackRequestActionType::MINE_BLOCK => {
-            buf.read_var_i32()?;
-            buf.read_var_i32()?;
-            buf.read_i32_le()?;
-            Ok(ItemStackRequestAction::Unknown { action_type })
+            let hotbar_slot = buf.read_var_i32()?;
+            let predicted_durability = buf.read_var_i32()?;
+            let stack_network_id = buf.read_i32_le()?;
+            Ok(ItemStackRequestAction::MineBlock {
+                hotbar_slot,
+                predicted_durability,
+                stack_network_id,
+            })
         }
         ItemStackRequestActionType::CRAFT_CREATIVE => {
             let creative_id = buf.read_var_u32()?;
-            buf.read_u8()?; // opaque trailing byte, alignment only (see variant docs)
+            buf.read_u8()?; // opaque trailing byte, alignment only
             Ok(ItemStackRequestAction::CraftCreative { creative_id })
         }
         ItemStackRequestActionType::CRAFT_RECIPE_OPTIONAL => {
             if crate::protocol::version::protocol_at_least(
                 crate::protocol::version::PROTOCOL_VERSION_1_26_60,
             ) {
-                // CraftReservedAction on protocol 2225 and later.
+                // Protocol 2225 and later: CraftReservedAction.
                 buf.read_string()?;
                 buf.read_u8()?;
             } else {
@@ -278,7 +450,7 @@ fn read_action(buf: &mut ByteReader) -> Result<ItemStackRequestAction, Error> {
             Ok(ItemStackRequestAction::Unknown { action_type })
         }
         ItemStackRequestActionType::CRAFT_REPAIR => {
-            buf.read_i32_le()?; // recipe net id (intLE)
+            buf.read_i32_le()?; // recipe network id (intLE)
             buf.read_u8()?;
             buf.read_var_i32()?; // repair cost
             Ok(ItemStackRequestAction::Unknown { action_type })
@@ -339,9 +511,9 @@ fn read_action(buf: &mut ByteReader) -> Result<ItemStackRequestAction, Error> {
             })
         }
         other => {
-            // Payload shape not implemented: the request cannot be aligned
-            // safely, so the whole packet is rejected (caller logs + skips).
-            // This is never silent and never panics.
+            // Payload shape unimplemented: the request cannot be safely aligned,
+            // so the whole packet is rejected (caller logs and skips). Never
+            // silent, never panics.
             Err(Error::new(
                 ErrorKind::Unsupported,
                 format!("unsupported item stack action {other}"),
@@ -351,6 +523,14 @@ fn read_action(buf: &mut ByteReader) -> Result<ItemStackRequestAction, Error> {
 }
 
 impl Reader<ItemStackRequest> for ItemStackRequest {
+    /// 从字节流中解码一个物品栏请求包。
+    ///
+    /// Decodes an item stack request packet from a byte stream.
+    ///
+    /// - `buf`: 输入字节读取器
+    ///
+    /// # Errors
+    /// 缓冲区不足或请求数量超过上限时返回 IO 错误。
     fn read(buf: &mut ByteReader) -> Result<Self, Error> {
         let count = buf.read_var_u32()? as usize;
         if count > Self::MAX_REQUESTS {
@@ -368,6 +548,14 @@ impl Reader<ItemStackRequest> for ItemStackRequest {
 }
 
 impl ItemStackRequestEntry {
+    /// 从字节流中读取一个请求条目。
+    ///
+    /// Reads one request entry from a byte stream.
+    ///
+    /// - `buf`: 输入字节读取器
+    ///
+    /// # Errors
+    /// 缓冲区不足、动作数量或过滤字符串数量超限时返回 IO 错误。
     pub fn read_entry(buf: &mut ByteReader) -> Result<Self, Error> {
         let request_id = buf.read_var_i32()?;
         let action_count = buf.read_var_u32()? as usize;
@@ -380,11 +568,11 @@ impl ItemStackRequestEntry {
         let mut actions = Vec::with_capacity(action_count);
         for _ in 0..action_count {
             actions.push(read_action(buf)?);
-            // Every known action (including DROP/DESTROY/BEACON/MINE/CREATIVE/
-            // OPTIONAL/REPAIR/LOOM normalized to Unknown) consumes its
-            // standard-length payload, so alignment holds for following
-            // actions. Only an unknown TYPE errors out (packet skipped with
-            // a warning, connection kept).
+            // Every known action (including those normalized to Unknown:
+            // DROP/DESTROY/BEACON/MINE/CREATIVE/OPTIONAL/REPAIR/LOOM) consumes
+            // its standard-length payload, so later actions stay aligned. Only
+            // unknown action types error out (packet logged and skipped; the
+            // connection is kept).
         }
         let filters = buf.read_var_u32()?;
         if filters > 16 {
@@ -407,6 +595,14 @@ impl ItemStackRequestEntry {
     }
 }
 
+/// 读取一个请求材料描述符并跳过其载荷。
+///
+/// Reads one request ingredient descriptor and skips its payload.
+///
+/// - `buf`: 输入字节读取器
+///
+/// # Errors
+/// 缓冲区不足或遇到不支持的材料描述符类型时返回 IO 错误。
 fn read_request_ingredient(buf: &mut ByteReader) -> Result<(), Error> {
     let kind = buf.read_var_u32()?;
     let _legacy = buf.read_u8()?;
@@ -434,15 +630,31 @@ fn read_request_ingredient(buf: &mut ByteReader) -> Result<(), Error> {
     Ok(())
 }
 
+/// 写入动作类型编号与对应的旧版类型字节。
+///
+/// Writes the action type ordinal and its legacy type byte.
+///
+/// - `buf`: 输出字节写入器
+/// - `kind`: 待写入的动作类型编号
+///
+/// # Errors
+/// 写入失败时返回 IO 错误。
 fn write_action_type(buf: &mut ByteWriter, kind: u8) -> Result<(), Error> {
-    // Legacy type mapping: TYPE 0..6 keep legacy values, TYPE 7..17 map to
-    // legacy 9..19 (legacy 7/8 were retired container moves). Writer is only
-    // used for test round-trips.
+    // Legacy type mapping: TYPE 0..6 keep their values, TYPE 7..17 map to legacy
+    // 9..19 (legacy 7/8 were deprecated container moves). This writer is test-only.
     buf.write_var_u32(kind as u32)?;
     buf.write_u8(if kind >= 7 { kind + 2 } else { kind })
 }
 
 impl Writer for ItemStackRequest {
+    /// 将物品栏请求包编码写入字节流。
+    ///
+    /// Encodes the item stack request packet into a byte stream.
+    ///
+    /// - `buf`: 输出字节写入器
+    ///
+    /// # Errors
+    /// 缓冲区不足或遇到无法编码的未知动作时返回 IO 错误。
     fn write(&self, buf: &mut ByteWriter) -> Result<(), Error> {
         buf.write_var_u32(self.requests.len() as u32)?;
         for request in &self.requests {
@@ -494,7 +706,7 @@ impl Writer for ItemStackRequest {
                         write_action_type(buf, ItemStackRequestActionType::CRAFT_RECIPE_AUTO)?;
                         buf.write_var_u32(*recipe_network_id)?;
                         buf.write_u8(*times)?;
-                        buf.write_var_u32(0)?; // automatic input selection, no descriptor hints
+                        buf.write_var_u32(0)?; // auto-ingredient selection, no descriptor prompt
                     }
                     ItemStackRequestAction::Unknown { action_type } => {
                         if *action_type != 16 {
@@ -510,10 +722,20 @@ impl Writer for ItemStackRequest {
                         buf.write_var_u32(*creative_id)?;
                         buf.write_u8(0)?;
                     }
+                    ItemStackRequestAction::MineBlock {
+                        hotbar_slot,
+                        predicted_durability,
+                        stack_network_id,
+                    } => {
+                        write_action_type(buf, ItemStackRequestActionType::MINE_BLOCK)?;
+                        buf.write_var_i32(*hotbar_slot)?;
+                        buf.write_var_i32(*predicted_durability)?;
+                        buf.write_i32_le(*stack_network_id)?;
+                    }
                 }
             }
-            buf.write_var_u32(0)?; // stringsToFilter
-            buf.write_i32_le(-1)?; // UNKNOWN text origin
+            buf.write_var_u32(0)?; // filter string count
+            buf.write_i32_le(-1)?; // unknown text origin
         }
         Ok(())
     }
@@ -739,5 +961,23 @@ mod tests {
                 && destination.slot == 0
         ));
         assert!(!request.has_craft());
+    }
+    #[test]
+    fn mine_block_action_round_trip() {
+        let request = ItemStackRequest {
+            requests: vec![ItemStackRequestEntry {
+                request_id: -42,
+                actions: vec![ItemStackRequestAction::MineBlock {
+                    hotbar_slot: 3,
+                    predicted_durability: 12,
+                    stack_network_id: 100,
+                }],
+            }],
+        };
+        let mut writer = ByteWriter::new();
+        request.write(&mut writer).unwrap();
+        let mut reader = ByteReader::from(writer.as_slice());
+        let decoded = ItemStackRequest::read(&mut reader).unwrap();
+        assert_eq!(request, decoded);
     }
 }

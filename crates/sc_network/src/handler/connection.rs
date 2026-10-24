@@ -37,6 +37,9 @@ impl Plugin for SCConnectionHandlerPlugin {
     }
 }
 
+/// 每 tick 回收已结束的任务句柄，以限制句柄集合的增长
+/// （见 [`ConnectionThreadManager::sweep_finished`]）。
+///
 /// Reaps finished task handles every tick to bound handle-set growth (see
 /// [`ConnectionThreadManager::sweep_finished`]).
 fn sweep_connection_threads(mut manager: ResMut<ConnectionThreadManager>) {

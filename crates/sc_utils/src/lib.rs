@@ -1,3 +1,9 @@
+//! sc_utils：共享辅助类型与游戏结构体定义。
+//!
+//! 与网络无关的公共类型：游戏结构体（坐标/服务端属性/MOTD）、客户端数据
+//! （MinecraftClient/MinecraftClientData）、世界类型与调度标签
+//! （SC*Schedule，见 schedule.rs）。
+//!
 //! sc_utils: shared helpers and game struct definitions.
 //!
 //! Network-independent common types: game structs (position/server properties/MOTD),

@@ -45,6 +45,8 @@ pub struct SCNetworkSettings {
     pub ipv6_port: u16,
     pub server_motd: Arc<RwLock<Motd>>,
     pub compression_algorithm: CompressionAlgorithm,
+    /// 客户端是否必须接受资源包（默认 false）。
+    ///
     /// Whether clients must accept resource packs (default false).
     pub force_resource_packs: bool,
 }

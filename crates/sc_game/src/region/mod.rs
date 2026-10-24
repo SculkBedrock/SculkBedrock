@@ -1,16 +1,25 @@
-//! Game-domain region extension (framework region types live in sc_ecs::region).
+//! 游戏域的 region 扩展（框架 region 类型位于 `sc_ecs::region`）。
 //!
+//! Game-domain region extension (framework region types live in
+//! sc_ecs::region).
+//!
+//! 本模块只保留 Minecraft 专属部分：
 //! This module keeps only the Minecraft-specific parts:
-//! - [`RegionId`]: world plus grid-coordinate region identity;
-//! - [`RegionGrid`]: chunk to region grid math;
-//! - [`region_tick`]: sample region tick injected into `RegionDriver`.
+//! - [`RegionId`]：世界加网格坐标的 region 标识；
+//!   [`RegionId`]: world plus grid-coordinate region identity;
+//! - [`RegionGrid`]：区块到 region 网格的数学换算；
+//!   [`RegionGrid`]: chunk to region grid math;
+//! - [`region_tick`]：注入 `RegionDriver` 的示例 region tick。
+//!   [`region_tick`]: sample region tick injected into `RegionDriver`.
 //!
+//! 共享的框架类型在此重新导出，供游戏域使用。
 //! Shared framework types re-export here for game-domain use.
 
 pub mod transaction;
 
 pub use sc_ecs::region::{
-    EntityRegion, Region, RegionBus, RegionDriver, RegionEvent, RegionHub, RegionStatus,
+    BoundedRegionScheduler, EntityRegion, Region, RegionBus, RegionDriver, RegionEvent, RegionHub,
+    RegionStatus,
 };
 pub use transaction::{OperationId, ParticipantVote, TransactionCoordinator, TransactionState};
 
@@ -26,31 +35,63 @@ use std::time::Duration;
 use crate::world::bus::{RegionPing, RegionPingBus};
 use crate::world::GameWorldId;
 
+/// Region 标识（世界内网格坐标）。
+///
 /// Region identity (in-world grid coordinates).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RegionId {
+    /// 所属游戏世界 id。
+    ///
+    /// Owning game-world id.
     pub world: GameWorldId,
+    /// region 网格 X 坐标。
+    ///
+    /// Region grid X coordinate.
     pub x: i32,
+    /// region 网格 Z 坐标。
+    ///
+    /// Region grid Z coordinate.
     pub z: i32,
 }
 
 impl RegionId {
+    /// 构造 region 标识。
+    ///
+    /// Constructs a region identity.
+    ///
+    /// - `world`: 游戏世界 id
+    /// - `x`: region 网格 X 坐标
+    /// - `z`: region 网格 Z 坐标
     pub const fn new(world: GameWorldId, x: i32, z: i32) -> Self {
         Self { world, x, z }
     }
 }
 
+/// Region 网格：`region_size_chunks`（每 region NxN 个区块）决定粒度。
+///
 /// Region grid: `region_size_chunks` (NxN chunks per region) sets granularity.
 ///
+/// region 越小并行越好，但跨 region 流量更多。
 /// Smaller regions parallelize better with more cross-region traffic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RegionGrid {
+    /// 所属游戏世界 id。
+    ///
+    /// Owning game-world id.
     pub world: GameWorldId,
+    /// 每 region 边长的区块数（至少 1）。
+    ///
     /// Edge length per region in chunks (at least 1).
     pub region_size_chunks: u32,
 }
 
 impl RegionGrid {
+    /// 构造 region 网格。
+    ///
+    /// Constructs a region grid.
+    ///
+    /// - `world`: 游戏世界 id
+    /// - `region_size_chunks`: 每 region 边长的区块数（小于 1 按 1 处理）
     pub fn new(world: GameWorldId, region_size_chunks: u32) -> Self {
         Self {
             world,
@@ -58,21 +99,35 @@ impl RegionGrid {
         }
     }
 
+    /// 区块坐标所属的 region。
+    ///
     /// Owning region of chunk coordinates.
+    ///
+    /// - `chunk_x`: 区块 X 坐标
+    /// - `chunk_z`: 区块 Z 坐标
     #[inline]
     pub fn region_of(&self, chunk_x: i32, chunk_z: i32) -> RegionId {
         let n = self.region_size_chunks as i32;
         RegionId::new(self.world, chunk_x.div_euclid(n), chunk_z.div_euclid(n))
     }
 
+    /// region 的原点区块坐标。
+    ///
     /// Origin chunk of a region.
+    ///
+    /// - `region`: region 标识
     #[inline]
     pub fn region_origin(&self, region: RegionId) -> (i32, i32) {
         let n = self.region_size_chunks as i32;
         (region.x * n, region.z * n)
     }
 
+    /// 中心 region 指定半径内的全部 region（含中心）。
+    ///
     /// Regions within radius of a center region, center included.
+    ///
+    /// - `center`: 中心 region
+    /// - `radius`: 半径（region 数）
     pub fn regions_in_radius(&self, center: RegionId, radius: u32) -> Vec<RegionId> {
         let radius = radius as i32;
         let mut out = Vec::with_capacity(((radius * 2 + 1) as usize).pow(2));
@@ -85,11 +140,22 @@ impl RegionGrid {
     }
 }
 
-/// Region command: registered into [`RegionCommands`], run during the region tick.
+/// Region 命令：注册进 [`RegionCommands`]，在 region tick 期间执行。
+///
+/// Region command: registered into [`RegionCommands`], run during the region
+/// tick.
 pub trait RegionCommand: Send + Sync {
+    /// 执行命令。
+    ///
+    /// Runs the command.
+    ///
+    /// - `world`: ECS 世界
+    /// - `region`: 目标 region
     fn run(&self, world: &World, region: RegionId);
 }
 
+/// Region 命令集（分区世界上的资源）。
+///
 /// Region command set (resource on the partitioned world).
 #[derive(Resource, Default)]
 pub struct RegionCommands {
@@ -97,15 +163,28 @@ pub struct RegionCommands {
 }
 
 impl RegionCommands {
+    /// 注册一个命令。
+    ///
+    /// Registers a command.
+    ///
+    /// - `command`: 要注册的命令
     pub fn register(&self, command: Arc<dyn RegionCommand>) {
         self.commands.write().push(command);
     }
 
+    /// 清空全部命令。
+    ///
+    /// Clears all commands.
     pub fn clear(&self) {
         self.commands.write().clear();
     }
 
+    /// 基于快照执行命令，执行期间不持锁。
+    ///
     /// Run snapshotted commands without holding locks across calls.
+    ///
+    /// - `world`: ECS 世界
+    /// - `region`: 目标 region
     pub fn run_all(&self, world: &World, region: RegionId) {
         let commands = self.commands.read().clone();
         for command in commands {
@@ -114,6 +193,8 @@ impl RegionCommands {
     }
 }
 
+/// 包装 [`region_physics`] 的 region 物理命令。
+///
 /// Region physics command wrapping [`region_physics`].
 pub struct RegionPhysicsCommand;
 
@@ -123,10 +204,17 @@ impl RegionCommand for RegionPhysicsCommand {
     }
 }
 
+/// 单次 region tick（游戏侧示例实现）。
+///
 /// Single region tick (sample game-side implementation).
 ///
+/// 统计 tick、处理入站迁移、交换邻居 ping，并执行已注册的 region 命令
+/// （如物理）。
 /// Counts ticks, processes inbound migration, exchanges neighbor pings,
 /// and runs registered region commands such as physics.
+///
+/// - `world`: ECS 世界
+/// - `region`: 目标 region
 pub fn region_tick(world: &World, region: RegionId) {
     // Demo switches (production mode disables pings and migration demos).
     let demo = world
@@ -233,8 +321,14 @@ pub fn region_tick(world: &World, region: RegionId) {
     }
 }
 
+/// region 内的游戏命令（物理）：本 region 实体的重力与 Y 碰撞，
+/// 只读共享世界数据，不做 IO。
+///
 /// In-region game commands (physics): gravity and Y collision for this
 /// region's entities, reading shared world data without IO.
+///
+/// - `world`: ECS 世界
+/// - `region`: 目标 region
 fn region_physics(world: &World, region: RegionId) {
     let Some(manager) = world.get_resource::<MinecraftWorldManager>() else {
         return;
@@ -282,7 +376,8 @@ fn region_physics(world: &World, region: RegionId) {
         let on_ground = tf.on_ground;
         drop(tf);
         // Same tracking-only contract as `movement_physics`: settle exactly
-        // once per landing, pin highest, no damage until the P3 pipeline.
+        // once per landing, pin highest; damage is handled by the damage
+        // module, not applied here.
         use sc_entity::motion::FallState;
         if world.get_component::<FallState>(&entity).is_none() {
             world.add_component(&entity, FallState::new(feet_y, on_ground));

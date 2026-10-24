@@ -1,13 +1,21 @@
+//! build.rs：在构建期预渲染 i18n 段落码颜色。
+//!
+//! 读取 `locales/*.yml`，把每条消息的段落码转成 ANSI（着色表）或剥掉（纯文本表），
+//! 生成静态表 `$OUT_DIR/colored_locales.rs` 编进二进制；运行时 `t!()` 查表不做转换。
+//!
+//! build.rs 不能引用本 crate，因此自带一份段落码表（另有 sc_log::color 与
+//! sc_log_macros 两份）；三份表由一致性测试锁定。
+//!
 //! build.rs: pre-render i18n section-sign color codes at build time.
 //!
 //! Reads `locales/*.yml`, converting each message's section codes to ANSI
 //! (colored table) or stripping them (plain table), and emits the static
 //! `$OUT_DIR/colored_locales.rs` table into the binary. Runtime `t!()`
-//! lookups need zero conversion and zero allocation.
+//! lookups perform no conversion.
 //!
-//! Note: this section-code table is the third copy alongside sc_log::color
-//! and sc_log_macros (build.rs cannot reference the crate itself); each
-//! copy has alignment tests.
+//! A build script cannot reference its own crate, so it keeps its own copy of the
+//! section-code table (alongside sc_log::color and sc_log_macros); the copies are
+//! locked by alignment tests.
 
 use std::env;
 use std::fs;
@@ -152,6 +160,8 @@ fn ansi_for_code(code: char) -> Option<&'static str> {
     })
 }
 
+/// 段落码转 ANSI（未知/孤立段落标记原样保留）。
+///
 /// Section code to ANSI (unknown/lone section marks kept verbatim).
 fn to_ansi(input: &str) -> String {
     let mut out = String::with_capacity(input.len() + 16);
@@ -175,6 +185,8 @@ fn to_ansi(input: &str) -> String {
     out
 }
 
+/// 剥离全部段落码。
+///
 /// Strip all section codes.
 fn strip_codes(input: &str) -> String {
     let mut out = String::with_capacity(input.len());

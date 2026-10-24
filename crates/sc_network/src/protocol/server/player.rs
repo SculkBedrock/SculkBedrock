@@ -1,8 +1,9 @@
+//! AddPlayerPacket (0x0c)，服务端 → 客户端：生成一个玩家实体。
+//!
 //! AddPlayerPacket (0x0c), server -> client: spawn a player entity.
 //!
-//! Skin arrives via PlayerList; the client renders the entity after the list
-//! entry. Metadata and ability layers use fixed defaults (empty metadata,
-//! single BASE ability layer).
+//! 皮肤通过 PlayerList 下发，客户端在收到列表条目后才渲染该实体。
+//! 元数据与能力层使用固定默认值（空元数据、单个 BASE 能力层）。
 
 use sc_binary::interfaces::{Reader, Writer};
 use sc_binary::{ByteReader, ByteWriter};
@@ -12,30 +13,95 @@ use uuid::Uuid;
 
 use crate::protocol::client::transaction::{read_item_data, write_item_data, ItemData};
 
+/// AddPlayerPacket：在客户端生成玩家实体。
+///
+/// AddPlayerPacket: spawns a player entity on the client.
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct AddPlayer {
+    /// 玩家 UUID。
+    ///
+    /// Player UUID.
     pub uuid: Uuid,
+    /// 玩家用户名。
+    ///
+    /// Player username.
     pub username: String,
+    /// 实体运行时 id。
+    ///
+    /// Entity runtime id.
     pub entity_runtime_id: u64,
+    /// 平台聊天 id。
+    ///
+    /// Platform chat id.
     pub platform_chat_id: String,
+    /// 生成位置 X 坐标。
+    ///
+    /// Spawn X coordinate.
     pub x: f32,
+    /// 生成位置 Y 坐标。
+    ///
+    /// Spawn Y coordinate.
     pub y: f32,
+    /// 生成位置 Z 坐标。
+    ///
+    /// Spawn Z coordinate.
     pub z: f32,
+    /// 速度 X 分量。
+    ///
+    /// Velocity X component.
     pub speed_x: f32,
+    /// 速度 Y 分量。
+    ///
+    /// Velocity Y component.
     pub speed_y: f32,
+    /// 速度 Z 分量。
+    ///
+    /// Velocity Z component.
     pub speed_z: f32,
+    /// 俯仰角。
+    ///
+    /// Pitch.
     pub pitch: f32,
+    /// 偏航角。
+    ///
+    /// Yaw.
     pub yaw: f32,
+    /// 头部偏航角。
+    ///
+    /// Head yaw.
     pub head_yaw: f32,
+    /// 游戏模式（varint；生存 = 0）。
+    ///
     /// Game mode (varint; Survival = 0).
     pub game_type: i32,
+    /// 玩家权限等级。
+    ///
+    /// Player permission level.
     pub player_permission: u32,
+    /// 命令权限等级。
+    ///
+    /// Command permission level.
     pub command_permission: u32,
+    /// 设备 id。
+    ///
+    /// Device id.
     pub device_id: String,
+    /// 客户端构建平台 id。
+    ///
+    /// Client build platform id.
     pub build_platform: i32,
 }
 
 impl Writer for AddPlayer {
+    /// 写入 AddPlayer 包体（含 1.26.60+ 的乘客方块数据）。
+    ///
+    /// Writes the AddPlayer body (including passenger block data on
+    /// 1.26.60+).
+    ///
+    /// - `buf`: 输出字节写入器
+    ///
+    /// # Errors
+    /// 写入缓冲区失败时返回 IO 错误。
     fn write(&self, buf: &mut ByteWriter) -> Result<(), Error> {
         buf.write_uuid(&self.uuid)?;
         buf.write_string(&self.username)?;
@@ -92,6 +158,15 @@ impl Writer for AddPlayer {
 }
 
 impl Reader<AddPlayer> for AddPlayer {
+    /// 解码 AddPlayer 包体（忽略元数据、属性、能力层等固定段）。
+    ///
+    /// Decodes an AddPlayer body (fixed segments such as metadata,
+    /// properties and ability layers are read and ignored).
+    ///
+    /// - `buf`: 输入字节读取器
+    ///
+    /// # Errors
+    /// 缓冲区不足或数据损坏时返回解码错误。
     fn read(buf: &mut ByteReader) -> Result<Self, Error> {
         let uuid = buf.read_uuid()?;
         let username = buf.read_string()?;
@@ -192,6 +267,9 @@ mod tests {
         }
     }
 
+    /// 乘客方块数据仅在协议 2225 及之后出现。空默认值占 24 字节
+    /// （3 个 varint、5 个 float、1 个字节）。
+    ///
     /// Passenger block data is present only for protocol 2225 and later.
     /// Empty defaults occupy 24 bytes (3 varints, 5 floats, 1 byte).
     #[test]

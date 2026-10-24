@@ -8,6 +8,8 @@ use crate::worldgen::random::{RandomSourceProvider, Xoroshiro128};
 // TheEndObjectHolder
 // ---------------------------------------------------------------------------
 
+/// 末地对象 holder。
+///
 /// End object holder.
 pub struct TheEndObjectHolder {
     random: Xoroshiro128,
@@ -38,6 +40,8 @@ impl ObjectHolder for TheEndObjectHolder {}
 // TerrainHolder
 // ---------------------------------------------------------------------------
 
+/// 末地地形 holder，含粗糙度、细节与岛屿噪声。
+///
 /// End terrain holder with roughness, detail, and island noises.
 pub struct TheEndTerrainHolder {
     random: Xoroshiro128,

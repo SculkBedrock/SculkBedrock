@@ -4,9 +4,7 @@
 //! reorder/teleport, stale async tasks may exit safely, but results from an
 //! never runs two chunk-send batches concurrently.
 
-use crate::chunk_encoder::{
-    ChunkEncodeError, ChunkEncodeExecutor, ChunkEncodeSubmitError, ChunkEncodeWaitError,
-};
+use crate::chunk_encoder::ChunkEncodeExecutor;
 use sc_ecs::async_manager::SCECSAsync;
 use sc_ecs::entity::EntityId;
 use sc_ecs::params::resource::{Res, ResMut};
@@ -15,7 +13,7 @@ use sc_ecs::world::World;
 use sc_entity::motion::Transform;
 use sc_log::t_log;
 use sc_world::chunk::ChunkPosition;
-use sc_world::chunk_executor::{ChunkSubmitError, WorldChunkExecutor};
+use sc_world::chunk_executor::{TickHealth, WorldChunkExecutor};
 use sc_world::chunk_view::{
     AdmittedChunkBaseline, CachedChunk, ChunkCacheKey, ChunkSendSettings, ChunkView,
     LevelChunkCache, MAX_ADMITTED_CHUNK_BASELINES,
@@ -27,20 +25,32 @@ use std::collections::{BTreeSet, HashSet};
 use std::fmt::Write as _;
 use std::fs::OpenOptions;
 use std::io::Write as _;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::player_connection::{
-    PacketSendOutcome, PlayerConnection, PlayerConnectionStatus, TrySendPacketError,
+    PacketSendOutcome, PlayerConnection, PlayerConnectionStatus,
 };
 use crate::protocol::server::chunk::{LevelChunk, NetworkChunkPublisherUpdate};
 use crate::utils::ConnectionThreadManager;
 
+static TOTAL_CHUNKS_SENT: AtomicU64 = AtomicU64::new(0);
+static WINDOW_CHUNKS_SENT: AtomicU64 = AtomicU64::new(0);
+
+struct CpsTracker {
+    last_check: Instant,
+    idle_streak: u32,
+}
+
+static CPS_TRACKER: Mutex<Option<CpsTracker>> = Mutex::new(None);
+static LAST_TICK_TIME: Mutex<Option<Instant>> = Mutex::new(None);
+static TICK_EWMA_MS: Mutex<f64> = Mutex::new(50.0);
+
 static CHUNK_WIRE_DUMPED: AtomicBool = AtomicBool::new(false);
 static CHUNK_WIRE_DUMP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 const EQUIPMENT_CONTAINER_SYNC_CHUNKS: u32 = 7;
-const DEFAULT_ACTIVE_CHUNK_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
+const DEFAULT_ACTIVE_CHUNK_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 
 /// Global admission budget for the per-connection `Vec<u8>` copy constructed
 /// for a LevelChunk packet. Cache-owned payloads are accounted separately by
@@ -270,7 +280,9 @@ fn publish_encoded_payload(
     Ok(candidate.as_ref().clone())
 }
 
-/// Global pipeline tick, incremented by `order_chunks` every tick.
+/// 全局管线计时，每个 tick 由 order_chunks 递增。
+///
+/// Global pipeline tick incremented by order_chunks every tick.
 #[derive(Resource, Clone, Debug, Default)]
 pub struct PipelineTick(pub u64);
 
@@ -460,10 +472,109 @@ pub(crate) fn order_chunks(
     }
 }
 
+/// Periodic CPS monitor that logs chunk throughput per second.
+fn tick_cps_logging(
+    has_players: bool,
+    in_flight: usize,
+    queued: usize,
+    worker_stats: Option<(usize, usize, TickHealth)>,
+) {
+    if !has_players && in_flight == 0 && queued == 0 {
+        return;
+    }
+
+    let now = Instant::now();
+    let Ok(mut lock) = CPS_TRACKER.lock() else {
+        return;
+    };
+    let tracker = lock.get_or_insert_with(|| CpsTracker {
+        last_check: now,
+        idle_streak: 0,
+    });
+
+    let elapsed = now.duration_since(tracker.last_check);
+    if elapsed < std::time::Duration::from_millis(1000) {
+        return;
+    }
+
+    tracker.last_check = now;
+    let count = WINDOW_CHUNKS_SENT.swap(0, Ordering::Relaxed);
+    let total = TOTAL_CHUNKS_SENT.load(Ordering::Relaxed);
+    let elapsed_secs = elapsed.as_secs_f64();
+    let cps = count as f64 / elapsed_secs;
+
+    let workers_str = match worker_stats {
+        Some((active, current, health)) => format!("{active}/{current} ({health:?})"),
+        None => "N/A".to_string(),
+    };
+
+    if count > 0 || in_flight > 0 || queued > 0 {
+        tracker.idle_streak = 0;
+        log::info!(
+            "{}",
+            t_log!(
+                "console.chunk.cps",
+                cps = format!("{:.1}", cps),
+                secs = format!("{:.1}", elapsed_secs),
+                count = count,
+                in_flight = in_flight,
+                queued = queued,
+                workers = workers_str,
+                total = total,
+            )
+        );
+    } else if tracker.idle_streak < 2 && has_players {
+        tracker.idle_streak += 1;
+        if tracker.idle_streak == 1 {
+            log::info!("{}", t_log!("console.chunk.cps_idle", total = total));
+        }
+    }
+}
+
 /// Sends each player load_queue within a per-tick per-player budget.
 pub(crate) fn send_next_chunk(world: World, settings: Res<ChunkSendSettings>) {
+    // Tick duration and TPS concession monitor
+    let now = Instant::now();
+    if let Ok(mut last_tick_guard) = LAST_TICK_TIME.lock() {
+        if let Some(prev) = *last_tick_guard {
+            let tick_delta_ms = now.duration_since(prev).as_secs_f64() * 1000.0;
+            *last_tick_guard = Some(now);
+
+            let smoothed_ms = if let Ok(mut ewma_guard) = TICK_EWMA_MS.lock() {
+                // EWMA smoothing with alpha = 0.2 (adapts across ~5 ticks)
+                let next_ewma = *ewma_guard * 0.8 + tick_delta_ms * 0.2;
+                *ewma_guard = next_ewma;
+                next_ewma
+            } else {
+                tick_delta_ms
+            };
+
+            // User-specified concession thresholds:
+            // TPS >= 18 (<= 55.55ms): Healthy (full worker capacity)
+            // TPS 15 ~ 18 (55.55ms ~ 66.67ms): Pressured (scale down to 2/3)
+            // TPS < 15 (> 66.67ms): Critical (concede CPU to game loop, min workers)
+            let health = if smoothed_ms <= 55.55 {
+                TickHealth::Healthy
+            } else if smoothed_ms <= 66.67 {
+                TickHealth::Pressured
+            } else {
+                TickHealth::Critical
+            };
+
+            if let Some(executor) = world.get_resource::<WorldChunkExecutor>() {
+                executor.set_tick_health(health);
+            }
+        } else {
+            *last_tick_guard = Some(now);
+        }
+    }
+
     let chunks_per_tick = settings.chunks_per_tick;
     let spawn_threshold = settings.spawn_threshold;
+
+    let mut total_in_flight = 0;
+    let mut total_queued = 0;
+    let mut has_players = false;
 
     for entity in world.entities_with_component::<ChunkView>() {
         let Some(connection) = world.get_component::<PlayerConnection>(&entity) else {
@@ -475,9 +586,12 @@ pub(crate) fn send_next_chunk(world: World, settings: Res<ChunkSendSettings>) {
         let Some(view) = world.get_component::<ChunkView>(&entity) else {
             continue;
         };
+        has_players = true;
         let (epoch, pending) = {
             let mut data = view.inner.write();
             if data.send_lease.is_some() {
+                total_in_flight += data.in_flight.len();
+                total_queued += data.load_queue.len();
                 continue;
             }
             let epoch = data.epoch;
@@ -494,6 +608,8 @@ pub(crate) fn send_next_chunk(world: World, settings: Res<ChunkSendSettings>) {
                 data.in_flight.insert(key, epoch);
                 out.push(key);
             }
+            total_in_flight += data.in_flight.len();
+            total_queued += data.load_queue.len();
             if out.is_empty() {
                 continue;
             }
@@ -520,6 +636,16 @@ pub(crate) fn send_next_chunk(world: World, settings: Res<ChunkSendSettings>) {
             manager.insert(entity, handle);
         }
     }
+
+    let worker_stats = world.get_resource::<WorldChunkExecutor>().map(|executor| {
+        (
+            executor.active_workers(),
+            executor.current_workers(),
+            executor.tick_health(),
+        )
+    });
+
+    tick_cps_logging(has_players, total_in_flight, total_queued, worker_stats);
 }
 
 /// Releases in-flight markers for the given epoch without clearing newer leases.
@@ -557,23 +683,285 @@ fn chunk_view_context(view: &ChunkView, epoch: u64) -> Option<(MinecraftWorldId,
 const PREPARE_KEY_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// One column that finished preparing and is ready for delivery.
-struct PreparedColumn {
-    key: ChunkKey,
-    column: Arc<ChunkColumn>,
+fn encode_chunk_direct(
+    column: &Arc<ChunkColumn>,
+    wire_profile: u32,
+) -> Result<Arc<CachedChunk>, ()> {
+    let chunk = column.read();
+    let generation = column.generation();
+    let incarnation = column.incarnation();
+    let packet = LevelChunk::from_chunk(&chunk).map_err(|_| ())?;
+    Ok(Arc::new(CachedChunk {
+        payload: Arc::new(packet.payload),
+        subchunk_count: packet.sub_chunk_count,
+        generation,
+        incarnation,
+        wire_profile,
+    }))
 }
 
-/// Send one batch of columns: prepare them all in parallel, then deliver the
-/// ready ones under this tick's admission budget.
-///
-/// §8.2 splits the two windows:
-/// - **Prepare**: every key in the batch is submitted to the shared worker pool
-///   at once, so a deliberately slow column cannot stall the others.
-/// - **Delivery**: keys are admitted nearest-first, and only `chunks_per_tick`
-///   of them may enter the ordered delivery chain in this tick (checked again at
-///   final admission).
-///
-/// Stalled keys are released rather than awaited, so the batch always makes
-/// progress on the columns that are actually ready.
+async fn process_and_send_chunk(
+    world: World,
+    view: Arc<ChunkView>,
+    connection: Arc<PlayerConnection>,
+    provider: WorldChunkProvider,
+    executor: Option<WorldChunkExecutor>,
+    encoder: Option<ChunkEncodeExecutor>,
+    send_budget: Option<ChunkPayloadSendBudget>,
+    world_id: MinecraftWorldId,
+    dimension: i32,
+    min_y: i32,
+    max_y: i32,
+    epoch: u64,
+    key: ChunkKey,
+    spawn_threshold: u32,
+    chunks_per_tick: u32,
+    entity: EntityId,
+) {
+    if connection.connection.is_closed().await || !connection.get_status().can_send_chunks() {
+        release_key(&view, epoch, &key);
+        return;
+    }
+    if !view.context_is_current(epoch) || !view.accepts(epoch, &key) {
+        release_key(&view, epoch, &key);
+        return;
+    }
+
+    // 1. Get or generate chunk column
+    let column = if let Some(column) = provider.cached_chunk(key) {
+        column
+    } else {
+        let Some(executor) = executor else {
+            release_key(&view, epoch, &key);
+            return;
+        };
+        let receiver = match executor.try_submit(world_id.clone(), provider.clone(), key, min_y, max_y) {
+            Ok(rx) => rx,
+            Err(_) => {
+                release_key(&view, epoch, &key);
+                return;
+            }
+        };
+        let loaded = tokio::select! {
+            biased;
+            result = receiver => Some(result),
+            _ = tokio::time::sleep(PREPARE_KEY_BUDGET) => None,
+        };
+        let Some(result) = loaded else {
+            release_key(&view, epoch, &key);
+            return;
+        };
+        let outcome = match result {
+            Ok(outcome) => outcome,
+            Err(_) => {
+                release_key(&view, epoch, &key);
+                return;
+            }
+        };
+        match outcome.as_ref() {
+            Ok(Some(column)) => column.clone(),
+            Ok(None) => match provider.insert_empty_chunk(key, min_y, max_y) {
+                Ok(column) => column,
+                Err(_) => {
+                    release_key(&view, epoch, &key);
+                    return;
+                }
+            },
+            Err(error) => {
+                log::warn!("{}", t_log!("console.chunk.load_fail", pos = key.position, error = error));
+                release_key(&view, epoch, &key);
+                return;
+            }
+        }
+    };
+
+    if connection.connection.is_closed().await || !connection.get_status().can_send_chunks() {
+        release_key(&view, epoch, &key);
+        return;
+    }
+    if !view.context_is_current(epoch) || !view.accepts(epoch, &key) {
+        release_key(&view, epoch, &key);
+        return;
+    }
+
+    // 2. Encode payload (check cache first, then encoder executor or direct encode fallback)
+    let cache_key = ChunkCacheKey::new(world_id.clone(), key);
+    let cached = world.get_resource::<LevelChunkCache>().and_then(|cache| {
+        cache
+            .get(&cache_key)
+            .filter(|entry| entry.matches_column(&column, connection.get_protocol_version()))
+            .cloned()
+    });
+
+    let (payload, sub_chunk_count, payload_generation, payload_profile) = if let Some(entry) = cached {
+        (entry.payload, entry.subchunk_count, entry.generation, entry.wire_profile)
+    } else {
+        let encoded_candidate = if let Some(encoder) = &encoder {
+            if let Ok(mut ticket) = encoder.try_submit(cache_key.clone(), column.clone()) {
+                match ticket.wait().await {
+                    Ok(shared) => match shared.as_ref() {
+                        Ok(candidate) => Some(candidate.clone()),
+                        Err(_) => None,
+                    },
+                    Err(_) => None,
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let candidate = match encoded_candidate {
+            Some(cand) => cand,
+            None => match encode_chunk_direct(&column, connection.get_protocol_version()) {
+                Ok(cand) => cand,
+                Err(_) => {
+                    release_key(&view, epoch, &key);
+                    return;
+                }
+            },
+        };
+
+        let published = match publish_encoded_payload(&world, &cache_key, &column, candidate) {
+            Ok(entry) => entry,
+            Err(_) => {
+                release_key(&view, epoch, &key);
+                return;
+            }
+        };
+
+        (published.payload, published.subchunk_count, published.generation, published.wire_profile)
+    };
+
+    if column.generation() != payload_generation {
+        release_key(&view, epoch, &key);
+        return;
+    }
+    if !view.context_is_current(epoch) || !view.accepts(epoch, &key) {
+        release_key(&view, epoch, &key);
+        return;
+    }
+
+    dump_first_chunk_wire(
+        key.position.x,
+        key.position.z,
+        dimension,
+        sub_chunk_count,
+        payload.as_ref(),
+    );
+
+    let Some(send_budget) = send_budget else {
+        release_key(&view, epoch, &key);
+        return;
+    };
+    let Some(payload_permit) = send_budget.try_reserve(payload.len()) else {
+        release_key(&view, epoch, &key);
+        return;
+    };
+
+    // 3. Send LevelChunk packet
+    let send_result = connection
+        .try_send_packet_with_checked_outcome(
+            || LevelChunk {
+                chunk_x: key.position.x,
+                chunk_z: key.position.z,
+                dimension,
+                sub_chunk_count,
+                cache_enabled: false,
+                payload: payload.as_ref().clone(),
+            },
+            true,
+            payload_permit,
+            |plain, permit, trace| {
+                let Some(tick) = world.get_resource::<PipelineTick>() else {
+                    return Ok(PacketSendOutcome::BudgetDeferred);
+                };
+                let _chunk = column.read();
+                let mut data = view.write();
+                if data.epoch != epoch
+                    || data.world_id != world_id
+                    || data.dimension != key.dimension
+                    || !data.desired_chunks.contains(&key)
+                    || data.in_flight.get(&key) != Some(&epoch)
+                {
+                    return Ok(PacketSendOutcome::StaleContext);
+                }
+                if column.generation() != payload_generation
+                    || connection.get_protocol_version() != payload_profile
+                {
+                    return Ok(PacketSendOutcome::StaleContent);
+                }
+                let count = if data.admission_tick == tick.0 {
+                    data.admitted_this_tick
+                } else {
+                    0
+                };
+                if count >= chunks_per_tick
+                    || data.publisher_pending
+                    || data.publisher_in_flight.is_some()
+                    || (!data.delivery_ledger.contains_key(&key)
+                        && data.delivery_ledger.len() >= MAX_ADMITTED_CHUNK_BASELINES)
+                {
+                    return Ok(PacketSendOutcome::BudgetDeferred);
+                }
+                connection.admit_prepared(plain, true, permit, trace)?;
+                data.admission_tick = tick.0;
+                data.admitted_this_tick = count + 1;
+                data.delivery_ledger.insert(
+                    key,
+                    AdmittedChunkBaseline {
+                        incarnation: column.incarnation(),
+                        generation: payload_generation,
+                    },
+                );
+                data.refresh_required.remove(&key);
+                Ok(PacketSendOutcome::Queued)
+            },
+        )
+        .await;
+
+    match send_result {
+        Ok(PacketSendOutcome::Queued) => {
+            WINDOW_CHUNKS_SENT.fetch_add(1, Ordering::Relaxed);
+            TOTAL_CHUNKS_SENT.fetch_add(1, Ordering::Relaxed);
+        }
+        _ => {
+            release_key(&view, epoch, &key);
+            return;
+        }
+    }
+
+    // 4. Update view statistics and equipment containers
+    let mut should_sync_equipment_containers = false;
+    {
+        let mut data = view.inner.write();
+        if data.in_flight.get(&key).copied() == Some(epoch) {
+            data.in_flight.remove(&key);
+            if data.epoch == epoch && data.desired_chunks.contains(&key) {
+                if data.used_chunks.insert(key) {
+                    data.chunks_sent += 1;
+                }
+                if !data.equipment_container_sync_sent
+                    && data.chunks_sent >= EQUIPMENT_CONTAINER_SYNC_CHUNKS
+                {
+                    data.equipment_container_sync_sent = true;
+                    should_sync_equipment_containers = true;
+                }
+                if !data.has_spawn_chunks && data.chunks_sent >= spawn_threshold {
+                    data.has_spawn_chunks = true;
+                }
+            }
+        }
+    }
+
+    if should_sync_equipment_containers {
+        let _ = crate::handler::first_spawn::send_equipment_container_inventory(&world, entity).await;
+    }
+}
+
+/// Send one batch of columns by streaming: prepare each column concurrently,
+/// and deliver each column immediately as soon as it finishes decoration.
 async fn send_chunks_batch(
     world: World,
     view: Arc<ChunkView>,
@@ -584,7 +972,6 @@ async fn send_chunks_batch(
     chunks_per_tick: u32,
 ) {
     let Some((world_id, dimension)) = chunk_view_context(&view, epoch) else {
-        // The helper has returned, so no view read guard is held here.
         release_batch(&view, epoch, &pending);
         return;
     };
@@ -614,450 +1001,48 @@ async fn send_chunks_batch(
         minecraft_world
     };
     let (min_y, max_y) = minecraft_world.vertical_bounds();
-
-    // Chunk load/generation goes through WorldChunkExecutor (dedicated worker
-    // threads with per-key dedup), never inline on Tokio; send tasks only await receipts.
     let provider = minecraft_world.chunk_provider.clone();
+    let executor = world.get_resource::<WorldChunkExecutor>().map(|res| (*res).clone());
+    let encoder = world.get_resource::<ChunkEncodeExecutor>().map(|res| (*res).clone());
+    let send_budget = world.get_resource::<ChunkPayloadSendBudget>().map(|budget| (*budget).clone());
 
-    // ---- Prepare window: submit every cold key before awaiting any of them ----
-    let mut slots: Vec<Option<PreparedColumn>> =
-        (0..pending.len()).map(|_| None).collect::<Vec<_>>();
-    let mut waiters: Vec<(usize, _)> = Vec::new();
+    let mut join_set = tokio::task::JoinSet::new();
 
-    for (index, key) in pending.iter().copied().enumerate() {
-        if connection.connection.is_closed().await || !connection.get_status().can_send_chunks() {
-            release_batch(&view, epoch, &pending[index..]);
-            return;
-        }
-        if !view.context_is_current(epoch) {
-            release_batch(&view, epoch, &pending[index..]);
-            return;
-        }
-        if !view.accepts(epoch, &key) {
-            release_key(&view, epoch, &key);
-            continue;
-        }
-        if let Some(column) = provider.cached_chunk(key) {
-            slots[index] = Some(PreparedColumn { key, column });
-            continue;
-        }
-        let Some(executor) = world
-            .get_resource::<WorldChunkExecutor>()
-            .map(|res| (*res).clone())
-        else {
-            release_batch(&view, epoch, &pending[index..]);
-            return;
-        };
-        match executor.try_submit(world_id.clone(), provider.clone(), key, min_y, max_y) {
-            Ok(receiver) => waiters.push((index, receiver)),
-            Err(ChunkSubmitError::Busy { .. } | ChunkSubmitError::TooManyWaiters { .. }) => {
-                log::debug!(
-                    "[chunk] executor saturated; defer ({},{}) until next reorder",
-                    key.position.x,
-                    key.position.z
-                );
-                release_key(&view, epoch, &key);
-            }
-            Err(ChunkSubmitError::Closed { .. }) => {
-                log::warn!(
-                    "{}",
-                    t_log!("console.chunk.executor_closed", pos = key.position)
-                );
-                release_batch(&view, epoch, &pending[index..]);
-                return;
-            }
-        }
-    }
+    for key in pending.iter().copied() {
+        let task_world = world.clone();
+        let task_view = view.clone();
+        let task_conn = connection.clone();
+        let task_provider = provider.clone();
+        let task_executor = executor.clone();
+        let task_encoder = encoder.clone();
+        let task_budget = send_budget.clone();
+        let task_world_id = world_id.clone();
 
-    // Collect the loads that finish inside the per-key budget. A stalled column
-    // releases its marker so a later reorder can retry it.
-    let mut stalled = Vec::new();
-    for (index, receiver) in waiters {
-        let key = pending[index];
-        let loaded = tokio::select! {
-            biased;
-            result = receiver => Some(result),
-            _ = tokio::time::sleep(PREPARE_KEY_BUDGET) => None,
-        };
-        let Some(result) = loaded else {
-            log::debug!(
-                "[chunk] load of ({},{}) exceeded the per-key prepare budget; deferring",
-                key.position.x,
-                key.position.z
-            );
-            release_key(&view, epoch, &key);
-            stalled.push(index);
-            continue;
-        };
-        let outcome = match result {
-            Ok(outcome) => outcome,
-            Err(_) => {
-                log::warn!(
-                    "{}",
-                    t_log!("console.chunk.receipt_cancelled", pos = key.position)
-                );
-                release_key(&view, epoch, &key);
-                stalled.push(index);
-                continue;
-            }
-        };
-        let column = match outcome.as_ref() {
-            Ok(Some(column)) => column.clone(),
-            Ok(None) => match provider.insert_empty_chunk(key, min_y, max_y) {
-                Ok(column) => column,
-                Err(error) => {
-                    log::debug!(
-                        "[chunk] empty column cache admission deferred {}: {error}",
-                        key.position
-                    );
-                    release_key(&view, epoch, &key);
-                    stalled.push(index);
-                    continue;
-                }
-            },
-            Err(error) => {
-                log::warn!(
-                    "{}",
-                    t_log!("console.chunk.load_fail", pos = key.position, error = error)
-                );
-                release_key(&view, epoch, &key);
-                stalled.push(index);
-                continue;
-            }
-        };
-        slots[index] = Some(PreparedColumn { key, column });
-    }
-
-    if stalled.len() > 0 && stalled.len() == pending.len() {
-        log::debug!(
-            "[chunk] no column of this batch became ready ({} stalled); yielding the batch lease",
-            stalled.len()
-        );
-        release_batch(&view, epoch, &pending);
-        return;
-    }
-
-    // ---- Delivery window: admit ready columns nearest-first ----
-    //
-    // `slots` keeps the batch order, which `order_chunks` filled nearest-first,
-    // so delivery stays distance-prioritised while skipping the columns whose
-    // preparation was released above.
-    for (index, slot) in slots.into_iter().enumerate() {
-        let Some(PreparedColumn { key, column }) = slot else {
-            continue;
-        };
-        if connection.connection.is_closed().await || !connection.get_status().can_send_chunks() {
-            release_batch(&view, epoch, &pending[index..]);
-            return;
-        }
-        if !view.context_is_current(epoch) {
-            release_batch(&view, epoch, &pending[index..]);
-            return;
-        }
-        if !view.accepts(epoch, &key) {
-            release_key(&view, epoch, &key);
-            continue;
-        }
-
-        let cache_key = ChunkCacheKey::new(world_id.clone(), key);
-        let cached = world.get_resource::<LevelChunkCache>().and_then(|cache| {
-            cache
-                .get(&cache_key)
-                .filter(|entry| entry.matches_column(&column, connection.get_protocol_version()))
-                .cloned()
-        });
-        let (payload, sub_chunk_count, payload_generation, payload_profile) = if let Some(entry) =
-            cached
-        {
-            (
-                entry.payload,
-                entry.subchunk_count,
-                entry.generation,
-                entry.wire_profile,
-            )
-        } else {
-            let Some(encoder) = world
-                .get_resource::<ChunkEncodeExecutor>()
-                .map(|resource| (*resource).clone())
-            else {
-                release_batch(&view, epoch, &pending[index..]);
-                return;
-            };
-            let mut ticket = match encoder.try_submit(cache_key.clone(), column.clone()) {
-                Ok(ticket) => ticket,
-                Err(
-                    ChunkEncodeSubmitError::Busy { .. }
-                    | ChunkEncodeSubmitError::TooManyWaiters { .. },
-                ) => {
-                    log::debug!(
-                        "[chunk] encode queue saturated; defer ({},{}) until next reorder",
-                        key.position.x,
-                        key.position.z
-                    );
-                    release_batch(&view, epoch, &pending[index..]);
-                    return;
-                }
-                Err(ChunkEncodeSubmitError::Closed { .. }) => {
-                    log::warn!(
-                        "{}",
-                        t_log!("console.chunk.encoder_closed", pos = key.position)
-                    );
-                    release_batch(&view, epoch, &pending[index..]);
-                    return;
-                }
-            };
-            let shared_result = tokio::select! {
-                biased;
-                result = ticket.wait() => match result {
-                    Ok(result) => result,
-                    Err(ChunkEncodeWaitError::Closed { .. }) => {
-                        log::warn!("{}", t_log!("console.chunk.encode_channel_closed", pos = key.position));
-                        release_batch(&view, epoch, &pending[index..]);
-                        return;
-                    }
-                },
-                changed = context_changes.changed() => {
-                    if changed.is_err() || !view.context_is_current(epoch) {
-                        release_batch(&view, epoch, &pending[index..]);
-                        return;
-                    }
-                    continue;
-                }
-            };
-            let candidate = match shared_result.as_ref() {
-                Ok(candidate) => candidate.clone(),
-                Err(ChunkEncodeError::StaleGeneration { .. }) => {
-                    release_key(&view, epoch, &key);
-                    continue;
-                }
-                Err(ChunkEncodeError::InvalidBlockMapping { detail: error, .. }) => {
-                    log::error!(
-                        "{}",
-                        t_log!(
-                            "console.chunk.invalid_block_mapping",
-                            x = key.position.x,
-                            y = key.position.z,
-                            error = error
-                        )
-                    );
-                    release_batch(&view, epoch, &pending[index..]);
-                    return;
-                }
-                Err(ChunkEncodeError::WorkerPanicked { detail: error, .. }) => {
-                    log::warn!(
-                        "{}",
-                        t_log!(
-                            "console.chunk.encode_fail",
-                            x = key.position.x,
-                            y = key.position.z,
-                            error = error
-                        )
-                    );
-                    release_key(&view, epoch, &key);
-                    continue;
-                }
-            };
-            let published = match publish_encoded_payload(&world, &cache_key, &column, candidate) {
-                Ok(entry) => entry,
-                Err(PayloadPublishError::CacheUnavailable) => {
-                    release_batch(&view, epoch, &pending[index..]);
-                    return;
-                }
-                Err(PayloadPublishError::StaleGeneration) => {
-                    release_key(&view, epoch, &key);
-                    continue;
-                }
-            };
-            drop(ticket);
-            (
-                published.payload,
-                published.subchunk_count,
-                published.generation,
-                published.wire_profile,
-            )
-        };
-
-        if column.generation() != payload_generation {
-            release_key(&view, epoch, &key);
-            continue;
-        }
-
-        // Release view/cache guards before network awaits. A normal center change keeps
-        // overlapping keys valid; a hard-context change rejects all old work.
-        if !view.context_is_current(epoch) {
-            release_batch(&view, epoch, &pending[index..]);
-            return;
-        }
-        if !view.accepts(epoch, &key) {
-            release_key(&view, epoch, &key);
-            continue;
-        }
-        log::debug!(
-            "[chunk] send ({},{}) payload={}B sub_chunk_count={}",
-            key.position.x,
-            key.position.z,
-            payload.len(),
-            sub_chunk_count
-        );
-        dump_first_chunk_wire(
-            key.position.x,
-            key.position.z,
-            dimension,
-            sub_chunk_count,
-            payload.as_ref(),
-        );
-        let Some(send_budget) = world
-            .get_resource::<ChunkPayloadSendBudget>()
-            .map(|budget| (*budget).clone())
-        else {
-            release_batch(&view, epoch, &pending[index..]);
-            return;
-        };
-        let Some(payload_permit) = send_budget.try_reserve(payload.len()) else {
-            log::debug!(
-                "[chunk] transient payload byte budget saturated; defer ({},{})",
-                key.position.x,
-                key.position.z
-            );
-            release_batch(&view, epoch, &pending[index..]);
-            return;
-        };
-        let send_result = connection
-            .try_send_packet_with_checked_outcome(
-                || LevelChunk {
-                    chunk_x: key.position.x,
-                    chunk_z: key.position.z,
-                    dimension,
-                    sub_chunk_count,
-                    cache_enabled: false,
-                    payload: payload.as_ref().clone(),
-                },
-                true,
-                payload_permit,
-                |plain, permit, trace| {
-                    // Tick -> column -> view -> cipher. The tick guard keeps
-                    // the current admission budget stable; all preparation has
-                    // finished and this block performs no await or disk I/O.
-                    let Some(tick) = world.get_resource::<PipelineTick>() else {
-                        return Ok(PacketSendOutcome::BudgetDeferred);
-                    };
-                    let _chunk = column.read();
-                    let mut data = view.write();
-                    if data.epoch != epoch
-                        || data.world_id != world_id
-                        || data.dimension != key.dimension
-                        || !data.desired_chunks.contains(&key)
-                        || data.in_flight.get(&key) != Some(&epoch)
-                    {
-                        return Ok(PacketSendOutcome::StaleContext);
-                    }
-                    if column.generation() != payload_generation
-                        || connection.get_protocol_version() != payload_profile
-                    {
-                        return Ok(PacketSendOutcome::StaleContent);
-                    }
-                    let count = if data.admission_tick == tick.0 {
-                        data.admitted_this_tick
-                    } else {
-                        0
-                    };
-                    if count >= chunks_per_tick
-                        || data.publisher_pending
-                        || data.publisher_in_flight.is_some()
-                        || (!data.delivery_ledger.contains_key(&key)
-                            && data.delivery_ledger.len() >= MAX_ADMITTED_CHUNK_BASELINES)
-                    {
-                        return Ok(PacketSendOutcome::BudgetDeferred);
-                    }
-                    connection.admit_prepared(plain, true, permit, trace)?;
-                    data.admission_tick = tick.0;
-                    data.admitted_this_tick = count + 1;
-                    data.delivery_ledger.insert(
-                        key,
-                        AdmittedChunkBaseline {
-                            incarnation: column.incarnation(),
-                            generation: payload_generation,
-                        },
-                    );
-                    data.refresh_required.remove(&key);
-                    Ok(PacketSendOutcome::Queued)
-                },
+        join_set.spawn(async move {
+            process_and_send_chunk(
+                task_world,
+                task_view,
+                task_conn,
+                task_provider,
+                task_executor,
+                task_encoder,
+                task_budget,
+                task_world_id,
+                dimension,
+                min_y,
+                max_y,
+                epoch,
+                key,
+                spawn_threshold,
+                chunks_per_tick,
+                entity,
             )
             .await;
-        match send_result {
-            Ok(PacketSendOutcome::Queued) => {}
-            Ok(outcome) => {
-                log::debug!(
-                    "[chunk] LevelChunk ({},{}) not queued: {outcome:?}",
-                    key.position.x,
-                    key.position.z
-                );
-                release_batch(&view, epoch, &pending[index..]);
-                return;
-            }
-            Err(TrySendPacketError::Busy { .. }) => {
-                log::debug!(
-                    "[chunk] outbound send slots saturated; defer ({},{}) until next reorder",
-                    key.position.x,
-                    key.position.z
-                );
-                release_batch(&view, epoch, &pending[index..]);
-                return;
-            }
-            Err(TrySendPacketError::Connection { source: error, .. }) => {
-                log::warn!(
-                    "{}",
-                    t_log!(
-                        "console.chunk.enqueue_fail",
-                        pos = key.position,
-                        error = error
-                    )
-                );
-                release_batch(&view, epoch, &pending[index..]);
-                return;
-            }
-        }
-
-        let mut should_sync_equipment_containers = false;
-        {
-            let mut data = view.inner.write();
-            if data.in_flight.get(&key).copied() != Some(epoch) {
-                continue;
-            }
-            data.in_flight.remove(&key);
-            if data.epoch == epoch && data.desired_chunks.contains(&key) {
-                if data.used_chunks.insert(key) {
-                    data.chunks_sent += 1;
-                }
-                if !data.equipment_container_sync_sent
-                    && data.chunks_sent >= EQUIPMENT_CONTAINER_SYNC_CHUNKS
-                {
-                    data.equipment_container_sync_sent = true;
-                    should_sync_equipment_containers = true;
-                }
-                if !data.has_spawn_chunks && data.chunks_sent >= spawn_threshold {
-                    data.has_spawn_chunks = true;
-                }
-            }
-        }
-
-        if should_sync_equipment_containers {
-            log::debug!(
-                "[chunk] equipment container sync after {} chunks",
-                view.read().chunks_sent
-            );
-            if crate::handler::first_spawn::send_equipment_container_inventory(&world, entity)
-                .await
-                .is_err()
-            {
-                release_batch(&view, epoch, &pending[index + 1..]);
-                return;
-            }
-        }
+        });
     }
 
-    // Evaluate the spawn threshold after the current chunk-order run. Keep
-    // PLAYER_SPAWN after every LevelChunk packet in this batch.
+    while let Some(_) = join_set.join_next().await {}
+
     let should_spawn = {
         let data = view.read();
         data.has_spawn_chunks && connection.get_status() == PlayerConnectionStatus::Initializing
@@ -1071,16 +1056,7 @@ async fn send_chunks_batch(
                 threshold = spawn_threshold
             )
         );
-        if let Err(error) =
-            crate::handler::first_spawn::send_first_spawn(&world, entity, epoch).await
-        {
-            log::warn!(
-                "{}",
-                t_log!("console.chunk.spawn_incomplete", error = error)
-            );
-            release_batch(&view, epoch, &pending);
-            return;
-        }
+        let _ = crate::handler::first_spawn::send_first_spawn(&world, entity, epoch).await;
     }
 
     release_batch(&view, epoch, &pending);

@@ -1,3 +1,6 @@
+//! 不可变 `RecipeRegistrySnapshot`：游戏、网络与工作线程共用的冻结视图。
+//! 由 [`CompileOutput`] 一次构建，之后不再修改。
+//!
 //! Immutable `RecipeRegistrySnapshot`: the frozen, shareable view the
 //! game, network and workers use. Built once from [`CompileOutput`];
 //! never mutated afterwards.
@@ -13,11 +16,16 @@ use crate::compile::{
 };
 use crate::kind::{RecipeKind, StationKind};
 
+/// 稳定的配方索引，按确定性网络顺序分配（先 priority，再标识符）。
+/// 网络层把该索引作为配方网络 id。
+///
 /// Stable recipe index assigned in deterministic network order
 /// (priority, then identifier). The network layer uses this index as the
 /// recipe network id.
 pub type RecipeIndex = u32;
 
+/// 整个注册表的内容指纹（32 字节 sha256）。
+///
 /// Content fingerprint of the whole registry (32-byte sha256).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct RecipeRegistryFingerprint(pub [u8; 32]);
@@ -28,6 +36,8 @@ impl RecipeRegistryFingerprint {
     }
 }
 
+/// 不透明配方 id（包内 `description.identifier`）。
+///
 /// Opaque recipe id (the pack `description.identifier`).
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct RecipeId(pub String);
@@ -47,6 +57,8 @@ impl std::fmt::Display for RecipeId {
     }
 }
 
+/// 跨 region/连接共享的不可变快照。
+///
 /// Immutable snapshot shared across regions/connections.
 #[derive(Clone, Debug)]
 pub struct RecipeRegistrySnapshot {
@@ -64,6 +76,8 @@ struct SnapshotInner {
 }
 
 impl RecipeRegistrySnapshot {
+    /// 从已排序的来源构建。同层重复
+    ///
     /// Build from already-ordered sources. Same-layer duplicate
     /// identifiers are hard errors; cross-layer collisions resolve by
     /// overwrite (see [`compile_ordered`]).
@@ -135,6 +149,8 @@ impl RecipeRegistrySnapshot {
         self.inner.by_id.get(id).copied().map(|i| i as RecipeIndex)
     }
 
+    /// 确定性网络顺序（优先级、标识符）。该切片已
+    ///
     /// Deterministic network order (priority, identifier). The slice is
     /// already in that order.
     pub fn in_network_order(&self) -> &[CompiledRecipe] {
@@ -166,6 +182,8 @@ impl RecipeRegistrySnapshot {
     }
 }
 
+/// 可读的编译摘要（数量 + 禁用列表）。
+///
 /// Human-readable compile summary (counts + disabled list).
 #[derive(Clone, Debug)]
 pub struct CompileOutputDiagnostics {

@@ -5,11 +5,12 @@ use sc_binary::{ByteReader, ByteWriter};
 use snap::read::{FrameDecoder, FrameEncoder};
 use std::io::{Error, Read};
 
-/// Maximum decompressed payload accepted for one compressed frame.
+/// 单个压缩帧允许解压出的最大字节数。
 ///
-/// The Bedrock protocol caps a single logical packet well below this, so a
-/// larger output is either corruption or a decompression bomb. Without a bound,
-/// `read_to_end` would allocate whatever the payload claims (T18).
+/// 超过该上限的输出视为损坏或解压炸弹，予以拒绝。
+///
+/// Maximum decompressed payload accepted for one compressed frame. Output
+/// beyond this bound is rejected as corruption or a decompression bomb.
 pub const MAX_DECOMPRESSED_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -25,10 +26,9 @@ impl CompressionAlgorithm {
             CompressionAlgorithm::Snappy => 0x01,
         }
     }
-    /// Decompress one frame, refusing output beyond [`MAX_DECOMPRESSED_BYTES`].
+    /// 解压一个数据帧，输出超过 [`MAX_DECOMPRESSED_BYTES`] 时拒绝。
     ///
-    /// The decoder is read through a `take` limit plus one byte, so an
-    /// over-long payload is rejected *before* the full buffer is allocated.
+    /// Decompresses one frame, refusing output beyond [`MAX_DECOMPRESSED_BYTES`].
     pub fn decode(&self, buf: &[u8]) -> Result<Vec<u8>, Error> {
         let mut vec = Vec::new();
         match self {
@@ -64,6 +64,8 @@ impl CompressionAlgorithm {
     }
 }
 
+/// 至多读取 [`MAX_DECOMPRESSED_BYTES`] 字节写入 `out`。
+///
 /// Read at most [`MAX_DECOMPRESSED_BYTES`] into `out`.
 fn read_bounded<R: Read>(reader: &mut R, out: &mut Vec<u8>) -> Result<(), Error> {
     let mut limited = reader.take(MAX_DECOMPRESSED_BYTES as u64 + 1);

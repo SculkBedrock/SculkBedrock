@@ -1,3 +1,8 @@
+//! 领域错误的 `#[derive(ScError)]`。
+//!
+//! 每个枚举变体（或结构体自身）携带 `detail: String` 与 `site: ::sc_error::ScSite`
+//! 字段，并通过 `#[sc_error(code = "...")]` 属性声明其稳定错误码；用法见下方示例。
+//!
 //! `#[derive(ScError)]` for domain errors.
 //!
 //! Each enum variant (or the struct itself) carries `detail: String` and
@@ -16,6 +21,8 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, Data, DeriveInput, Fields, Lit, Meta, WherePredicate};
 
+/// 由每个变体的 `#[sc_error(code = "...")]` 派生 `::sc_error::ScError`。
+///
 /// Derive `::sc_error::ScError` from per-variant `#[sc_error(code = "...")]`.
 ///
 /// Generic errors add a container bound:
@@ -138,6 +145,8 @@ fn implement(ast: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     }
 }
 
+/// 从 `#[sc_error(bound = "...")]` 读取 `bound = "..."`。
+///
 /// Read `bound = "..."` from `#[sc_error(bound = "...")]`.
 fn container_bound(attrs: &[syn::Attribute]) -> syn::Result<Option<WherePredicate>> {
     for attr in attrs {
@@ -166,6 +175,8 @@ fn container_bound(attrs: &[syn::Attribute]) -> syn::Result<Option<WherePredicat
     Ok(None)
 }
 
+/// 从 `#[sc_error(code = "...")]` 读取 `code = "..."`。
+///
 /// Read `code = "..."` from `#[sc_error(code = "...")]`.
 fn variant_code(attrs: &[syn::Attribute], what: &str) -> syn::Result<String> {
     for attr in attrs {

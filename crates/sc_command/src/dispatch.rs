@@ -1,3 +1,8 @@
+//! 分发系统：原始输入到规范化调用。
+//!
+//! 只处理机制（分词/别名/权限闸门），不含任何命令语义；每条命令都是独立 ECS
+//! 系统，由内置模块或版本包插件挂载。
+//!
 //! Dispatch system: raw input to normalized invocation.
 //!
 //! Handles mechanics only (tokenize/alias/permission gate) with no command semantics;
@@ -11,6 +16,8 @@ use crate::events::{CommandFeedback, CommandInvocation, CommandOrigin, RawComman
 use crate::registry::{CommandPermissionLevel, CommandRegistry};
 use sc_log::t_log;
 
+/// 引号感知的分词：`say "hello world" x` 变成 `["say", "hello world", "x"]`。
+///
 /// Quote-aware tokenize: `say "hello world" x` becomes `["say", "hello world", "x"]`.
 /// Inside double quotes supports `\"` and `\\` escapes; an unterminated quote consumes the rest.
 pub fn tokenize(input: &str) -> Vec<String> {
@@ -48,6 +55,8 @@ pub fn tokenize(input: &str) -> Vec<String> {
     tokens
 }
 
+/// 调用者的权限级别。
+///
 /// Permission level of the invoker.
 /// Before the player permission component lands, players are treated as [`CommandPermissionLevel::Any`];
 /// the console holds the highest permission.
@@ -107,6 +116,8 @@ pub fn dispatch_commands(world: World, mut reader: EventReader<RawCommandInput>)
     }
 }
 
+/// 控制台反馈路由：sc_command 不依赖网络层；玩家反馈
+///
 /// Console feedback routing: sc_command does not depend on the network layer; player feedback
 /// is handled by the sc_network CommandOutput sender, this only covers console-side log output.
 pub fn console_feedback(mut reader: EventReader<CommandFeedback>) {

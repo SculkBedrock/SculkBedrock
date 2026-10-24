@@ -1,3 +1,13 @@
+//! 命令注册表：纯数据驱动的命令定义。
+//!
+//! 这里的命令 = 数据（本注册表）+ 系统（每条命令自己的 ECS 系统）+ 事件流。
+//! 注册表有两个消费方：
+//! 1. 网络层据此生成 `AvailableCommands`（0x4c）包（客户端补全）；
+//! 2. 分发系统据此解析别名并校验权限。
+//!
+//! 命令实体由版本包插件注册（[`CommandSource::Plugin`]）；SC 核心只带少量与版本包
+//! 数据无关的生命周期命令（[`CommandSource::BuiltIn`]）。
+//!
 //! Command registry: purely data-driven command definitions.
 //!
 //! A command here is data (this registry) plus systems (each command's own ECS system) plus the event flow.
@@ -13,6 +23,8 @@ use std::fmt::{Display, Formatter};
 use sc_ecs::resource::Resource;
 use sc_error::{ScError, ScSite, capture_site};
 
+/// Bedrock 命令权限级别，对应 `AvailableCommands` 中的 permission 字段。
+///
 /// Bedrock command permission level, matching the permission string in `AvailableCommands`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CommandPermissionLevel {
@@ -24,6 +36,8 @@ pub enum CommandPermissionLevel {
 }
 
 impl CommandPermissionLevel {
+    /// `AvailableCommands` 包中的权限字段。
+    ///
     /// The permission field in the `AvailableCommands` packet.
     /// All versions (1.20.x-1.21.x) use a single-byte enum: 0=Any, 1=GameDirectors, 2=Admin, 3=Host, 4=Owner.
     pub fn network_id(self) -> u8 {
@@ -36,6 +50,8 @@ impl CommandPermissionLevel {
         }
     }
 
+    /// v898+（1.20.40+）的 `AvailableCommands` 权限字段是字符串
+    ///
     /// The v898+ (1.20.40+) `AvailableCommands` permission field is a **string**
     /// (`CommandPermissionLevel.getId()`: any/gamedirectors/admin/host/owner).
     pub fn string_id(self) -> &'static str {
@@ -49,6 +65,9 @@ impl CommandPermissionLevel {
     }
 }
 
+/// 命令参数类型。仅用于服务端语义描述与后续 AvailableCommands 编码；在客户端补全
+/// 落地前不影响分发（分发只做分词并转发）。
+///
 /// Command parameter type. Only for server-side semantic description and future AvailableCommands encoding;
 /// dispatch is unaffected until client completion lands (dispatch only tokenizes and forwards).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,6 +114,8 @@ pub struct CommandOverload {
     pub parameters: Vec<CommandParameter>,
 }
 
+/// 命令注册来源。热重载时按来源批量注销。
+///
 /// Command registration source. Bulk-unregisters by source on hot swap.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CommandSource {
@@ -167,6 +188,8 @@ pub enum CommandRegisterError {
 }
 
 impl CommandRegisterError {
+    /// 构造重名错误并捕获调用位置。
+    ///
     /// Build a duplicate-name error, capturing the call site.
     #[track_caller]
     pub fn duplicate_name(name: String) -> Self {
@@ -178,6 +201,8 @@ impl CommandRegisterError {
         }
     }
 
+    /// 构造重别名错误并捕获调用位置。
+    ///
     /// Build a duplicate-alias error, capturing the call site.
     #[track_caller]
     pub fn duplicate_alias(alias: String) -> Self {
@@ -238,6 +263,8 @@ impl CommandRegistry {
         Ok(())
     }
 
+    /// 按来源批量注销（用于插件 hot_disable）。
+    ///
     /// Bulk-unregisters by source (for plugin hot_disable).
     pub fn unregister_source(&mut self, source: &CommandSource) -> usize {
         let removed: Vec<String> = self
@@ -259,6 +286,8 @@ impl CommandRegistry {
         removed.len()
     }
 
+    /// 名称或别名到命令定义。
+    ///
     /// Name or alias to command definition.
     pub fn resolve(&self, name_or_alias: &str) -> Option<&CommandDefinition> {
         let key = name_or_alias.to_ascii_lowercase();

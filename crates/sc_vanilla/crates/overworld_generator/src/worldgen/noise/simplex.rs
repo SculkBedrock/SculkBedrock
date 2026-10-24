@@ -32,9 +32,9 @@ const F3: f64 = 0.3333333333333333;
 /// Java: `G3`(L15).
 const G3: f64 = 0.16666666666666666;
 
-/// Java: `SimplexNoiseSampler extends Noise`.
+/// 单形噪声采样器。
 ///
-/// Inherited sampler state via [`Noise`] composition.
+/// Simplex noise sampler.
 pub struct SimplexNoiseSampler {
     /// Base sampler state.
     pub noise: Noise,
@@ -176,7 +176,9 @@ impl SimplexNoiseSampler {
 // OctaveSimplexNoiseSampler
 // ---------------------------------------------------------------------------
 
-/// Java: `OctaveSimplexNoiseSampler implements NoiseSampler`.
+/// 多八度单形噪声采样器。
+///
+/// Multi-octave simplex noise sampler.
 pub struct OctaveSimplexNoiseSampler {
     /// Java: `public final double lacunarity`.
     pub lacunarity: f64,
@@ -341,7 +343,9 @@ fn java_string_hash(s: &str) -> i32 {
     h
 }
 
-/// Java: `SimplexNoise`.
+/// 按振幅表构建多八度单形噪声采样器的工厂。
+///
+/// Factory building multi-octave simplex noise samplers from an amplitude table.
 pub struct SimplexNoise {
     /// Java: `private final float[] amplitudes`.
     amplitudes: Vec<f32>,

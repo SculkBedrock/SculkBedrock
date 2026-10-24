@@ -28,7 +28,12 @@ pub fn fnv1a32(data: &[u8]) -> u32 {
     hash
 }
 
+/// 计算方块状态的网络 runtime id（FNV 哈希）。
+///
 /// Computes the hashed network runtime id for a block state.
+///
+/// - `name`: 方块状态名
+/// - `states`: 状态属性映射（可选）
 pub fn block_state_hash(name: &str, states: Option<&CompoundNbt>) -> u32 {
     if name == "minecraft:unknown" {
         return UNKNOWN_BLOCK_RUNTIME_ID;

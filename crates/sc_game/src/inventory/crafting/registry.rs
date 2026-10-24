@@ -9,7 +9,9 @@ use parking_lot::RwLock;
 use sc_ecs::resource::Resource;
 use sc_recipe::{MapTagResolver, RecipeRegistryFingerprint, RecipeRegistrySnapshot};
 
-/// Frozen recipe registry shared by all regions (read-only after load).
+/// 所有区域共享的只读配方注册表。
+///
+/// Read-only recipe registry shared by all regions.
 #[derive(Resource, Clone, Debug)]
 pub struct SharedRecipeRegistry {
     snapshot: Arc<RwLock<RecipeRegistrySnapshot>>,
@@ -38,7 +40,9 @@ impl SharedRecipeRegistry {
     }
 }
 
-/// Item-tag table for `{"tag": ...}` ingredients (fail-closed when absent).
+/// 标签类配方使用的物品标签表，缺失时按失败处理。
+///
+/// Item-tag table used by tag-based recipes, failing closed when a tag is absent.
 #[derive(Resource, Clone, Debug, Default)]
 pub struct SharedItemTags {
     inner: Arc<RwLock<HashMap<String, Vec<String>>>>,

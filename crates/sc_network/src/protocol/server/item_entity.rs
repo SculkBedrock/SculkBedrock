@@ -1,4 +1,6 @@
-//! Bedrock item-entity packets.
+//! 物品实体相关协议包（掉落物生成与拾取）。
+//!
+//! Item-entity protocol packets (dropped-item spawn and pickup).
 
 use std::io::Error;
 
@@ -9,24 +11,65 @@ use sc_network_macros::MinecraftPacket;
 use crate::protocol::client::transaction::{write_item_data, ItemData};
 use crate::protocol::server::misc::{write_entity_metadata, EntityMetadataEntry};
 
-/// AddItemEntity/AddItemActor (0x0f).
+/// AddItemEntityPacket/AddItemActor (0x0f)：生成掉落物实体。
+///
+/// AddItemEntityPacket/AddItemActor (0x0f): spawns a dropped-item entity.
+///
+/// v291+ 起包体在末尾携带实体元数据与 isFromFishing 标志。
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct AddItemEntity {
+    /// 实体唯一 id。
+    ///
+    /// Entity unique id.
     pub entity_unique_id: i64,
+    /// 实体运行时 id。
+    ///
+    /// Entity runtime id.
     pub entity_runtime_id: u64,
+    /// 物品数据。
+    ///
+    /// Item data.
     pub item: ItemData,
+    /// 生成位置 X 坐标。
+    ///
+    /// Spawn X coordinate.
     pub x: f32,
+    /// 生成位置 Y 坐标。
+    ///
+    /// Spawn Y coordinate.
     pub y: f32,
+    /// 生成位置 Z 坐标。
+    ///
+    /// Spawn Z coordinate.
     pub z: f32,
+    /// 初速度 X 分量。
+    ///
+    /// Initial velocity X component.
     pub motion_x: f32,
+    /// 初速度 Y 分量。
+    ///
+    /// Initial velocity Y component.
     pub motion_y: f32,
+    /// 初速度 Z 分量。
+    ///
+    /// Initial velocity Z component.
     pub motion_z: f32,
-    /// Actor metadata. An empty list leaves client-side entity state
+    /// 实体元数据。空列表会导致客户端实体状态不完整（拾取动画不播放）。
+    ///
+    /// Entity metadata. An empty list leaves client-side entity state
     /// incomplete (pickup animation does not play).
     pub metadata: Vec<EntityMetadataEntry>,
 }
 
 impl Writer for AddItemEntity {
+    /// 写入 AddItemEntity 包体。
+    ///
+    /// Writes the AddItemEntity packet body.
+    ///
+    /// - `buf`: 输出字节写入器
+    ///
+    /// # Errors
+    /// 写入缓冲区失败时返回 IO 错误。
     fn write(&self, buf: &mut ByteWriter) -> Result<(), Error> {
         buf.write_var_i64(self.entity_unique_id)?;
         buf.write_var_u64(self.entity_runtime_id)?;
@@ -46,6 +89,12 @@ impl Writer for AddItemEntity {
 }
 
 impl Reader<AddItemEntity> for AddItemEntity {
+    /// 不支持解码：服务端只发送掉落物生成。
+    ///
+    /// Decoding is unsupported: the server only sends item spawns.
+    ///
+    /// # Errors
+    /// 始终返回 [`std::io::ErrorKind::Unsupported`] 错误。
     fn read(_buf: &mut ByteReader) -> Result<Self, Error> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
@@ -54,19 +103,33 @@ impl Reader<AddItemEntity> for AddItemEntity {
     }
 }
 
-/// TakeItemEntity/TakeItemActor (0x11).
+/// TakeItemEntityPacket/TakeItemActor (0x11)：拾取物品动画。
 ///
-/// Wire order: picked-up item actor runtime id first, collector second.
-/// The client plays the absorb animation from the first id toward the second.
+/// TakeItemEntityPacket/TakeItemActor (0x11): item pickup animation.
+///
+/// 线上顺序：被拾取物品实体运行时 id 在前，拾取者在后；客户端播放从
+/// 第一个 id 飞向第二个 id 的吸收动画。
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct TakeItemEntity {
+    /// 被拾取物品实体的运行时 id。
+    ///
     /// Runtime id of the item actor being picked up.
     pub item_entity_id: u64,
+    /// 拾取者（通常是玩家）的运行时 id。
+    ///
     /// Runtime id of the actor picking the item up (usually the player).
     pub target_entity_id: u64,
 }
 
 impl Writer for TakeItemEntity {
+    /// 写入 TakeItemEntity 包体。
+    ///
+    /// Writes the TakeItemEntity packet body.
+    ///
+    /// - `buf`: 输出字节写入器
+    ///
+    /// # Errors
+    /// 写入缓冲区失败时返回 IO 错误。
     fn write(&self, buf: &mut ByteWriter) -> Result<(), Error> {
         buf.write_var_u64(self.item_entity_id)?;
         buf.write_var_u64(self.target_entity_id)
@@ -74,6 +137,12 @@ impl Writer for TakeItemEntity {
 }
 
 impl Reader<TakeItemEntity> for TakeItemEntity {
+    /// 不支持解码：服务端只发送拾取动画。
+    ///
+    /// Decoding is unsupported: the server only sends pickup animations.
+    ///
+    /// # Errors
+    /// 始终返回 [`std::io::ErrorKind::Unsupported`] 错误。
     fn read(_buf: &mut ByteReader) -> Result<Self, Error> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,

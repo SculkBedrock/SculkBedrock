@@ -1,4 +1,4 @@
-//! TUI rendering: flat minimal style (no borders).
+//! TUI rendering: no-border style.
 //!
 //! Top to bottom: two title rows (version plus CPU/MEM), log stream, completion list,
 //! five input rows (wrapped editing plus pack version), status line.
@@ -47,12 +47,14 @@ pub(crate) use self::search::{SearchCtx, SearchMatch, find_matches, highlight_se
 /// Layout constants (row counts).
 pub const HEADER_ROWS: usize = 2;
 pub const INPUT_ROWS: usize = 5;
-/// Input box top padding rows (content sits lower for a roomier feel).
+/// Input box top padding rows (content sits lower).
 pub const INPUT_PAD_TOP: usize = 1;
 /// Input text area rows (padding plus content share them; content uses the last 3).
 pub const INPUT_TEXT_ROWS: usize = 4;
 pub const STATUS_ROWS: usize = 1;
 
+/// 渲染快照：由驱动线程每帧组装，渲染侧只读。
+///
 /// Render snapshot (assembled per frame by the driver thread; rendering only reads it).
 pub struct Frame<'a> {
     pub logs: &'a VecDeque<LogLine>,
@@ -139,7 +141,7 @@ pub const PROMPT_W: usize = 3;
 pub const TEXT_COL: usize = INPUT_MARGIN + PROMPT_W; // 6
 /// Right online-player panel width (includes the left separator column).
 pub const SIDE_PANEL_WIDTH: usize = 22;
-/// Panel background: one shade darker than the title/input bars, distinct but unobtrusive.
+/// Panel background: one shade darker than the title/input bars.
 const SIDE_PANEL_BG: Rgb = Rgb(22, 22, 22);
 /// Minimum terminal width for the panel (narrow windows hide it; logs take the full width).
 pub(crate) const SIDE_PANEL_MIN_WIDTH: usize = 70;
@@ -165,27 +167,27 @@ const SWEEP_PEAK: Rgb = Rgb(135, 255, 135);
 const SWEEP_HALF_WIDTH: f64 = 6.0;
 const RIPPLE_PEAK: Rgb = Rgb(0x10, 0xEF, 0xEF);
 const RIPPLE_HALF_WIDTH: f64 = 8.0;
-const RIPPLE_SPEED: f64 = 0.022; // 列/毫秒
+const RIPPLE_SPEED: f64 = 0.022; // columns per millisecond
 const PACK_COLOR: Rgb = Rgb(95, 215, 255);
 const TITLE_BLUE: Rgb = Rgb(135, 215, 255);
 const TITLE_DIM: Rgb = Rgb(35, 100, 140);
 const SWEEP_TRAIL: Rgb = Rgb(48, 65, 50);
 /// Quote steady base color (matches fixed color 117 = (135,215,255), same as the non-shine path).
 const SUB_BASE: Rgb = Rgb(135, 215, 255);
-/// Quote shine peak (near white, bright but not harsh; same color as the title shine).
+/// Quote shine peak (near white; same color as the title shine).
 const SUB_SHINE_PEAK: Rgb = Rgb(235, 245, 255);
 /// Unified TUI pale blue RGB (near color 81 = (95,215,255)): steady marker, slide end, copy-notice steady state.
 const LIGHT_BLUE: Rgb = Rgb(95, 215, 255);
 /// Slide-in marker fade start (dark end near color 32 = (0,135,215), interpolates toward [`LIGHT_BLUE`]).
 const SLIDE_BLUE_DIM: Rgb = Rgb(0, 135, 215);
-/// Copy notice gray-blue gradient (steady slate-400 near (148,163,178), low-key;
+/// Copy notice gray-blue gradient (steady slate-400 near (148,163,178);
 /// dark end converges toward the background).
 const COPY_DIM: Rgb = Rgb(55, 65, 80);
 const COPY_BRIGHT: Rgb = Rgb(148, 163, 178);
 /// Copy notice lifetime in ms: 250ms fade in, hold, then 400ms fade out.
 pub(crate) const COPY_FLASH_MS: u64 = 2500;
 /// Search-box label width in columns (both `tui.search_prefix` translations
-/// are 6 columns; locked by `config::tests`).
+/// are 6 columns).
 pub(crate) const SEARCH_PREFIX_W: usize = 6;
 /// Key hint steady color (near gray 245) and fade-out dark end.
 const HINT_FG: Rgb = Rgb(135, 135, 135);
@@ -201,7 +203,7 @@ const COPY_FADE_OUT_MS: u64 = 400;
 /// Search hit highlight: plain hits use pale-blue background (104); the current one uses green plus gold text.
 const SEARCH_BG: &str = "\x1b[104m";
 const SEARCH_BG_CODE: &str = "104";
-/// Current selection background (steady endpoint; animates from dark green with truecolor so handoff is seamless).
+/// Current selection background (steady endpoint; animates from dark green with truecolor, so the handoff frame shows the same color).
 const SEARCH_CURRENT_BG: Rgb = Rgb(56, 142, 60);
 /// Current selection background fade start (dark green).
 const SEARCH_CURRENT_FADE_FROM: Rgb = Rgb(18, 52, 20);
@@ -237,7 +239,7 @@ fn sweep_front(width: usize, progress: f32) -> f32 {
     progress.clamp(0.0, 1.0) * travel - margin
 }
 
-/// Smooth falloff on both sides with zero slope at the peak and the gray base, avoiding band edges.
+/// Smooth falloff on both sides with zero slope at the peak and the gray base.
 fn band_rgb(distance: f64, half_width: f64, peak: Rgb) -> Rgb {
     let t = (1.0 - distance.abs() / half_width).clamp(0.0, 1.0);
     mix_rgb(BAR_RGB, peak, (t * t * (3.0 - 2.0 * t)) as f32)
@@ -338,8 +340,8 @@ fn ansi_fg(c: Color) -> &'static str {
         Color::DarkBlue => "\x1b[34m",
         Color::DarkMagenta => "\x1b[35m",
         Color::DarkCyan => "\x1b[36m",
-        Color::Grey => "\x1b[38;5;247m", // 定死浅灰：不用 37，主题可重映射
-        Color::DarkGrey => "\x1b[38;5;245m", // 定死中灰：不用 90，某些主题下 90 偏紫
+        Color::Grey => "\x1b[38;5;247m", // fixed light grey: 37 is theme-remappable
+        Color::DarkGrey => "\x1b[38;5;245m", // fixed mid grey: some themes tint 90 purple
         Color::Red => "\x1b[91m",
         Color::Green => "\x1b[92m",
         Color::Yellow => "\x1b[93m",
@@ -363,7 +365,9 @@ fn push_reset(buf: &mut String) {
 
 // ================= Shaded row emission =================
 
-/// One span foreground: fixed color index or 24-bit RGB.
+/// 终端片段的前景色：固定颜色索引或 24 位 RGB。
+///
+/// Foreground color of a terminal span: a fixed color index or 24-bit RGB.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fg {
     Code(u8),
@@ -494,8 +498,7 @@ mod tests {
     use crate::model::{ConsoleHeader, ConsoleStats};
     use std::collections::VecDeque;
 
-    /// Chinese chrome lookups (existing tests pin zh-CN rendering; English has
-    /// its own tests below).
+    /// Chinese chrome lookups (tests render zh-CN).
     fn zh_hint() -> String {
         rust_i18n::t!("tui.hint_back_to_bottom", locale = "zh-CN").to_string()
     }
@@ -762,7 +765,7 @@ mod tests {
     fn long_input_wraps_instead_of_scrolling() {
         let logs = VecDeque::new();
         let mut editor = EditorState::new();
-        editor.insert_str(&"ab".repeat(60)); // 120 字符，80 宽下折 2 行
+        editor.insert_str(&"ab".repeat(60)); // 120 chars, wraps to 2 rows at width 80
         let header = test_header();
         let stats = test_stats();
         let frame = sample_frame(
@@ -2225,7 +2228,7 @@ mod tests {
 
     #[test]
     fn boot_last_frame_matches_steady_content() {
-        // Seamless handoff: the last boot frame visible text equals steady boot state (only styling differs).
+        // The last boot frame's visible text equals the steady boot state (only styling differs).
         let logs = VecDeque::from([
             LogLine::new(LogLevel::Info, "test", "第一条日志"),
             LogLine::new(LogLevel::Warn, "test", "第二条警告"),

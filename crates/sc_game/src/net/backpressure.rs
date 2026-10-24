@@ -27,7 +27,9 @@ use sc_world::storage::ChunkKey;
 use crate::net::faults::{escalate_fact_to_connection_fault, PendingConnectionFaults};
 use crate::net::{IntentPayload, IntentReliability, NetworkIntent, NetworkOutbox};
 
-/// Explicit handling when a reliable fact cannot enqueue.
+/// 可靠事实无法入队时的显式处理方式。
+///
+/// Explicit handling applied when a reliable fact cannot be enqueued.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FactBackpressure {
     /// Column refresh registered: the client receives the latest snapshot.
@@ -38,11 +40,13 @@ pub enum FactBackpressure {
     Unrecoverable,
 }
 
-/// Bounded player inventory resync request set (resource).
+/// 有界的玩家背包重同步请求集合。
 ///
-/// Rejected slot updates fold into one `ResyncInventory` per player: the
-/// authoritative full state covers rejected slots, so the set only needs
-/// bounded dedup.
+/// 被拒绝的槽位更新按玩家合并为一个完整重同步请求。
+///
+/// Bounded set of player inventory resync requests.
+///
+/// Rejected slot updates collapse into one full resync request per player.
 #[derive(Resource, Clone, Debug)]
 pub struct PendingInventoryResync {
     runtime_ids: BTreeSet<u64>,
@@ -141,10 +145,17 @@ pub fn escalate_block_fact(
     }
 }
 
-/// Unified outbound intent publisher: one entry point for admission.
+/// 统一的出站意图发布入口，负责准入控制：所有游戏域生产者都经它发布，
+/// 避免调用点遗漏准入拒绝处理：
 ///
-/// All game-domain producers publish through it, so no call site can
-/// forget to handle admission rejection:
+/// - 可覆盖状态的拒绝直接忽略（随后会重新生成）；
+/// - 被拒绝的 `UpdateBlock` 会登记列刷新；
+/// - 被拒绝的背包同步会登记有界全量重同步；
+/// - 其他被拒绝的可靠事实视为不可恢复。
+///
+/// Unified outbound intent publisher: one entry point for admission. All
+/// game-domain producers publish through it, so no call site can forget to
+/// handle admission rejection:
 ///
 /// - Overwriteable state rejections are safely ignored (regenerated).
 /// - Rejected `UpdateBlock` registers column refresh.
@@ -234,6 +245,9 @@ impl<'a> IntentPublisher<'a> {
     }
 
     fn escalate(&mut self, intent: NetworkIntent) {
+        if intent.is_overwritable_state() {
+            return;
+        }
         let outcome = match &intent {
             NetworkIntent::UpdateBlock(payload) => match self.world {
                 Some(world) => escalate_block_fact(
@@ -251,6 +265,9 @@ impl<'a> IntentPublisher<'a> {
                 escalate_inventory_fact(self.pending_resync.as_deref_mut(), payload.entity_id)
             }
             NetworkIntent::SyncFurnaceWindow(payload) => {
+                escalate_inventory_fact(self.pending_resync.as_deref_mut(), payload.entity_id)
+            }
+            NetworkIntent::SyncChestWindow(payload) => {
                 escalate_inventory_fact(self.pending_resync.as_deref_mut(), payload.entity_id)
             }
             NetworkIntent::ResyncInventory(payload) => {
@@ -703,7 +720,9 @@ pub fn intent_fault_runtime_id(intent: &NetworkIntent) -> Option<u64> {
         NetworkIntent::CraftResponse(payload) => Some(payload.entity_id),
         NetworkIntent::CorrectBlockPrediction(payload) => Some(payload.entity_id),
         NetworkIntent::OpenCraftingStation(payload) => Some(payload.entity_id),
+        NetworkIntent::OpenContainerWindow(payload) => Some(payload.entity_id),
         NetworkIntent::SyncFurnaceWindow(payload) => Some(payload.entity_id),
+        NetworkIntent::SyncChestWindow(payload) => Some(payload.entity_id),
         NetworkIntent::RemoveEntity(payload) => Some(payload.entity_id),
         NetworkIntent::SpawnItemEntity(payload) => Some(payload.runtime_id),
         NetworkIntent::DespawnItemEntity(payload) => Some(payload.runtime_id),

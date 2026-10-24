@@ -25,12 +25,14 @@ impl Writer for RequestChunkRadius {
     }
 }
 
+/// Bedrock v712+ ServerboundLoadingScreen（0x138）。
+///
+/// 载荷以原始字节保存，作为初始加载流程中的状态机信号；不解析内部枚举。
+///
 /// Bedrock v712+ ServerboundLoadingScreen (0x138).
 ///
-/// SC only needs the packet as a state-machine signal during the initial
-/// loading flow. Keeping the payload raw avoids coupling the login pipeline to
-/// protocol-library enum details while still preserving the packet for dumps
-/// and future typed parsing.
+/// The payload is kept raw and used as a state-machine signal during the initial
+/// loading flow; its inner enum fields are not parsed.
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct ServerboundLoadingScreen {
     pub payload: Vec<u8>,
@@ -50,14 +52,18 @@ impl Writer for ServerboundLoadingScreen {
     }
 }
 
+/// 光标物品拖拽状态（uint8）：Start = 0，Stop = 1。
+///
 /// Cursor item drag state (uint8): Start = 0, Stop = 1.
-// Wire-protocol namespace mirrors official docs.
+// Casing mirrors the wire-protocol names.
 #[allow(non_snake_case)]
 pub mod CursorItemDragState {
     pub const START: u8 = 0;
     pub const STOP: u8 = 1;
 }
 
+/// ServerboundCursorItemDrag（0x166）：光标物品分拖信号。
+///
 /// ServerboundCursorItemDrag (0x166). Cursor item split drag signal.
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct ServerboundCursorItemDrag {
@@ -77,6 +83,8 @@ impl Writer for ServerboundCursorItemDrag {
     }
 }
 
+/// ServerboundStonecutterSetRecipe（0x162）：选择配方序号。
+///
 /// ServerboundStonecutterSetRecipe (0x162). Recipe index selection.
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct ServerboundStonecutterSetRecipe {
@@ -100,6 +108,8 @@ impl Writer for ServerboundStonecutterSetRecipe {
     }
 }
 
+/// ServerboundMatchmakingCancel（0x164）：空的取消信号。
+///
 /// ServerboundMatchmakingCancel (0x164). Empty cancellation signal.
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct ServerboundMatchmakingCancel;
@@ -115,19 +125,21 @@ impl Writer for ServerboundMatchmakingCancel {
     }
 }
 
-/// ClientCameraAimAssist (0x141). Client-side aim-assist activation signal.
+/// 客户端瞄准辅助激活信号包（0x141）。
 ///
-/// Official layout (Endstone protocol-docs, BDS-extracted): camera preset id
-/// string, action u8, allow-aim-assist bool. Observed live wire bytes
-/// `[00, 01, 00]` decode exactly as empty preset + action 1 + disallow.
+/// Wire layout: camera preset id string, action u8, allow-aim-assist bool.
+/// Live wire bytes `[00, 01, 00]` decode as empty preset + action 1 + disallow.
 ///
-/// No handler system reads this packet: activation is client-side cosmetic
-/// and the server has no aim-assist preset registry, so decoded packets are
-/// deliberately ignored (previously they failed decode and warned per batch).
+/// Client-side aim-assist activation signal (0x141).
+///
+/// Wire layout: camera preset id string, action u8, allow-aim-assist bool.
+/// Observed wire bytes `[00, 01, 00]` decode as empty preset + action 1 + disallow.
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct ClientCameraAimAssist {
     pub camera_preset_id: String,
-    /// Raw action discriminant (official enum values unverified; kept raw).
+    /// 原始动作判别值（枚举取值未确认，保留原始字节）。
+    ///
+    /// Raw action discriminant (enum values unverified; kept raw).
     pub action: u8,
     pub allow_aim_assist: bool,
 }
@@ -150,6 +162,8 @@ impl Writer for ClientCameraAimAssist {
     }
 }
 
+/// 音频内容注册条目。
+///
 /// Audio content registration entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AudioContentRegistrationEntry {
@@ -159,7 +173,9 @@ pub struct AudioContentRegistrationEntry {
     pub playback_content_jwt: String,
 }
 
-/// ServerboundRegisterAudioContent (0x168).
+/// 客户端注册音频内容的数据包（0x168）。
+///
+/// Client-bound audio content registration packet (0x168).
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct ServerboundRegisterAudioContent {
     pub registrations: Vec<AudioContentRegistrationEntry>,

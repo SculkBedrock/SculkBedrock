@@ -1,13 +1,6 @@
-//! Chunk feature stage: ore, tree, and surface-decoration features.
+//! 区块特征阶段：放置矿物、树木与地表装饰，并将区块状态置为已填充。
 //!
-//! Notes:
-//! - The feature list is a hardcoded list of all overworld underground ores,
-//!   with tree and decoration features appended afterwards; a future data-driven
-//!   lookup can replace the static registration.
-//! - Each feature applies directly to the chunk; there is no cross-chunk routing.
-//! - The chunk state is set to `Populated` at the end of the stage.
-//! - The hardcoded list does not depend on per-chunk biome scans; biome filtering
-//!   is done per column by each feature.
+//! Chunk feature stage: places ores, trees, and surface decoration, then sets the chunk state to populated.
 
 use crate::blocks_table::OreBlockTable;
 use crate::worldgen::chunk::ChunkState;
@@ -40,6 +33,10 @@ use std::sync::Arc;
 // NormalChunkFeatureStage: applies ore/tree/decoration features in order
 // ---------------------------------------------------------------------------
 
+/// 区块特征阶段。
+///
+/// 按顺序应用每个已注册特征，然后将区块状态设为 `Populated`。特征列表初始为主世界全部地下矿石；树与装饰特征由 `with_*` 构造函数追加，顺序保证生物群系过滤在每个特征内部按列进行。
+///
 /// Chunk feature stage.
 ///
 /// Applies each registered feature in order, then sets the chunk state to
@@ -175,6 +172,10 @@ impl GenerateStage for NormalChunkFeatureStage {
 // Finished marker stage after population
 // ---------------------------------------------------------------------------
 
+/// 将区块状态标记为 `Finished`。
+///
+/// 不进行光照计算，直接标记完成。
+///
 /// Marks the chunk state as `Finished`.
 ///
 /// There is no lighting computation here; the stage directly marks finished.

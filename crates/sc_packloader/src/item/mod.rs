@@ -1,5 +1,11 @@
+//! 物品定义与生成：物品描述、组件容器、网络 NBT 转换与运行时组件表。
+//!
+//! Item definitions and spawning: item descriptions, the component container,
+//! network NBT conversion, and the runtime component table.
+
 pub mod component;
 pub mod nbt;
+pub mod wear;
 
 use crate::components_export;
 use crate::item::component::*;
@@ -15,35 +21,82 @@ use serde_inline_default::serde_inline_default;
 use serde_json::{Map, Value};
 use std::sync::Arc;
 
+pub use crate::item::component::DurabilityCosts;
+pub use wear::{WearProfile, WearTable};
+
+/// 物品创造模式分类信息。
+///
+/// Item creative-menu category information.
 #[serde_inline_default]
 #[derive(Deserialize, Debug, Clone, Default)]
 pub struct MinecraftItemMenuCategory {
+    /// 创造模式分组名。
+    ///
+    /// Creative-menu group name.
     #[serde(default)]
     pub group: String,
+    /// 创造模式分类名（默认为 `items`）。
+    ///
+    /// Creative-menu category name (defaults to `items`).
     #[serde_inline_default("items".to_string())]
     pub category: String,
+    /// 是否在命令中隐藏。
+    ///
+    /// Whether the item is hidden from commands.
     #[serde(default)]
     pub is_hidden_in_commands: bool,
 }
 
+/// 物品描述：标识符与创造模式分类。
+///
+/// Item description: the identifier and the creative-menu category.
 #[derive(Deserialize, Debug, Clone, Default)]
 pub struct MinecraftItemDescription {
+    /// 物品标识名（如 `minecraft:apple`）。
+    ///
+    /// Item identifier name (e.g. `minecraft:apple`).
     pub identifier: String,
+    /// 创造模式分类信息。
+    ///
+    /// Creative-menu category information.
     #[serde(default)]
     pub menu_category: MinecraftItemMenuCategory,
 }
 
+/// 物品组件：物品的基础身份信息。
+///
+/// Item component: the basic identity information of an item.
 #[derive(Component, Debug)]
 pub struct MinecraftItem {
+    /// 资源格式版本号。
+    ///
+    /// Resource format version.
     pub format_version: String,
+    /// 物品描述。
+    ///
+    /// Item description.
     pub description: Option<MinecraftItemDescription>,
 }
 
+/// 物品生成器：描述文件中的物品定义及其组件集合。
+///
+/// Item spawner: the item definition in a description file together with its
+/// component set.
 #[derive(Deserialize, Clone, Debug)]
 pub struct MinecraftItemSpawner {
+    /// 资源格式版本号（反序列化时跳过，由上层回填）。
+    ///
+    /// Resource format version (skipped while deserializing; backfilled by
+    /// the caller).
     #[serde(skip_deserializing)]
     pub format_version: String,
+    /// 物品描述。
+    ///
+    /// Item description.
     pub description: Option<MinecraftItemDescription>,
+    /// 物品组件集合。
+    ///
+    /// The item component set.
     pub components: Option<ItemComponents>,
     //pub default_nbt: Option<CompoundNbt>
 }
@@ -83,25 +136,33 @@ components_export![
     UseModifiers = "minecraft:use_modifiers",
     Wearable = "minecraft:wearable",
     //SC Components
-    RuntimeID = "ur:runtime_id",
-    CanPlaceOn = "ur:can_place_on",
-    CanDestroy = "ur:can_destroy",
+    RuntimeID = "sc:runtime_id",
+    CanPlaceOn = "sc:can_place_on",
+    CanDestroy = "sc:can_destroy",
+    DurabilityCosts = "sc:durability_costs",
 ];
 
 impl ItemComponents {
-    /// Build the NBT payload used by Bedrock's ItemRegistry/ItemComponent packet.
+    /// 构建 Bedrock `ItemRegistry`/`ItemComponent` 数据包所使用的 NBT 载荷。
     ///
-    /// The version pack stores item components as JSON because that is the
-    /// authoring format used by behavior packs. Network code must not hardcode
-    /// packet bytes, so this method converts the semantic component JSON into
-    /// Bedrock network NBT at the packloader boundary.
+    /// Builds the NBT payload used by Bedrock's `ItemRegistry`/`ItemComponent`
+    /// packet.
     ///
-    /// SC-only helper components are intentionally filtered out; only
-    /// `minecraft:*` keys are visible to the Bedrock client.
+    /// 版本包以 JSON 形式存放物品组件，因为那是行为包的创作格式。网络层不应
+    /// 硬编码数据包字节，因此该方法在包加载边界把语义化的组件 JSON 转换为
+    /// Bedrock 网络 NBT。
+    ///
+    /// 仅服务端自有（SC）的辅助组件会被过滤掉，客户端仅可见 `minecraft:*` 键。
     pub fn to_network_component_tag(&self) -> CompoundNbt {
         self.to_network_component_tag_with_item(None)
     }
 
+    /// 构建附带物品描述信息的网络组件 NBT。
+    ///
+    /// Builds the network component NBT together with the item description
+    /// information.
+    ///
+    /// - `item`: 可选的物品生成器，提供描述信息用于数据驱动物品的属性
     pub fn to_network_component_tag_with_item(
         &self,
         item: Option<&MinecraftItemSpawner>,
@@ -115,6 +176,11 @@ impl ItemComponents {
         tag
     }
 
+    /// 将已注册组件逐个转换为网络 NBT。
+    ///
+    /// Converts each registered component into network NBT.
+    ///
+    /// - `item`: 可选的物品生成器，提供描述信息用于数据驱动物品的属性
     fn to_network_components(&self, item: Option<&MinecraftItemSpawner>) -> CompoundNbt {
         let mut components = CompoundNbt::new(None);
         match self {
@@ -149,12 +215,14 @@ impl ItemComponents {
 }
 
 impl MinecraftItemSpawner {
-    /// Build the Bedrock ItemRegistry component tag from the already-loaded
+    /// 从已加载的版本包物品 JSON 构建 Bedrock `ItemRegistry` 组件标签。
+    ///
+    /// Builds the Bedrock `ItemRegistry` component tag from the already-loaded
     /// version-pack item JSON.
     ///
-    /// Some builds ship a prebuilt `item_components.nbt`, but that file is a compiled
-    /// form of item component semantics. SC keeps the version pack as the source
-    /// of truth and constructs the same network shape from `items/*.json`.
+    /// 部分构建会附带预编译的 `item_components.nbt`，但该文件只是物品组件
+    /// 语义的编译形式。本项目以版本包为唯一事实来源，从 `items/*.json`
+    /// 构造出同样的网络结构。
     pub fn to_network_component_tag(&self) -> CompoundNbt {
         self.components
             .as_ref()
@@ -163,29 +231,43 @@ impl MinecraftItemSpawner {
     }
 }
 
+/// 稠密物品组件表：按网络运行时 id 索引，供游戏逻辑查询。
+///
 /// Dense item-component table indexed by network runtime id for gameplay queries.
 ///
-/// Same data source as [MinecraftItemSpawner] (version-pack `items/*.json` plus behavior packs),
-/// but it compiles components from one-shot packet data into a queryable runtime resource:
-/// gameplay systems can call `has::<Food>(runtime_id)` / `get::<Food>(runtime_id)` to ask
-/// edibility/durability/fuel semantics without touching network protocol.
+/// 数据来源为版本包 `items/*.json` 与行为包，加载时把组件编译为可查询的
+/// 运行时资源：游戏系统可调用 `has::<Food>(runtime_id)` / `get::<Food>(runtime_id)`
+/// 查询可食用性、耐久、燃料等语义，无需接触网络协议。
 ///
-/// Relation to [sc_item::ItemRegistry]: the registry describes what an item is (id/name/stack limit/
-/// linked block); this table describes what an item can do (components). Bootstrap builds both at SCLoad.
+/// Sourced from version-pack `items/*.json` and behavior packs; components are
+/// compiled into a queryable runtime resource: game systems call
+/// `has::<Food>(runtime_id)` / `get::<Food>(runtime_id)` to read food,
+/// durability, fuel and similar semantics without touching the network protocol.
 #[derive(Resource, Clone, Debug, Default)]
 pub struct ItemComponentTable {
+    /// 按运行时 id 索引的组件表，槽位可能为空。
+    ///
+    /// Component table indexed by runtime id; slots may be empty.
     entries: Arc<RwLock<Vec<Option<ItemComponents>>>>,
 }
 
 impl ItemComponentTable {
+    /// 创建一张空的组件表。
+    ///
+    /// Creates an empty component table.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Compile the dense table from [MinecraftRuntimeManager] spawners.
+    /// 从 [MinecraftRuntimeManager] 中的物品生成器编译稠密组件表。
     ///
-    /// Only items with component definitions are included; runtime id is the Vec index (air runtime 0 excluded).
-    /// Call once during SCLoad (after runtime ids are loaded into the manager).
+    /// Compiles the dense table from the item spawners in
+    /// [MinecraftRuntimeManager].
+    ///
+    /// 仅包含定义了组件的物品；运行时 id 即 `Vec` 下标（空气运行时 id 0 被排除）。
+    /// 需在 SCLoad 阶段（运行时 id 载入管理器之后）调用一次。
+    ///
+    /// - `runtime_manager`: 运行时管理器，提供物品生成器与运行时 id
     pub fn build(&mut self, runtime_manager: &MinecraftRuntimeManager) {
         let mut entries = self.entries.write();
         entries.clear();
@@ -207,6 +289,12 @@ impl ItemComponentTable {
         }
     }
 
+    /// 取出指定运行时 id 的组件副本；无定义时返回 `None`。
+    ///
+    /// Takes a copy of the components of the given runtime id; `None` when
+    /// there is no definition.
+    ///
+    /// - `runtime_id`: 物品的网络运行时 id
     pub fn raw(&self, runtime_id: u16) -> Option<ItemComponents> {
         self.entries
             .read()
@@ -215,7 +303,13 @@ impl ItemComponentTable {
             .flatten()
     }
 
-    /// Whether the item has the given component (e.g. `Food`, `Durability`, `Fuel`).
+    /// 判断该物品是否具有指定组件（如 `Food`、`Durability`、`Fuel`）。
+    ///
+    /// Whether the item has the given component (e.g. `Food`, `Durability`,
+    /// `Fuel`).
+    ///
+    /// - `runtime_id`: 物品的网络运行时 id
+    /// - `T`: 要查询的组件类型
     pub fn has<T>(&self, runtime_id: u16) -> bool
     where
         T: Component + serde::de::DeserializeOwned,
@@ -225,7 +319,13 @@ impl ItemComponentTable {
             .is_some()
     }
 
-    /// Read the given component instance (e.g. `Food { nutrition, saturation_modifier, .. }`).
+    /// 读取指定组件实例（如 `Food { nutrition, saturation_modifier, .. }`）。
+    ///
+    /// Reads the given component instance (e.g. `Food { nutrition,
+    /// saturation_modifier, .. }`).
+    ///
+    /// - `runtime_id`: 物品的网络运行时 id
+    /// - `T`: 要读取的组件类型
     pub fn get<T>(&self, runtime_id: u16) -> Option<T>
     where
         T: Component + serde::de::DeserializeOwned,
@@ -233,14 +333,22 @@ impl ItemComponentTable {
         self.raw(runtime_id)?.get::<T>()
     }
 
+    /// 表中槽位总数（含空洞）。
+    ///
+    /// Total number of slots in the table (including holes).
     pub fn len(&self) -> usize {
         self.entries.read().len()
     }
 
+    /// 表中是否没有任何槽位。
+    ///
+    /// Whether the table has no slots at all.
     pub fn is_empty(&self) -> bool {
         self.entries.read().is_empty()
     }
 
+    /// 定义了组件的物品数量（跳过空洞下标）。
+    ///
     /// Number of items with component definitions (skips hole indices).
     pub fn count(&self) -> usize {
         self.entries
@@ -251,6 +359,12 @@ impl ItemComponentTable {
     }
 }
 
+/// 判断物品是否为数据驱动物品。
+///
+/// Whether the item is data driven.
+///
+/// - `item`: 可选的物品生成器，提供格式版本
+/// - `map`: 物品组件映射
 fn is_data_driven_item(item: Option<&MinecraftItemSpawner>, map: &Map<String, Value>) -> bool {
     map.contains_key("minecraft:icon")
         || item
@@ -258,6 +372,15 @@ fn is_data_driven_item(item: Option<&MinecraftItemSpawner>, map: &Map<String, Va
             .unwrap_or(false)
 }
 
+/// 判断版本字符串是否不低于给定的主次修订版本。
+///
+/// Whether the version string is at least the given major/minor/patch
+/// version.
+///
+/// - `version`: 版本字符串（如 `1.20.0`）
+/// - `major`: 主版本号
+/// - `minor`: 次版本号
+/// - `patch`: 修订号
 fn version_at_least(version: &str, major: u32, minor: u32, patch: u32) -> bool {
     let mut parts = version
         .split('.')
@@ -270,6 +393,13 @@ fn version_at_least(version: &str, major: u32, minor: u32, patch: u32) -> bool {
     actual >= (major, minor, patch)
 }
 
+/// 判断该组件是否只应出现在 `item_properties` 中而不单独下发。
+///
+/// Whether the component should only appear in `item_properties` instead of
+/// being sent on its own.
+///
+/// - `key`: 组件键
+/// - `data_driven`: 物品是否为数据驱动
 fn component_is_item_property_only(key: &str, data_driven: bool) -> bool {
     data_driven
         && matches!(
@@ -285,6 +415,12 @@ fn component_is_item_property_only(key: &str, data_driven: bool) -> bool {
         )
 }
 
+/// 构建数据驱动物品的 `item_properties` 复合标签。
+///
+/// Builds the `item_properties` compound tag for a data-driven item.
+///
+/// - `item`: 可选的物品生成器，提供描述信息
+/// - `map`: 物品组件映射
 fn build_item_properties(
     item: Option<&MinecraftItemSpawner>,
     map: &Map<String, Value>,
@@ -388,6 +524,11 @@ fn build_item_properties(
     properties
 }
 
+/// 将创造模式分类名映射为 Bedrock 的分类编号。
+///
+/// Maps a creative-menu category name to the Bedrock category id.
+///
+/// - `item`: 物品生成器，提供描述信息
 fn item_creative_category(item: &MinecraftItemSpawner) -> Option<i32> {
     let category = item
         .description
@@ -406,6 +547,11 @@ fn item_creative_category(item: &MinecraftItemSpawner) -> Option<i32> {
     })
 }
 
+/// 提取 `minecraft:tags` 组件中的标签列表。
+///
+/// Extracts the tag list from the `minecraft:tags` component.
+///
+/// - `map`: 物品组件映射
 fn build_item_tags(map: &Map<String, Value>) -> Option<NbtValue> {
     let tags = map
         .get("minecraft:tags")?
@@ -419,6 +565,14 @@ fn build_item_tags(map: &Map<String, Value>) -> Option<NbtValue> {
     Some(NbtValue::List(tags))
 }
 
+/// 将单个组件值转换为网络 NBT，并按组件类型做必要规范化。
+///
+/// Converts a single component value into network NBT, normalizing it as
+/// required by the component type.
+///
+/// - `key`: 组件键
+/// - `value`: 组件的 JSON 值
+/// - `data_driven`: 物品是否为数据驱动
 fn component_value_to_network_nbt(key: &str, value: &Value, data_driven: bool) -> Option<NbtValue> {
     let mut value = json_value_to_nbt(value)?;
 
@@ -464,6 +618,11 @@ fn component_value_to_network_nbt(key: &str, value: &Value, data_driven: bool) -
     }
 }
 
+/// 将标量值包装为带 `value` 键的复合标签。
+///
+/// Wraps a scalar value into a compound tag carrying a `value` key.
+///
+/// - `value`: 待包装的 NBT 值
 fn wrap_scalar_value(value: NbtValue) -> NbtValue {
     match value {
         NbtValue::Compound(_) => value,
@@ -475,6 +634,12 @@ fn wrap_scalar_value(value: NbtValue) -> NbtValue {
     }
 }
 
+/// 将组件值包装为以组件名为键的复合标签。
+///
+/// Wraps a component value into a compound tag keyed by the component name.
+///
+/// - `key`: 组件键
+/// - `value`: 待包装的 NBT 值
 fn wrap_component_name(key: &str, value: NbtValue) -> NbtValue {
     match &value {
         NbtValue::Compound(compound) if compound.contains_key(key) => value,
@@ -486,6 +651,13 @@ fn wrap_component_name(key: &str, value: NbtValue) -> NbtValue {
     }
 }
 
+/// 规范化 `minecraft:food` 组件，补齐缺失的默认字段。
+///
+/// Normalizes the `minecraft:food` component, filling in missing default
+/// fields.
+///
+/// - `value`: 待规范化的 NBT 值
+/// - `data_driven`: 物品是否为数据驱动
 fn normalize_food(value: &mut NbtValue, data_driven: bool) {
     let Some(compound) = value.as_compound_mut() else {
         return;
@@ -531,6 +703,11 @@ fn normalize_food(value: &mut NbtValue, data_driven: bool) {
     }
 }
 
+/// 将饱和度修饰符名称映射为数值。
+///
+/// Maps a saturation modifier name to its numeric value.
+///
+/// - `value`: 修饰符名称或已是数值的字符串
 fn saturation_modifier_value(value: &str) -> f32 {
     match value {
         "poor" => 0.1,
@@ -542,6 +719,12 @@ fn saturation_modifier_value(value: &str) -> f32 {
     }
 }
 
+/// 规范化 `minecraft:projectile` 组件，补齐默认值并补全投射物标识。
+///
+/// Normalizes the `minecraft:projectile` component, filling in default values
+/// and completing the projectile identifier.
+///
+/// - `value`: 待规范化的 NBT 值
 fn normalize_projectile(value: &mut NbtValue) {
     let Some(compound) = value.as_compound_mut() else {
         return;
@@ -561,6 +744,12 @@ fn normalize_projectile(value: &mut NbtValue) {
     }
 }
 
+/// 规范化 `minecraft:throwable` 组件，补齐抛掷相关默认值。
+///
+/// Normalizes the `minecraft:throwable` component, filling in the default
+/// throw-related values.
+///
+/// - `value`: 待规范化的 NBT 值
 fn normalize_throwable(value: &mut NbtValue) {
     let Some(compound) = value.as_compound_mut() else {
         return;
@@ -573,6 +762,12 @@ fn normalize_throwable(value: &mut NbtValue) {
     insert_default_byte(compound, "scale_power_by_draw_duration", 0);
 }
 
+/// 规范化 `minecraft:use_modifiers` 组件，补齐默认值。
+///
+/// Normalizes the `minecraft:use_modifiers` component, filling in default
+/// values.
+///
+/// - `value`: 待规范化的 NBT 值
 fn normalize_use_modifiers(value: &mut NbtValue) {
     let Some(compound) = value.as_compound_mut() else {
         return;
@@ -586,6 +781,11 @@ fn normalize_use_modifiers(value: &mut NbtValue) {
     }
 }
 
+/// 规范化可修复/可存储物品组件中的物品引用列表。
+///
+/// Normalizes the item reference lists in repairable/storage-item components.
+///
+/// - `value`: 待规范化的 NBT 值
 fn normalize_item_reference_lists(value: &mut NbtValue) {
     let Some(compound) = value.as_compound_mut() else {
         return;
@@ -603,6 +803,13 @@ fn normalize_item_reference_lists(value: &mut NbtValue) {
     }
 }
 
+/// 将命名物品列表中的字符串条目转换为 `{ "name": ... }` 结构。
+///
+/// Converts plain string entries of a named item list into
+/// `{ "name": ... }` structures.
+///
+/// - `compound`: 所属复合标签
+/// - `key`: 列表字段名
 fn normalize_named_item_list(compound: &mut CompoundNbt, key: &str) {
     let Some(NbtValue::List(items)) = compound.get_mut(key) else {
         return;
@@ -617,18 +824,38 @@ fn normalize_named_item_list(compound: &mut CompoundNbt, key: &str) {
     }
 }
 
+/// 在字段缺失时插入字节型默认值。
+///
+/// Inserts a byte default value when the field is missing.
+///
+/// - `compound`: 目标复合标签
+/// - `key`: 字段名
+/// - `value`: 默认值
 fn insert_default_byte(compound: &mut CompoundNbt, key: &str, value: i8) {
     if !compound.contains_key(key) {
         compound.insert(key, NbtValue::Byte(value));
     }
 }
 
+/// 在字段缺失时插入浮点型默认值。
+///
+/// Inserts a float default value when the field is missing.
+///
+/// - `compound`: 目标复合标签
+/// - `key`: 字段名
+/// - `value`: 默认值
 fn insert_default_float(compound: &mut CompoundNbt, key: &str, value: f32) {
     if !compound.contains_key(key) {
         compound.insert(key, NbtValue::Float(value));
     }
 }
 
+/// 将数值字段统一转换为浮点型。
+///
+/// Converts a numeric field to a float value.
+///
+/// - `compound`: 目标复合标签
+/// - `key`: 字段名
 fn normalize_float_field(compound: &mut CompoundNbt, key: &str) {
     let Some(value) = compound.get(key).cloned() else {
         return;
@@ -653,6 +880,14 @@ fn normalize_float_field(compound: &mut CompoundNbt, key: &str) {
     }
 }
 
+/// 读取组件中的布尔值，兼容标量与 `{ "value": ... }` 两种写法。
+///
+/// Reads a boolean value from a component, accepting both the scalar form and
+/// the `{ "value": ... }` form.
+///
+/// - `map`: 物品组件映射
+/// - `key`: 组件键
+/// - `default`: 缺省值
 fn component_bool(map: &Map<String, Value>, key: &str, default: bool) -> bool {
     map.get(key)
         .and_then(value_bool)
@@ -663,6 +898,14 @@ fn component_bool(map: &Map<String, Value>, key: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+/// 读取组件中的 32 位整数，兼容标量与 `{ "value": ... }` 两种写法。
+///
+/// Reads a 32-bit integer from a component, accepting both the scalar form and
+/// the `{ "value": ... }` form.
+///
+/// - `map`: 物品组件映射
+/// - `key`: 组件键
+/// - `default`: 缺省值
 fn component_i32(map: &Map<String, Value>, key: &str, default: i32) -> i32 {
     map.get(key)
         .and_then(value_i32)
@@ -673,6 +916,14 @@ fn component_i32(map: &Map<String, Value>, key: &str, default: i32) -> i32 {
         .unwrap_or(default)
 }
 
+/// 读取组件嵌套字段中的 32 位整数。
+///
+/// Reads a 32-bit integer from a nested field of a component.
+///
+/// - `map`: 物品组件映射
+/// - `component_key`: 组件键
+/// - `nested_key`: 嵌套字段名
+/// - `default`: 缺省值
 fn component_i32_nested(
     map: &Map<String, Value>,
     component_key: &str,
@@ -684,6 +935,14 @@ fn component_i32_nested(
         .unwrap_or(default)
 }
 
+/// 读取组件嵌套字段中的字符串。
+///
+/// Reads a string from a nested field of a component.
+///
+/// - `map`: 物品组件映射
+/// - `component_key`: 组件键
+/// - `nested_key`: 嵌套字段名
+/// - `default`: 缺省值
 fn component_string_nested(
     map: &Map<String, Value>,
     component_key: &str,
@@ -698,6 +957,11 @@ fn component_string_nested(
         .to_string()
 }
 
+/// 将 `minecraft:use_animation` 映射为 Bedrock 的动画编号。
+///
+/// Maps `minecraft:use_animation` to the Bedrock animation id.
+///
+/// - `map`: 物品组件映射
 fn component_use_animation_id(map: &Map<String, Value>) -> i32 {
     let value = map
         .get("minecraft:use_animation")
@@ -720,6 +984,11 @@ fn component_use_animation_id(map: &Map<String, Value>) -> i32 {
     }
 }
 
+/// 计算物品的使用时长（以 tick 为单位）。
+///
+/// Computes the item use duration in ticks.
+///
+/// - `map`: 物品组件映射
 fn component_use_duration_ticks(map: &Map<String, Value>) -> i32 {
     if let Some(duration) = map.get("minecraft:use_duration").and_then(value_f64) {
         return duration.round() as i32;
@@ -733,26 +1002,58 @@ fn component_use_duration_ticks(map: &Map<String, Value>) -> i32 {
     0
 }
 
+/// 从 JSON 值中提取布尔值。
+///
+/// Extracts a boolean value from a JSON value.
+///
+/// - `value`: JSON 值
 fn value_bool(value: &Value) -> Option<bool> {
     value.as_bool()
 }
 
+/// 从 JSON 值中提取 32 位整数。
+///
+/// Extracts a 32-bit integer from a JSON value.
+///
+/// - `value`: JSON 值
 fn value_i32(value: &Value) -> Option<i32> {
     value.as_i64().and_then(|value| i32::try_from(value).ok())
 }
 
+/// 从 JSON 值中提取浮点数。
+///
+/// Extracts a floating-point number from a JSON value.
+///
+/// - `value`: JSON 值
 fn value_f64(value: &Value) -> Option<f64> {
     value.as_f64()
 }
 
+/// 从 JSON 值中提取字符串。
+///
+/// Extracts a string from a JSON value.
+///
+/// - `value`: JSON 值
 fn value_string(value: &Value) -> Option<String> {
     value.as_str().map(str::to_string)
 }
 
+/// 从 JSON 对象的嵌套字段中提取布尔值。
+///
+/// Extracts a boolean value from a nested field of a JSON object.
+///
+/// - `value`: JSON 值
+/// - `key`: 字段名
 fn value_nested_bool(value: &Value, key: &str) -> Option<bool> {
     value.as_object()?.get(key)?.as_bool()
 }
 
+/// 从 JSON 对象的嵌套字段中提取 32 位整数。
+///
+/// Extracts a 32-bit integer from a nested field of a JSON object.
+///
+/// - `value`: JSON 值
+/// - `key`: 字段名
 fn value_nested_i32(value: &Value, key: &str) -> Option<i32> {
     value
         .as_object()?
@@ -761,14 +1062,32 @@ fn value_nested_i32(value: &Value, key: &str) -> Option<i32> {
         .and_then(|value| i32::try_from(value).ok())
 }
 
+/// 从 JSON 对象的嵌套字段中提取浮点数。
+///
+/// Extracts a floating-point number from a nested field of a JSON object.
+///
+/// - `value`: JSON 值
+/// - `key`: 字段名
 fn value_nested_f64(value: &Value, key: &str) -> Option<f64> {
     value.as_object()?.get(key)?.as_f64()
 }
 
+/// 从 JSON 对象的嵌套字段中提取字符串。
+///
+/// Extracts a string from a nested field of a JSON object.
+///
+/// - `value`: JSON 值
+/// - `key`: 字段名
 fn value_nested_string(value: &Value, key: &str) -> Option<String> {
     value.as_object()?.get(key)?.as_str().map(str::to_string)
 }
 
+/// 将 JSON 值转换为 NBT 值；`null` 无对应 NBT 表示，返回 `None`。
+///
+/// Converts a JSON value into an NBT value; `null` has no NBT counterpart and
+/// yields `None`.
+///
+/// - `value`: JSON 值
 fn json_value_to_nbt(value: &Value) -> Option<NbtValue> {
     match value {
         Value::Null => None,
@@ -794,6 +1113,11 @@ fn json_value_to_nbt(value: &Value) -> Option<NbtValue> {
     }
 }
 
+/// 将 JSON 数字转换为最合适的 NBT 数值类型。
+///
+/// Converts a JSON number into the most suitable NBT numeric type.
+///
+/// - `value`: JSON 数字
 fn json_number_to_nbt(value: &serde_json::Number) -> Option<NbtValue> {
     if let Some(value) = value.as_i64() {
         if let Ok(value) = i32::try_from(value) {
@@ -831,6 +1155,82 @@ mod tests {
             _ => panic!("expected minecraft:item"),
         }
     }
+
+    /// 原版工具补的 item JSON 下发的耐久载荷与数据驱动物品同形。
+    ///
+    /// Legacy tools ship the same durability payload shape as data-driven items.
+    ///
+    /// 原版工具不是数据驱动物品（无 `minecraft:icon`、`format_version` 低于 1.20），
+    /// 因此 `item_properties` / `item_tags` 不会被注入；它只带自己声明的那一条
+    /// `minecraft:durability`。这与仓库现有的 legacy 食物完全同类
+    /// （`apple.json` 今天就在下发 `minecraft:food`）。
+    ///
+    /// Legacy tools are not data-driven (no `minecraft:icon`, `format_version`
+    /// below 1.20), so `item_properties` / `item_tags` are never injected; they
+    /// ship exactly the one `minecraft:durability` they declare. This is the same
+    /// class as the existing legacy food items (`apple.json` already ships
+    /// `minecraft:food` today).
+    #[test]
+    fn legacy_tool_ships_durability_like_data_driven_items() {
+        let tool = parse_item(include_str!(
+            "../../../../version_packs/[SC原版版本包] Vanilla-1.26.40/behavior_packs/vanilla/items/wooden_pickaxe.json"
+        ));
+        let tag = tool.to_network_component_tag();
+        let components = tag
+            .get("components")
+            .and_then(|value| value.as_compound())
+            .expect("components compound");
+        assert!(
+            components.contains_key("minecraft:durability"),
+            "legacy tool ships the official component: {components:?}"
+        );
+        let durability = compound(components.get("minecraft:durability").unwrap());
+        assert!(
+            matches!(durability.get("max_durability"), Some(NbtValue::Int(60))),
+            "max_durability: {:?}",
+            durability.get("max_durability")
+        );
+        // Tools omit `damage_chance`; the payload therefore carries only the cap.
+        assert!(
+            durability.get("damage_chance").is_none(),
+            "tools rely on the 100% default: {:?}",
+            durability.get("damage_chance")
+        );
+        // No data-driven extras leak in.
+        assert!(!components.contains_key("item_properties"));
+        assert!(!components.contains_key("item_tags"));
+    }
+
+    /// 数据驱动物品（带 `minecraft:icon`）仍照常下发 `minecraft:durability`。
+    ///
+    /// Data-driven items (with `minecraft:icon`) still ship `minecraft:durability`.
+    #[test]
+    fn data_driven_item_still_ships_durability() {
+        // Shipped JSON is JSONC; strip comments exactly like the pack loader does.
+        let raw = include_str!(
+            "../../../../version_packs/[SC原版版本包] Vanilla-1.26.40/behavior_packs/vanilla_1.21.130/items/diamond_spear.json"
+        );
+        let item = match serde_json::from_reader::<_, MinecraftJsonDeserializer>(
+            json_comments::StripComments::new(raw.as_bytes()),
+        )
+        .unwrap()
+        .get()
+        {
+            MinecraftJson::MinecraftItemSpawner(item) => item,
+            _ => panic!("expected minecraft:item"),
+        };
+        let tag = item.to_network_component_tag();
+        let components = tag
+            .get("components")
+            .and_then(|value| value.as_compound())
+            .expect("components compound");
+        assert!(
+            components.contains_key("minecraft:durability"),
+            "data-driven items keep the official component"
+        );
+    }
+
+
 
     fn compound(value: &NbtValue) -> &CompoundNbt {
         value.as_compound().expect("expected compound")

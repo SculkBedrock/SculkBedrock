@@ -1,3 +1,9 @@
+//! 按类型编译：各自独立的 schema、预算与隔离。
+//!
+//! 未知配方类型不会被静默接受为空配方。默认按硬错误处理；需要兼容模式的
+//! 调用方必须显式开启 `quarantine_unknown_kind`，且每条被隔离的记录都保留
+//! 路径与原因。
+//!
 //! Per-kind compilation: independent schemas, budgets, quarantine.
 //!
 //! Never silently accept an unknown recipe type as an empty recipe.
@@ -28,8 +34,9 @@ use crate::spec::{
     parse_ingredient, parse_output, requires_components, IngredientSpec, OutputSpec,
 };
 
-/// Compile budgets. Every queue/cache/worker needs limits; recipe input is
-/// untrusted pack data so each dimension has an explicit bound.
+/// 编译预算：配方输入来自包数据，每个维度都有显式上限。
+///
+/// Compile budgets: explicit bounds per dimension for pack-sourced recipe input.
 #[derive(Clone, Copy, Debug)]
 pub struct CompileBudgets {
     /// Max source files accepted in one compile call.
@@ -59,6 +66,10 @@ impl Default for CompileBudgets {
     }
 }
 
+/// 一个原始源文件。由 `sc_packloader` 从
+/// `behavior_packs/<pack>/recipes/**/*.json` 构造；编译器不读文件系统，
+/// 也不按文件名猜测类型。
+///
 /// One raw source file. `sc_packloader` builds this from
 /// `behavior_packs/<pack>/recipes/**/*.json`; the compiler never reads the
 /// file system and never guesses the kind from the file name.
@@ -99,6 +110,8 @@ impl SourceRecipe {
         }
     }
 
+    /// 从已哈希的内容构建（例如 packloader 的来源，
+    ///
     /// Build from already-hashed content (e.g. packloader sources that
     /// computed the fingerprint at read time). Skips re-hashing.
     pub fn from_parts(
@@ -122,6 +135,8 @@ impl SourceRecipe {
     }
 }
 
+/// 规范化后的配方主体。
+///
 /// Canonical normalized recipe body.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum RecipeBody {
@@ -152,6 +167,8 @@ pub struct ShapelessBody {
     pub results: Vec<OutputSpec>,
 }
 
+/// 网格配方是否能放入 2x2 玩家背包（原版规则：
+///
 /// Whether a grid recipe fits the 2x2 player inventory (vanilla rule:
 /// shaped width/height within 2, shapeless total units within 4).
 /// Used at compile time to tag inventory-craftable recipes and by the
@@ -204,6 +221,8 @@ pub struct MaterialReducerBody {
     pub outputs: Vec<OutputSpec>,
 }
 
+/// 一条编译后的配方：规范化主体加来源信息。
+///
 /// One compiled recipe: normalized body plus provenance.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CompiledRecipe {
@@ -227,6 +246,8 @@ pub struct CompiledRecipe {
     pub unknown_fields: Vec<String>,
 }
 
+/// 编译到足以识别、但不可使用的配方。
+///
 /// A recipe that compiled far enough to identify but cannot be used.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DisabledRecipe {
@@ -237,6 +258,8 @@ pub struct DisabledRecipe {
     pub reason: String,
 }
 
+/// 带包路径的硬失败（不静默）。
+///
 /// Hard failure with pack path (never silent).
 #[derive(Clone, Debug, ScError)]
 #[sc_error(code = "recipe.compile")]
@@ -262,6 +285,8 @@ impl PartialEq for CompileError {
 impl Eq for CompileError {}
 
 impl CompileError {
+    /// 构造错误并捕获调用位置。
+    ///
     /// Build an error, capturing the call site.
     #[track_caller]
     pub fn new(pack_name: String, relative_path: String, detail: String) -> Self {
@@ -286,6 +311,8 @@ impl std::fmt::Display for CompileError {
 
 impl std::error::Error for CompileError {}
 
+/// 一次按序源列表编译的输出。
+///
 /// Output of one compile pass over an ordered source list.
 #[derive(Clone, Debug, Default)]
 pub struct CompileOutput {
@@ -413,18 +440,16 @@ fn unknown_top_fields(
         .collect()
 }
 
+/// 各类型共用的头部解析：tags/stations、priority、unlock 与未知字段。
+///
+/// 输入是 `known` 键列表；返回的 tags/stations/priority 仅供参考，权威值由
+/// [`compile_source`] 计算（此处重复解析纯头部字段不改变可观察结果）。
+///
 /// Shared per-kind preamble: tags/stations, priority, unlock and unknown fields.
 ///
-/// `compile_shaped`, `compile_shapeless`, `compile_furnace` and
-/// `compile_brewing` all end with the same `parse_unlock` +
-/// `unknown_top_fields` tail over different `known` lists, and the
-/// description-level `tags`/`priority` string/int accessors (`get_str`,
-/// `parse_tags`, `parse_priority`) belong to the same header. This helper
-/// runs that shared header in one place so the only per-kind input is the
-/// `known` list. The authoritative tags/stations/priority live in
-/// [`compile_source`]; per-kind callers use only `unlock`/`unknown` from the
-/// result (re-running the pure header parsers here changes nothing
-/// observable).
+/// The returned tags/stations/priority are informational; the authoritative
+/// values live in [`compile_source`] (re-running these pure header parsers
+/// changes nothing observable).
 fn parse_preamble(
     map: &serde_json::Map<String, serde_json::Value>,
     known: &[&str],
@@ -704,6 +729,8 @@ fn parse_single_output(
     Ok(spec)
 }
 
+/// 锻造变形配方把产物命名为 "result"。
+///
 /// Smithing transform names its output "result".
 fn parse_single_result(
     map: &serde_json::Map<String, serde_json::Value>,
@@ -896,6 +923,8 @@ fn compile_material_reducer(
     ))
 }
 
+/// 编译单个源文件。硬错误变成 `Err(CompileError)`；
+///
 /// Compile one source file. Hard errors become `Err(CompileError)`;
 /// recipes that need unavailable data become `Ok(None)` plus a disabled
 /// entry handled by the caller.
@@ -1046,6 +1075,8 @@ pub fn compile_source(
     }))
 }
 
+/// 带预算与包覆盖规则编译有序来源列表。
+///
 /// Compile an ordered source list with budgets and pack-override rules.
 ///
 /// - Sources must already be ordered low-version → high-version.
@@ -1123,6 +1154,8 @@ pub fn compile_ordered(
     Ok(CompileOutput { recipes, disabled })
 }
 
+/// 确定性注册表指纹：对
+///
 /// Deterministic registry fingerprint: sha256 over
 /// `identifier | kind | priority | canonical-body` in identifier order.
 pub fn registry_fingerprint(recipes: &[CompiledRecipe]) -> [u8; 32] {

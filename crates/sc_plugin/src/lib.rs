@@ -28,8 +28,8 @@ pub struct SCPluginBoxer {
     plugin: Option<Box<dyn SCPlugin>>,
     app: App,
     pub manifest: SCPluginManifest,
-    // Temporary design: Rust trait objects cross the DLL boundary. Keep the
-    // module loaded until the trait object has been destroyed.
+    // Rust trait objects cross the DLL boundary, so keep the module loaded
+    // until the trait object has been destroyed.
     _library: Option<Arc<libloading::Library>>,
     _library_path: Option<PathBuf>,
 }

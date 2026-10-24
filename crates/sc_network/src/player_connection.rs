@@ -1,3 +1,9 @@
+//! `PlayerConnection`：玩家网络连接组件。
+//!
+//! 封装 RakNet `Connection` 以及加密/压缩与协议编解码；`send_packet`/`send_batch`
+//! 是发送入口，状态机（Logging -> Initializing -> InGame）驱动登录流程。
+//! 收到的数据包通过 `MinecraftPacketReceiver<T>` 分发给处理函数。
+//!
 //! `PlayerConnection`: player network connection component.
 //!
 //! Wraps the RakNet `Connection` plus encryption/compression and protocol
@@ -49,6 +55,9 @@ pub enum PlayerConnectionStatus {
     Spawned,
 }
 
+/// 数据包通过钩子并被提交到连接队列后的结果。
+/// `Queued` 不保证 UDP 已发送或客户端已确认。
+///
 /// Result after a packet passes hooks and is offered to the connection queue.
 /// `Queued` is not a UDP-send or client-acknowledgement guarantee.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -63,27 +72,43 @@ pub enum PacketSendOutcome {
 
 #[derive(Debug, ScError)]
 pub enum TrySendPacketError {
-    /// Outbound command slots are busy.
+    /// 出站命令槽位繁忙。
+    ///
+    /// The outbound command slot is busy.
     #[sc_error(code = "network.connection.send_busy")]
     Busy {
-        /// English detail explaining the cause.
+        /// 说明错误原因的细节。
+        ///
+        /// Detail explaining the cause.
         detail: String,
+        /// 构造位置。
+        ///
         /// Construction site.
         site: ScSite,
     },
-    /// Connection failed.
+    /// 连接失败。
+    ///
+    /// Connection failure.
     #[sc_error(code = "network.connection.send")]
     Connection {
+        /// 底层连接错误。
+        ///
         /// Underlying connection error.
         source: PlayerConnectionError,
-        /// English detail explaining the cause.
+        /// 说明错误原因的细节。
+        ///
+        /// Detail explaining the cause.
         detail: String,
+        /// 构造位置。
+        ///
         /// Construction site.
         site: ScSite,
     },
 }
 
 impl TrySendPacketError {
+    /// 构造一个 busy 错误，并捕获调用位置。
+    ///
     /// Build a busy error, capturing the call site.
     #[track_caller]
     pub fn busy(detail: String) -> Self {
@@ -93,6 +118,8 @@ impl TrySendPacketError {
         }
     }
 
+    /// 构造一个 connection 错误，并捕获调用位置。
+    ///
     /// Build a connection error, capturing the call site.
     #[track_caller]
     pub fn connection(source: PlayerConnectionError) -> Self {
@@ -132,6 +159,9 @@ impl Error for TrySendPacketError {
 
 
 impl PlayerConnectionStatus {
+    /// 区块阶段：客户端已完成生成前的注册表交换，
+    /// 可以请求区块半径 / 接收区块。
+    ///
     /// Chunk phase: the client has finished the before-spawn registry exchange
     /// and may request chunk radius / receive chunks.
     pub fn accepts_chunk_radius(self) -> bool {
@@ -144,6 +174,9 @@ impl PlayerConnectionStatus {
         )
     }
 
+    /// 区块阶段：一旦客户端请求了区块半径，服务器即可在等待初始
+    /// PLAYER_SPAWN / 本地玩家初始化握手完成时持续发送区块。
+    ///
     /// Chunk phase: once the client has requested a chunk radius, the server
     /// may stream chunks while waiting for the initial PLAYER_SPAWN /
     /// local-player initialization handshake to complete.
@@ -163,67 +196,115 @@ impl PlayerConnectionStatus {
 
 #[derive(Debug, ScError)]
 pub enum PlayerConnectionError {
-    /// Encryption initialization failed.
+    /// 加密初始化失败。
+    ///
+    /// Encryption initialization failure.
     #[sc_error(code = "network.connection.encryption_init")]
     EncryptionInitError {
+        /// 底层加密错误。
+        ///
         /// Underlying encryption error.
         source: EncryptionError,
-        /// English detail explaining the cause.
+        /// 说明错误原因的细节。
+        ///
+        /// Detail explaining the cause.
         detail: String,
+        /// 构造位置。
+        ///
         /// Construction site.
         site: ScSite,
     },
-    /// Receive failed.
+    /// 接收失败。
+    ///
+    /// Receive failure.
     #[sc_error(code = "network.connection.recv")]
     RecvError {
+        /// 底层接收错误。
+        ///
         /// Underlying receive error.
         source: RecvError,
-        /// English detail explaining the cause.
+        /// 说明错误原因的细节。
+        ///
+        /// Detail explaining the cause.
         detail: String,
+        /// 构造位置。
+        ///
         /// Construction site.
         site: ScSite,
     },
-    /// Packet crypto failed.
+    /// 数据包加解密失败。
+    ///
+    /// Packet encryption/decryption failure.
     #[sc_error(code = "network.connection.encryption")]
     EncryptionError {
+        /// 底层数据包加密错误。
+        ///
         /// Underlying packet encryption error.
         source: PacketEncryptionError,
-        /// English detail explaining the cause.
+        /// 说明错误原因的细节。
+        ///
+        /// Detail explaining the cause.
         detail: String,
+        /// 构造位置。
+        ///
         /// Construction site.
         site: ScSite,
     },
-    /// Send queue failed.
+    /// 发送队列失败。
+    ///
+    /// Send queue failure.
     #[sc_error(code = "network.connection.send_queue")]
     SendQueueError {
+        /// 底层发送队列错误。
+        ///
         /// Underlying send queue error.
         source: SendQueueError,
-        /// English detail explaining the cause.
+        /// 说明错误原因的细节。
+        ///
+        /// Detail explaining the cause.
         detail: String,
+        /// 构造位置。
+        ///
         /// Construction site.
         site: ScSite,
     },
-    /// Packet was not queued.
+    /// 数据包未进入队列。
+    ///
+    /// The packet was not queued.
     #[sc_error(code = "network.connection.not_queued")]
     PacketNotQueued {
+        /// 拒绝入队的发送结果。
+        ///
         /// Send outcome that refused queueing.
         outcome: PacketSendOutcome,
-        /// English detail explaining the cause.
+        /// 说明错误原因的细节。
+        ///
+        /// Detail explaining the cause.
         detail: String,
+        /// 构造位置。
+        ///
         /// Construction site.
         site: ScSite,
     },
-    /// Hard delivery context changed during preparation.
+    /// 硬投递上下文在准备期间发生变化。
+    ///
+    /// The hard-delivery context changed while the packet was being prepared.
     #[sc_error(code = "network.connection.stale_context")]
     StaleContext {
-        /// English detail explaining the cause.
+        /// 说明错误原因的细节。
+        ///
+        /// Detail explaining the cause.
         detail: String,
+        /// 构造位置。
+        ///
         /// Construction site.
         site: ScSite,
     },
 }
 
 impl PlayerConnectionError {
+    /// 构造一个加密初始化错误，并捕获调用位置。
+    ///
     /// Build an encryption-init error, capturing the call site.
     #[track_caller]
     pub fn encryption_init(source: EncryptionError) -> Self {
@@ -235,6 +316,8 @@ impl PlayerConnectionError {
         }
     }
 
+    /// 构造一个接收错误，并捕获调用位置。
+    ///
     /// Build a receive error, capturing the call site.
     #[track_caller]
     pub fn recv(source: RecvError) -> Self {
@@ -246,6 +329,8 @@ impl PlayerConnectionError {
         }
     }
 
+    /// 构造一个加密错误，并捕获调用位置。
+    ///
     /// Build an encryption error, capturing the call site.
     #[track_caller]
     pub fn encryption(source: PacketEncryptionError) -> Self {
@@ -257,6 +342,8 @@ impl PlayerConnectionError {
         }
     }
 
+    /// 构造一个发送队列错误，并捕获调用位置。
+    ///
     /// Build a send-queue error, capturing the call site.
     #[track_caller]
     pub fn send_queue(source: SendQueueError) -> Self {
@@ -268,6 +355,8 @@ impl PlayerConnectionError {
         }
     }
 
+    /// 构造一个未入队错误，并捕获调用位置。
+    ///
     /// Build a not-queued error, capturing the call site.
     #[track_caller]
     pub fn not_queued(outcome: PacketSendOutcome) -> Self {
@@ -279,6 +368,8 @@ impl PlayerConnectionError {
         }
     }
 
+    /// 构造一个 stale-context 错误，并捕获调用位置。
+    ///
     /// Build a stale-context error, capturing the call site.
     #[track_caller]
     pub fn stale_context(detail: String) -> Self {
@@ -335,13 +426,20 @@ pub struct PlayerConnection {
     pub(crate) connection: Connection,
     world: World,
     entity: EntityId,
+    /// 出站加密状态：仅由发送路径访问（与 recv_cipher 独立，
+    /// 因此两条路径不共享同一把锁）。
+    ///
     /// Outbound encryption state: only touched by the send path (independent
     /// from recv_cipher, so the two paths share no lock).
     send_cipher: Arc<RwLock<Option<SendCipher>>>,
     outbound_failed: Arc<AtomicBool>,
     outbound_cleanup_scheduled: Arc<AtomicBool>,
-    /// Hard delivery-context generation (§11.4).
+    /// 单次连接的硬投递上下文代次。
+    ///
+    /// Hard delivery-context generation.
     delivery_barrier: Arc<DeliveryBarrier>,
+    /// 入站解密状态：仅由接收路径访问。
+    ///
     /// Inbound decryption state: only touched by the receive path.
     recv_cipher: Arc<RwLock<Option<RecvCipher>>>,
     encoder: Arc<RwLock<PackerEncoder>>,
@@ -352,16 +450,55 @@ pub struct PlayerConnection {
     data: Arc<RwLock<PlayerConnectionData>>,
     resource_chunks_requested: Arc<RwLock<HashMap<Uuid, HashSet<u32>>>>,
     pub(crate) resource_pack_chunk_semaphore: Arc<Semaphore>,
+    pub(crate) container_data: ContainerPropertyTracker,
 }
 
-/// Hard delivery-context generation for one connection (§11.4).
+/// 容器属性差量追踪器，过滤重复发送的 ContainerSetData。
+///
+/// Container property diff tracker to filter redundant ContainerSetData packets.
+#[derive(Clone, Debug, Default)]
+pub struct ContainerPropertyTracker {
+    data: Arc<RwLock<HashMap<(u8, i32), i32>>>,
+}
+
+impl ContainerPropertyTracker {
+    pub fn new() -> Self {
+        Self {
+            data: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// 记录属性值。若该值与上次发送的不同（或首次发送），返回 true。
+    ///
+    /// Records a property value. Returns true if the value is different from the
+    /// previous value or has not been sent yet.
+    pub fn track(&self, window_id: u8, property: i32, value: i32) -> bool {
+        let mut data = self.data.write();
+        let prev = data.insert((window_id, property), value);
+        prev != Some(value)
+    }
+
+    /// 清空指定窗口的属性追踪（如窗口关闭或重新打开）。
+    ///
+    /// Clears tracked container property values for a window.
+    pub fn clear_window(&self, window_id: u8) {
+        self.data.write().retain(|(win, _), _| *win != window_id);
+    }
+}
+
+/// 单次连接的硬投递上下文代次。
+///
+/// 传送、切换维度或切换世界都会推进该代次。在旧代次下开始准备的任何数据包
+/// 会在消耗加密计数器或可靠序列号之前被拒绝，而已进入队列的数据包在有序发送
+/// 队列中保持其位置。
+///
+/// Hard delivery-context generation for one connection.
 ///
 /// A teleport, dimension change or world change advances the generation. Any
 /// packet that started preparing under an older generation is refused *before*
 /// it consumes an encryption counter or a reliable sequence number, while
 /// packets that were already admitted keep their place in the ordered send
-/// queue. That is what makes a context switch an ordered barrier rather than a
-/// best-effort epoch check.
+/// queue.
 #[derive(Debug)]
 pub struct DeliveryBarrier {
     generation: AtomicU64,
@@ -378,6 +515,8 @@ impl DeliveryBarrier {
         self.generation.load(Ordering::Acquire)
     }
 
+    /// 推进到下一个上下文并返回其代次。
+    ///
     /// Advance to the next context and return its generation.
     pub fn begin(&self) -> u64 {
         self.generation.fetch_add(1, Ordering::AcqRel) + 1
@@ -413,25 +552,45 @@ impl PlayerConnection {
             data: Arc::new(RwLock::new(PlayerConnectionData::new())),
             resource_chunks_requested: Arc::new(RwLock::new(HashMap::new())),
             resource_pack_chunk_semaphore: Arc::new(Semaphore::new(1)),
+            container_data: ContainerPropertyTracker::new(),
         }
     }
 
+    /// Check whether a container property value changed, recording the new value.
+    /// Returns `true` if the value is different from the last sent value (or was not yet sent).
+    pub fn track_container_property(&self, window_id: u8, property: i32, value: i32) -> bool {
+        self.container_data.track(window_id, property, value)
+    }
+
+    /// Clear tracked container property values for a window (e.g. on close or reopen).
+    pub fn clear_container_window(&self, window_id: u8) {
+        self.container_data.clear_window(window_id);
+    }
+
+    /// 当前的硬投递上下文代次。
+    ///
     /// Current hard delivery-context generation.
     pub fn context_barrier(&self) -> u64 {
         self.delivery_barrier.current()
     }
 
+    /// 启动一个新的硬投递上下文并返回其代次。
+    ///
+    /// 新上下文的控制数据包在本次调用之后生成，因此排在旧上下文已接受的所有
+    /// 数据包之后；旧上下文中正在进行的准备会被拒绝，而不会消耗加密计数器。
+    ///
     /// Start a new hard delivery context and return its generation.
     ///
-    /// §11.4: a teleport / dimension / world switch must be an ordered barrier on
-    /// this connection. Control packets of the new context are produced after
-    /// this call and therefore queue behind everything the old context already
-    /// admitted; in-flight preparations from the old context are refused instead
-    /// of consuming a cipher counter.
+    /// Control packets of the new context are produced after this call and
+    /// therefore queue behind everything the old context already admitted;
+    /// in-flight preparations from the old context are refused instead of
+    /// consuming a cipher counter.
     pub fn begin_context_barrier(&self) -> u64 {
         self.delivery_barrier.begin()
     }
 
+    /// 判断在 `barrier` 代次下开始的准备是否仍可被接受。
+    ///
     /// Whether a preparation started under `barrier` may still be admitted.
     pub fn barrier_is_current(&self, barrier: u64) -> bool {
         self.delivery_barrier.is_current(barrier)
@@ -494,9 +653,9 @@ impl PlayerConnection {
             .map(|_| ())
     }
 
+    /// 发送数据包，并区分队列接受与刻意抑制。
+    ///
     /// Send a packet and distinguish queue admission from intentional suppression.
-    /// This allows stateful pipelines to avoid treating a hook-cancelled or
-    /// debug-filtered packet as delivered while preserving `send_packet`'s API.
     pub async fn send_packet_with_outcome<P: MinecraftPacket + Clone + 'static + Send + Sync>(
         &self,
         packet: P,
@@ -555,6 +714,9 @@ impl PlayerConnection {
             .await
     }
 
+    /// 在构造大型数据包负载、运行钩子或编码之前尝试最终的入队准入。
+    /// Busy 是一个可显式重试的结果。
+    ///
     /// Try final packet admission before constructing a large packet payload,
     /// running hooks, or encoding. Busy is an explicit retryable result.
     pub async fn try_send_packet_with_outcome<P, F, G>(
@@ -760,6 +922,9 @@ impl PlayerConnection {
         Ok(PacketSendOutcome::Queued)
     }
 
+    /// 加密锁同时对入队排序。压缩与钩子均已在此之前完成；
+    /// 此临界区内不会发生 await 或诊断 I/O。
+    ///
     /// The cipher lock also orders enqueue. Compression and hooks have already
     /// completed; no await or diagnostic I/O occurs in this critical section.
     pub(crate) fn admit_prepared(
@@ -869,6 +1034,15 @@ impl PlayerConnection {
         result
     }
 
+    /// 发送一个预序列化的常量数据包（登录缓存路径）。
+    ///
+    /// 与 [`Self::send_packet`] 的区别：
+    /// - 负载是跨玩家共享的 `Arc<Vec<u8>>`（`[u16 id BE][payload]`），
+    ///   不做每玩家重建、深拷贝或 NBT 重新序列化；
+    /// - 跳过数据包钩子 / 发送事件（内容为常量），但 `debug.blocked_packets`
+    ///   过滤器仍然生效；
+    /// - 压缩 + 加密仍使用每连接的编码器。
+    ///
     /// Send a pre-serialized constant packet (login cache path).
     ///
     /// Differences from [`Self::send_packet`]:
@@ -1006,6 +1180,12 @@ impl PlayerConnection {
         self.resource_chunks_requested.write().clear();
     }
 
+    /// 清除所有可能占用大量内存的内部状态。由 `drop_connection` 在
+    /// `world.despawn()` 之前调用，以确保每玩家缓冲区被立即释放。
+    /// SendQueue/RecvQueue 已由 `Connection::close()` 清除，但每玩家的记账数据
+    /// （资源包区块请求、data）也需要显式清除，因为它们位于 `Arc<RwLock<...>>`
+    /// 之后，可能被尚未丢弃 future 的仍在运行的处理任务引用。
+    ///
     /// Clears all internal state that could retain significant memory. Called
     /// from `drop_connection` before `world.despawn()` to ensure per-player
     /// buffers are released immediately. The SendQueue/RecvQueue are already
@@ -1030,6 +1210,9 @@ impl PlayerConnection {
     }
 }
 
+/// 调试用的每数据包发送延迟（毫秒），只读取一次后缓存。
+/// 通过 `SC_SEND_DELAY_MS` 配置；缺失或非法时为 0（不延迟）。
+///
 /// Debug per-packet send delay in ms, read once then cached.
 /// Configured via `SC_SEND_DELAY_MS`; missing/invalid means 0 (no delay).
 fn debug_send_delay_ms() -> u64 {
@@ -1042,6 +1225,9 @@ fn debug_send_delay_ms() -> u64 {
     })
 }
 
+/// 调试延迟的全局串行锁：在启用每数据包延迟时，
+/// 使跨并发任务的发送顺序与调用顺序保持一致。
+///
 /// Global serial lock for the debug delay: keeps send order consistent with
 /// call order across concurrent tasks when per-packet delay is enabled.
 fn debug_send_lock() -> &'static tokio::sync::Mutex<()> {

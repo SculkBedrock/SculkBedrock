@@ -12,37 +12,61 @@ pub mod raw_batch;
 
 #[derive(Debug, ScError)]
 pub enum PacketEncryptionError {
-    /// Unsupported compression discriminator.
+    /// 不支持的压缩算法判别值。
+    ///
+    /// Unsupported compression algorithm discriminant.
     #[sc_error(code = "network.packet.unsupported_compressor")]
     UnsupportedCompressor {
-        /// English detail explaining the cause.
+        /// 说明错误原因的细节。
+        ///
+        /// Detail explaining the cause.
         detail: String,
+        /// 构造位置。
+        ///
         /// Construction site.
         site: ScSite,
     },
-    /// Low-level I/O failure.
+    /// 底层 I/O 失败。
+    ///
+    /// Underlying I/O failure.
     #[sc_error(code = "network.packet.io")]
     IoError {
+        /// 底层 I/O 错误。
+        ///
         /// Underlying I/O error.
         source: io::Error,
-        /// English detail explaining the cause.
+        /// 说明错误原因的细节。
+        ///
+        /// Detail explaining the cause.
         detail: String,
+        /// 构造位置。
+        ///
         /// Construction site.
         site: ScSite,
     },
-    /// Packet body failed to parse.
+    /// 数据包体解析失败。
+    ///
+    /// Packet body read failure.
     #[sc_error(code = "network.packet.read")]
     PacketReadError {
+        /// 底层 I/O 错误。
+        ///
         /// Underlying I/O error.
         source: io::Error,
-        /// English detail explaining the cause.
+        /// 说明错误原因的细节。
+        ///
+        /// Detail explaining the cause.
         detail: String,
+        /// 构造位置。
+        ///
         /// Construction site.
         site: ScSite,
     },
 }
 
 impl PacketEncryptionError {
+    /// 构造一个 unsupported-compressor 错误，并捕获调用位置。
+    ///
     /// Build an unsupported-compressor error, capturing the call site.
     #[track_caller]
     pub fn unsupported_compressor(detail: String) -> Self {
@@ -52,6 +76,8 @@ impl PacketEncryptionError {
         }
     }
 
+    /// 构造一个 I/O 错误，并捕获调用位置。
+    ///
     /// Build an I/O error, capturing the call site.
     #[track_caller]
     pub fn io(source: io::Error) -> Self {
@@ -63,6 +89,8 @@ impl PacketEncryptionError {
         }
     }
 
+    /// 构造一个 packet-read 错误，并捕获调用位置。
+    ///
     /// Build a packet-read error, capturing the call site.
     #[track_caller]
     pub fn packet_read(source: io::Error) -> Self {

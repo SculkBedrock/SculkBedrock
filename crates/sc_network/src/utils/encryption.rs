@@ -1,21 +1,33 @@
-//! Minecraft packet encryption (pure Rust).
+//! Minecraft 数据包加密。
+//!
+//! - 密钥交换：P-384 ECDH（`p384` crate）。
+//! - 数据加密：AES-256。
+//!   - 协议 >= 428：GCM 流式。Bedrock 把 AES-GCM 当作连续 CTR 密钥流使用
+//!     （无认证标签）；密钥流起始于 `[iv12 || be32(2)]`，仅低 32 位自增
+//!     （GCM inc32 语义），即 12 字节 IV 的 GCM 流。
+//!   - 协议 < 428：CFB8，逐字节反馈。
+//! - 校验和：SHA-256（`sha2`）。
+//! - 握手 JWT（ES384）：`jsonwebtoken`。
+//!
+//! 编解码是同步的纯 CPU 工作，在锁临界区内直接调用；切勿跨 `await` 持有锁。
+//! 发送与接收密码状态拆为 [`SendCipher`] / [`RecvCipher`]，两条路径独立加锁：
+//! 发送计数归 `SendCipher`，接收计数归 `RecvCipher`。
+//!
+//! Minecraft packet encryption.
 //!
 //! - Key exchange: P-384 ECDH (`p384` crate).
 //! - Data encryption: AES-256.
-//!   - Protocol >= 428: GCM streaming: Bedrock uses AES-GCM as a continuous CTR stream
-//!     (no auth tag); the keystream starts at `[iv12 || be32(2)]` and increments the low 32 bits.
-//!     It behaves as a 12-byte IV GCM stream.
+//!   - Protocol >= 428: GCM streaming. Bedrock uses AES-GCM as a continuous CTR
+//!     stream (no auth tag); the keystream starts at `[iv12 || be32(2)]` and only
+//!     the low 32 bits increment (GCM inc32 semantics) — a 12-byte IV GCM stream.
 //!   - Protocol < 428: CFB8 with byte-wise feedback.
 //! - Checksum: SHA-256 (`sha2`).
 //! - Handshake JWT (ES384): `jsonwebtoken`.
 //!
-//! Encryption is microsecond-scale pure CPU work (no IO), so it stays synchronous
-//! and is called directly inside lock critical sections; never hold a lock across await.
-//!
-//!
-//! Send/receive cipher states are split into [`SendCipher`] / [`RecvCipher`];
-//! send and receive paths lock independently with no contention: the send counter belongs to
-//! `SendCipher` and the receive counter to `RecvCipher`.
+//! Encode/decode are synchronous CPU work, called directly inside lock critical
+//! sections; never hold a lock across `await`. Send and receive cipher states are
+//! split into [`SendCipher`] / [`RecvCipher`], locking independently: the send
+//! counter belongs to `SendCipher`, the receive counter to `RecvCipher`.
 
 use aes::cipher::{BlockEncrypt, KeyInit};
 use aes::Aes256;
@@ -33,18 +45,26 @@ use std::fmt::{Display, Formatter};
 
 #[derive(Debug, ScError)]
 pub enum EncryptionError {
+    /// 密钥长度非法。
+    ///
     /// Invalid key length.
     #[sc_error(code = "network.encryption.invalid_key")]
     InvalidKeyLength {
-        /// English detail explaining the cause.
+        /// 说明错误原因的细节。
+        ///
+        /// Detail explaining the cause.
         detail: String,
+        /// 构造位置。
+        ///
         /// Construction site.
         site: ScSite,
     },
 }
 
 impl EncryptionError {
-    /// Build an invalid-key-length error, capturing the call site.
+    /// 构造一个密钥长度非法错误，并捕获调用位置。
+    ///
+    /// Builds an invalid-key-length error, capturing the call site.
     #[track_caller]
     pub fn invalid_key_length(detail: String) -> Self {
         Self::InvalidKeyLength {
@@ -74,6 +94,8 @@ struct Claims {
     salt: String,
 }
 
+/// P-384（secp384r1）曲线上的 ECDH 密钥交换与 JWT 握手。
+///
 /// ECDH key exchange and JWT handshake on the P-384 (secp384r1) curve.
 impl MinecraftEncryption {
     pub const MOJANG_PUBLIC_KEY: &'static str = "MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAECRXueJeTDqNRRgJi/vlRufByu/2G0i2Ebt6YMar5QX/R0DIIyrJMcUpruK4QveTfJSTp3Shlq4Gk34cD/4GUWwkv0DVuzeuB+tXija7HBxii03NHDbPAD0AKnLr2wdAp";
@@ -82,14 +104,18 @@ impl MinecraftEncryption {
         rand::random()
     }
 
-    /// Generate a P-384 key pair.
+    /// 生成一对 P-384 密钥。
+    ///
+    /// Generates a P-384 key pair.
     pub fn get_key_pair() -> Option<(SecretKey, PublicKey)> {
         let secret = SecretKey::random(&mut OsRng);
         let public = secret.public_key();
         Some((secret, public))
     }
 
-    /// Parse the base64 (DER SPKI) public key from the client Login packet.
+    /// 解析客户端 Login 包中的 base64（DER SPKI）公钥。
+    ///
+    /// Parses the base64 (DER SPKI) public key from the client Login packet.
     pub fn parse_key(key: &str) -> Option<PublicKey> {
         let der = BASE64_STANDARD_NO_PAD.decode(key).ok()?;
         PublicKey::from_public_key_der(der.as_slice()).ok()
@@ -136,17 +162,26 @@ impl MinecraftEncryption {
     }
 }
 
+/// AES-256-GCM 流式密钥（协议 >= 428）。
+///
+/// Bedrock 的 "GCM" 是一条 CTR 密钥流（无标签）：J0 = iv12||be32(1)；数据密钥流
+/// 起始于 inc32(J0) = iv12||be32(2)，仅低 32 位自增（GCM inc32 语义）。
+///
 /// AES-256-GCM streaming key (protocol >= 428).
 ///
-/// Bedrock "GCM" is a CTR keystream (no tag): J0 = iv12||be32(1);
-/// the data keystream starts at inc32(J0) = iv12||be32(2) with only the low 32 bits incrementing
-/// (GCM inc32 semantics).
+/// Bedrock "GCM" is a CTR keystream (no tag): J0 = iv12||be32(1); the data
+/// keystream starts at inc32(J0) = iv12||be32(2) with only the low 32 bits
+/// incrementing (GCM inc32 semantics).
 struct GcmCtrStream {
     aes: Aes256,
-    /// [iv12 || be32(counter)]
+    /// 计数器块：`[iv12 || be32(counter)]`。
+    ///
+    /// Counter block: `[iv12 || be32(counter)]`.
     counter_block: [u8; 16],
     counter: u32,
     keystream: [u8; 16],
+    /// 已消费的密钥流字节数（每 16 字节生成下一块）。
+    ///
     /// Consumed keystream bytes (generate the next block at 16).
     pos: usize,
 }
@@ -184,13 +219,21 @@ impl GcmCtrStream {
     }
 }
 
+/// AES-256-CFB8 流（协议 < 428）。
+///
+/// 逐字节反馈：`ks = E(shift)[0]`，`ct = pt ^ ks`；反馈寄存器移入密文字节。
+/// 加密与解密是独立函数：反馈始终移入密文字节——即加密时的输出、解密时的输入。
+///
 /// AES-256-CFB8 stream (protocol < 428).
 ///
 /// Byte-wise feedback: `ks = E(shift)[0]`, `ct = pt ^ ks`; the feedback register
-/// shifts in the ciphertext byte. Encryption and decryption are separate functions:
-/// feedback always shifts in the ciphertext byte, which is the output when encrypting and the input when decrypting.
+/// shifts in the ciphertext byte. Encryption and decryption are separate
+/// functions: feedback always shifts in the ciphertext byte, which is the output
+/// when encrypting and the input when decrypting.
 struct Cfb8Stream {
     aes: Aes256,
+    /// 反馈寄存器（初始 16 字节 IV）。
+    ///
     /// Feedback register (initial 16-byte IV).
     shift: [u8; 16],
 }
@@ -280,6 +323,8 @@ fn compute_checksum(bytes: &[u8], count: u32, secret_key: &[u8]) -> [u8; 8] {
     checksum
 }
 
+/// 出站加密状态：仅由发送路径访问。
+///
 /// Outbound encryption state: only touched by the send path.
 pub struct SendCipher {
     stream: StreamKind,
@@ -297,7 +342,10 @@ impl SendCipher {
         })
     }
 
-    /// Append an 8-byte checksum then encrypt the whole segment (synchronous, call inside the lock).
+    /// 追加 8 字节校验和后加密整段（同步，需在锁内调用）。
+    ///
+    /// Appends an 8-byte checksum then encrypts the whole segment (synchronous,
+    /// call inside the lock).
     pub fn encode(&mut self, bytes: &[u8]) -> Vec<u8> {
         let checksum = compute_checksum(bytes, self.send_count, &self.secret_key);
         self.send_count = self.send_count.wrapping_add(1);
@@ -309,6 +357,8 @@ impl SendCipher {
     }
 }
 
+/// 入站解密状态：仅由接收路径访问。
+///
 /// Inbound decryption state: only touched by the receive path.
 pub struct RecvCipher {
     stream: StreamKind,
@@ -326,7 +376,9 @@ impl RecvCipher {
         })
     }
 
-    /// Decrypt and verify the trailing checksum (synchronous, call inside the lock).
+    /// 解密并校验尾部 checksum（同步，需在锁内调用）。
+    ///
+    /// Decrypts and verifies the trailing checksum (synchronous, call inside the lock).
     pub fn decode(&mut self, bytes: &[u8]) -> Result<Vec<u8>, std::io::Error> {
         // Reject frames shorter than the 8-byte checksum instead of underflowing.
         if bytes.len() < 8 {

@@ -7,16 +7,17 @@ use crate::worldgen::densityfunction::function::FunctionContext;
 use std::sync::Arc;
 use sc_world::chunk::BlockRuntimeId;
 
-/// Java: `@FunctionalInterface interface MaterialFiller`(L8-11).
+/// 根据采样上下文计算方块材料的接口。
+///
+/// Interface computing a block material from a sampling context.
 pub trait MaterialFiller {
     /// Java: `@Nullable BlockState calculate(FunctionContext)`(L11).
     fn calculate(&self, context: &dyn FunctionContext) -> Option<BlockRuntimeId>;
 }
 
-/// Java: `record MultiMaterial(MaterialFiller[] materials) implements MaterialFiller`(L6-20).
+/// 按顺序尝试多个填充器并返回第一个非空结果的填充器。
 ///
-/// Skips empty rules; the type system guarantees non-null entries.
-/// Skips empty rules at construction time.
+/// Filler trying multiple fillers in order and returning the first non-null result.
 pub struct MultiMaterial {
     pub materials: Vec<Arc<dyn MaterialFiller>>,
 }
@@ -45,7 +46,9 @@ mod tests {
     use super::*;
     use crate::worldgen::densityfunction::function::SinglePointContext;
 
-    /// Fixed-output stub for tests.
+    /// 测试用的固定输出填充器。
+    ///
+    /// Test filler returning a fixed output.
     struct Fixed(Option<BlockRuntimeId>);
 
     impl MaterialFiller for Fixed {

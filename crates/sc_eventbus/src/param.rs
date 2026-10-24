@@ -70,6 +70,8 @@ unsafe impl<E: SCEventTrait + Send + Sync + 'static> SystemParam for SCEventRead
     type State = SCEventReaderState<E>;
 }
 
+/// 可变事件读取：持有 `Events` 写守卫直到系统结束。
+///
 /// Mutable event read: holds the `Events` write guard until the system ends.
 pub struct SCEventReaderMut<E: SCEventTrait + Send + Sync + 'static> {
     reader: Local<SCManualEventReader<E>>,

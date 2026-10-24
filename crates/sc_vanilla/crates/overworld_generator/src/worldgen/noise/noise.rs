@@ -19,7 +19,9 @@ use crate::worldgen::random::RandomSourceProvider;
 /// for direct use.
 pub const SKIP_262: Lcg = Lcg::JAVA.combine_steps(262);
 
-/// Sampler interface.
+/// 噪声采样接口。
+///
+/// Noise sampling interface.
 pub trait NoiseSampler {
     /// Samples the noise value.
     fn sample(&self, x: f64, y: f64, y_amplification: f64, min_y: f64) -> f64;
@@ -29,11 +31,9 @@ pub trait NoiseSampler {
 // Noise (shared base via composition)
 // ---------------------------------------------------------------------------
 
-/// Shared noise base.
+/// 噪声采样器的公共状态：原点坐标与置换表。
 ///
-/// Base of the Perlin/Simplex samplers; expressed via composition here:
-/// subclasses hold a `noise: Noise` field, accessed as
-/// `sampler.noise.origin_y`.
+/// Shared noise sampler state: origin coordinates and permutation table.
 pub struct Noise {
     /// Origin X.
     pub origin_x: f64,
@@ -87,7 +87,9 @@ impl Noise {
 // PerlinNoise
 // ---------------------------------------------------------------------------
 
-/// Java: `PerlinNoise`.
+/// 多八度 Perlin 噪声。
+///
+/// Multi-octave Perlin noise.
 pub struct PerlinNoise {
     /// Octave sampler array (entries may be null).
     noise_levels: Vec<Option<PerlinNoiseSampler>>,
@@ -216,7 +218,9 @@ impl PerlinNoise {
 /// Java: `NormalNoise.INPUT_FACTOR`(L7).
 const INPUT_FACTOR: f64 = 1.0181268882175227;
 
-/// Java: `NormalNoise`.
+/// 归一化噪声：组合两路 Perlin 噪声并按振幅缩放。
+///
+/// Normalized noise combining two Perlin noises scaled by their amplitudes.
 pub struct NormalNoise {
     /// Java: `private final PerlinNoise first`.
     first: PerlinNoise,

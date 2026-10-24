@@ -16,6 +16,7 @@ members = [
     "crates/sc_log",
     "crates/sc_nbt",
     "crates/sc_bootstrap",
+    "crates/sc_worldgen",
     "crates/sc_network/sc_network_macros",
     "crates/sc_packloader/sc_packloader_macros",
     "crates/sc_entity",

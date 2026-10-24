@@ -1,3 +1,5 @@
+//! 一次性工具：解析包内 block_palette.nbt（大端 Java 风格 NBT）。
+//!
 //! One-shot tool: parse a pack block_palette.nbt (big-endian Java-style NBT).
 use std::io::Read as _;
 use sc_binary::ByteReader;

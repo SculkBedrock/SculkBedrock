@@ -1,3 +1,8 @@
+//! 实体定义与生成：实体描述、组件容器与实体生成器。
+//!
+//! Entity definitions and spawning: entity descriptions, the component
+//! container, and the entity spawner.
+
 pub mod behavior_component;
 pub mod builtin_event;
 pub mod component;
@@ -14,35 +19,90 @@ use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 
+/// 实体组件：实体的基础身份信息。
+///
+/// Entity component: the basic identity information of an entity.
 #[derive(Component, Debug)]
 pub struct MinecraftEntity {
+    /// 资源格式版本号。
+    ///
+    /// Resource format version.
     pub format_version: String,
+    /// 实体描述（标识符、生成类别等）。
+    ///
+    /// Entity description (identifier, spawn category, etc.).
     pub description: Option<MinecraftEntityDescription>,
 }
 
+/// 实体描述：标识符与可生成/可召唤等标记。
+///
+/// Entity description: the identifier along with spawnable/summonable flags.
 #[derive(Deserialize, Debug, Clone)]
 pub struct MinecraftEntityDescription {
+    /// 实体标识名（如 `minecraft:zombie`）。
+    ///
+    /// Entity identifier name (e.g. `minecraft:zombie`).
     pub identifier: String,
+    /// 运行时标识符（供网络层使用）。
+    ///
+    /// Runtime identifier (used by the networking layer).
     pub runtime_identifier: Option<String>,
+    /// 生成类别（如 `monster`）。
+    ///
+    /// Spawn category (e.g. `monster`).
     pub spawn_category: Option<String>,
+    /// 是否允许通过刷怪蛋生成。
+    ///
+    /// Whether the entity can be spawned from a spawn egg.
     #[serde(default)]
     pub is_spawnable: bool,
+    /// 是否允许通过召唤生成。
+    ///
+    /// Whether the entity can be summoned.
     #[serde(default)]
     pub is_summonable: bool,
+    /// 是否为实验性实体。
+    ///
+    /// Whether the entity is experimental.
     #[serde(default)]
     pub is_experimental: bool,
 }
 
+/// 实体生成器：描述文件中的实体定义及其组件集合。
+///
+/// Entity spawner: the entity definition in a description file together with
+/// its component set.
 #[derive(Deserialize, Clone)]
 pub struct MinecraftEntitySpawner {
+    /// 资源格式版本号（反序列化时跳过，由上层回填）。
+    ///
+    /// Resource format version (skipped while deserializing; backfilled by
+    /// the caller).
     #[serde(skip_deserializing)]
     pub format_version: String,
+    /// 实体描述。
+    ///
+    /// Entity description.
     pub description: Option<MinecraftEntityDescription>,
+    /// 实体组件集合。
+    ///
+    /// The entity component set.
     pub components: Option<EntityComponents>,
+    /// 组件组：按名称保存的可复用组件集合。
+    ///
+    /// Component groups: named reusable component sets.
     pub component_groups: Option<Map<String, Value>>,
 }
 
 impl MinecraftEntitySpawner {
+    /// 在世界中生成实体，并挂载其组件。
+    ///
+    /// Spawns the entity in the world and attaches its components.
+    ///
+    /// - `world`: 目标世界
+    ///
+    /// # Returns
+    /// 新实体的实体 id。
     pub fn spawn(&self, world: &World) -> EntityId {
         let entity = world.spawn(MinecraftEntity {
             format_version: self.format_version.clone(),
@@ -54,6 +114,12 @@ impl MinecraftEntitySpawner {
         entity
     }
 
+    /// 将实体身份与组件挂载到已存在的实体上。
+    ///
+    /// Attaches the entity identity and components to an existing entity.
+    ///
+    /// - `world`: 目标世界
+    /// - `entity`: 目标实体 id
     pub fn insert(&self, world: &World, entity: &EntityId) {
         world.add_component(
             entity,
@@ -69,6 +135,10 @@ impl MinecraftEntitySpawner {
 }
 
 impl Debug for MinecraftEntitySpawner {
+    /// 调试输出：打印描述、组件与解析后的组件组。
+    ///
+    /// Debug output: prints the description, the components, and the parsed
+    /// component groups.
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         // Convert the component_groups Value into Vec<EntityComponents>
         let mut f = f.debug_struct("MinecraftEntity");

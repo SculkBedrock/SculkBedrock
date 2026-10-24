@@ -28,17 +28,25 @@ pub struct SCPluginEventUpdate;
 pub struct SCEventUpdate;
 
 // ---- Movement systems ----
+/// 消费玩家输入缓冲（PlayerAuthInput），只发出校验事件、不应用位移。
+///
 /// Consumes the player input buffer (PlayerAuthInput) and emits validation events without applying movement.
 #[derive(ScheduleLabel, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SCMovementInput;
+/// 按阈值去重地广播 MovePlayer / MoveEntityAbsolute / SetEntityMotion，并做可见集同步。
+///
 /// Threshold-dedup broadcast of MovePlayer / MoveEntityAbsolute / SetEntityMotion plus viewer sync.
 #[derive(ScheduleLabel, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SCMovementBroadcast;
 
 // ---- Chunk pipeline ----
+/// 每玩家的 chunk 重排（螺旋遍历 load_queue / NetworkChunkPublisherUpdate / 卸载调度）。
+///
 /// Per-player chunk reorder (spiral load_queue walk / NetworkChunkPublisherUpdate / unload scheduling).
 #[derive(ScheduleLabel, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SCChunkReorder;
+/// 每 tick 按预算发送 load_queue（异步加载 + LevelChunkCache 编码 + PLAYER_SPAWN 阈值）。
+///
 /// Budgeted per-tick load_queue send (async load + LevelChunkCache encode + PLAYER_SPAWN threshold).
 #[derive(ScheduleLabel, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SCChunkSend;

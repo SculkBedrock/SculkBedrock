@@ -1,3 +1,7 @@
+//! `CompoundNbt`：NBT 复合标签（键值容器）。
+//!
+//! 提供 get/insert/remove/iter 操作；未知字段原样保留，保证存档读写无损。
+//!
 //! `CompoundNbt`: NBT compound tag (key-value container with insertion-order semantics).
 //!
 //! Provides get/insert/remove/iter operations; unknown fields are preserved verbatim for lossless save round-trips.
@@ -154,3 +158,11 @@ impl Serialize for CompoundNbt {
         map.end()
     }
 }
+
+impl PartialEq for CompoundNbt {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && (Arc::ptr_eq(&self.map, &other.map) || *self.map == *other.map)
+    }
+}
+
+impl Eq for CompoundNbt {}

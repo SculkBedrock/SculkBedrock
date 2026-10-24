@@ -39,6 +39,8 @@ pub enum MinecraftVersionError {
 }
 
 impl MinecraftVersionError {
+    /// 构造未知版本字符串错误并捕获调用位置。
+    ///
     /// Build an unknown-string error, capturing the call site.
     #[track_caller]
     pub fn unknown_version_string(value: String) -> Self {
@@ -50,6 +52,8 @@ impl MinecraftVersionError {
         }
     }
 
+    /// 构造未知版本字节错误并捕获调用位置。
+    ///
     /// Build an unknown-bytes error, capturing the call site.
     #[track_caller]
     pub fn unknown_version_vec(value: Vec<u8>) -> Self {
@@ -64,6 +68,8 @@ impl MinecraftVersionError {
         }
     }
 
+    /// 构造整数解析错误并捕获调用位置。
+    ///
     /// Build a component-parse error, capturing the call site.
     #[track_caller]
     pub fn parse_int(source: ParseIntError) -> Self {

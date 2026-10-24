@@ -1,15 +1,21 @@
+//! 区块提供器与存储后端 trait：缓存、脏位、生成接入、spillover 路由。
+//!
+//! Chunk provider and storage-backend trait: caching, dirty tracking,
+//! generation wiring and spillover routing.
+
 use super::{
     CacheSlotReservation, ChunkColumn, ChunkGenerationRequest, ChunkKey,
     DirtyColumnIndex, DirtyFlushReport, GeneratedChunk, GeneratedChunkCommit,
     PendingSpilloverBatch, SpilloverGenerationPermit, SpilloverJournalEntry, SpilloverOperationId,
     SpilloverPartition, ChunkColumnPin, merge_spillover_entries, report_spillover_arbitration,
     WorldStorageError, DIRTY_CRITICAL_BYTES, DIRTY_HIGH_WATER_BYTES,
-    MAX_GENERATED_SPILLOVER_WRITES, MAX_IN_FLIGHT_SPILLOVER_BYTES, MAX_PENDING_SPILLOVER_BYTES,
+    MAX_GENERATED_SPILLOVER_WRITES, MAX_PENDING_SPILLOVER_BYTES,
     MAX_PENDING_SPILLOVER_WRITES, MAX_RETIRED_COLUMN_HANDLES, MAX_STORED_SPILLOVER_WRITES,
     MAX_SYNC_FLUSH_BATCH_COLUMNS, MAX_SYNC_FLUSH_SNAPSHOT_BYTES,
     SPILLOVER_ESTIMATED_BYTES_PER_WRITE, SPILLOVER_LOCK_STRIPES,
 };
 use crate::chunk::{Chunk, ChunkPosition, SUBCHUNK_SIZE};
+use crate::generation::{GeneratorDescriptor, PersistedGenerationRecord, ReadyCertificate};
 use sc_log::t_log;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -21,15 +27,29 @@ use std::time::{Duration, Instant};
 #[cfg(test)]
 use super::BlockSpilloverWrite;
 
+/// 读取已存在于存档世界中的区块。
+///
 /// Reads chunks already present in a saved world.
 ///
-/// The LevelDB implementation will be added behind this boundary. Network
-/// and ECS code must not depend on LevelDB key layouts or compression details.
+/// 网络与 ECS 代码不得依赖 LevelDB 键布局或压缩细节。
+///
+/// Network and ECS code must not depend on LevelDB key layouts or
+/// compression details.
 pub trait WorldStorage: Send + Sync {
+    /// 读取一个区块；不存在返回 `Ok(None)`。
+    ///
+    /// Loads a chunk; returns `Ok(None)` when absent.
+    ///
+    /// - `key`: 区块键
     fn load_chunk(&self, key: ChunkKey) -> Result<Option<Chunk>, WorldStorageError>;
 
+    /// 支持日志的后端必须在同一个存储边界读取内容与未决事实；
+    /// 两次独立读取可能重放一份已保存的事实。
+    ///
     /// Journal-enabled backends must read contents and outstanding facts at
     /// one storage boundary; two independent reads can replay a saved fact.
+    ///
+    /// - `key`: 区块键
     fn load_chunk_with_spillover(
         &self,
         key: ChunkKey,
@@ -42,9 +62,16 @@ pub trait WorldStorage: Send + Sync {
         Ok((self.load_chunk(key)?, Vec::new()))
     }
 
+    /// 原子地持久化一个此前不存在的生成源及其全部发出事实。
+    /// 重复提交返回已存储的源，不再路由本次尝试的发出事实。
+    ///
     /// Persist a previously absent generation source and all of its outgoing
     /// facts atomically. A duplicate returns the stored source without routing
     /// this attempt's outgoing facts again.
+    ///
+    /// - `key`: 源区块键
+    /// - `chunk`: 源区块
+    /// - `outgoing`: 发出事实条目
     fn commit_generated_chunk(
         &self,
         _key: ChunkKey,
@@ -56,14 +83,21 @@ pub trait WorldStorage: Send + Sync {
         ))
     }
 
+    /// 本后端是否有版本化 spillover 日志命名空间。没有它的后端
+    /// 保留有界的内存兼容路径。
+    ///
     /// Whether this backend has the versioned spillover journal namespace.
     /// Backends without it retain the bounded in-memory compatibility path.
     fn supports_spillover_journal(&self) -> bool {
         false
     }
 
+    /// 读取尚未被成功的目标列保存覆盖的已接受 spillover 事实。
+    ///
     /// Load accepted spillover facts that have not yet been covered by a
     /// successful target-column save.
+    ///
+    /// - `key`: 目标区块键
     fn load_spillover_journal(
         &self,
         _key: ChunkKey,
@@ -71,8 +105,13 @@ pub trait WorldStorage: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// 原子追加一批 spillover 事实。实现必须按操作 id 幂等，
+    /// 并拒绝冲突的 id 复用。
+    ///
     /// Atomically append a batch of spillover facts. Implementations must be
     /// idempotent by operation id and reject a conflicting reuse of an id.
+    ///
+    /// - `entries`: 事实条目
     fn append_spillover_journal(
         &self,
         entries: &[SpilloverJournalEntry],
@@ -86,27 +125,51 @@ pub trait WorldStorage: Send + Sync {
         }
     }
 
+    /// 把一个区块（方块/方块实体）写回归档。默认实现不支持
+    /// （纯内存/纯生成后端可留空）。
+    ///
     /// Writes a chunk (blocks/block entities) back to the archive.
     /// The default impl does not support it (memory/generator-only backends may leave it empty).
+    ///
+    /// - `key`: 区块键
+    /// - `chunk`: 区块引用
     fn save_chunk(&self, _key: ChunkKey, _chunk: &Chunk) -> Result<(), WorldStorageError> {
         Err(WorldStorageError::unsupported(
             "save_chunk not supported by this backend".to_string(),
         ))
     }
 
+    /// 持久化一个自持快照。有自持请求路径的后端应重写本方法，
+    /// 以不再克隆地移交快照。借用的兼容方法对既有调用方与后端
+    /// 实现仍然可用。
+    ///
     /// Persist an owned snapshot. Backends with an owned request path should
     /// override this to transfer the snapshot without cloning it again. The
     /// borrowed compatibility method remains available to existing callers
     /// and backend implementations.
+    ///
+    /// - `key`: 区块键
+    /// - `chunk`: 自持区块快照
     fn save_chunk_owned(&self, key: ChunkKey, chunk: Chunk) -> Result<(), WorldStorageError> {
         self.save_chunk(key, &chunk)
     }
 
+    /// 持久化完整区块快照，同时声明其方块实体记录对本次保存是否
+    /// 权威。不区分元数据脏状态的遗留后端保持既有自持保存行为；
+    /// 基岩版 LevelDB 重写本方法以保留不可读或未变的 NBT 记录，
+    /// 并在显式删除后删除记录。
+    ///
     /// Persist a full chunk snapshot while declaring whether its block-entity
     /// record is authoritative for this save. Legacy backends that do not
     /// distinguish metadata dirty state retain their existing owned-save
     /// behavior; Bedrock LevelDB overrides this to preserve unreadable or
     /// unchanged NBT records and to delete records after explicit removal.
+    ///
+    /// - `key`: 区块键
+    /// - `chunk`: 自持区块快照
+    /// - `block_entities_dirty`: 方块实体记录是否权威
+    /// - `biomes_dirty`: 生物群系是否脏
+    /// - `heightmap_dirty`: 高度图是否脏
     fn save_chunk_owned_with_metadata(
         &self,
         key: ChunkKey,
@@ -118,9 +181,19 @@ pub trait WorldStorage: Send + Sync {
         self.save_chunk_owned(key, chunk)
     }
 
+    /// 持久化快照并确认已包含在该快照中的日志事实。基岩版存储
+    /// 重写本方法，使数据保存与日志清理共用一个 WriteBatch。
+    ///
     /// Persist a snapshot and acknowledge the journal facts already included
     /// in that snapshot. Bedrock storage overrides this so the data save and
     /// journal cleanup share one WriteBatch.
+    ///
+    /// - `key`: 区块键
+    /// - `chunk`: 自持区块快照
+    /// - `block_entities_dirty`: 方块实体记录是否权威
+    /// - `biomes_dirty`: 生物群系是否脏
+    /// - `heightmap_dirty`: 高度图是否脏
+    /// - `spillover_acks`: 本快照覆盖的 spillover 操作 id
     fn save_chunk_owned_with_metadata_and_spillover(
         &self,
         key: ChunkKey,
@@ -138,24 +211,98 @@ pub trait WorldStorage: Send + Sync {
             heightmap_dirty,
         )
     }
+
+    /// 读取某维度持久化的生成器描述符。
+    ///
+    /// Read the persisted generator descriptor for a dimension.
+    ///
+    /// - `dimension`: 维度 id
+    fn load_generator_descriptor(
+        &self,
+        _dimension: i32,
+    ) -> Result<Option<GeneratorDescriptor>, WorldStorageError> {
+        Ok(None)
+    }
+
+    /// 保存某维度的生成器描述符。
+    ///
+    /// Save the generator descriptor for a dimension.
+    ///
+    /// - `dimension`: 维度 id
+    /// - `descriptor`: 生成器描述符
+    fn save_generator_descriptor(
+        &self,
+        _dimension: i32,
+        _descriptor: &GeneratorDescriptor,
+    ) -> Result<(), WorldStorageError> {
+        Ok(())
+    }
+
+    /// 读取某区块持久化的生成完成记录。
+    ///
+    /// Read the persisted generation completion record for a chunk.
+    ///
+    /// - `key`: 区块键
+    fn load_generation_record(
+        &self,
+        _key: ChunkKey,
+    ) -> Result<Option<PersistedGenerationRecord>, WorldStorageError> {
+        Ok(None)
+    }
+
+    /// 原子地持久化一个最终生成的区块及其完成证书与装配摘要。
+    ///
+    /// Atomically persist a final generated chunk along with its completion certificate and assembly digest.
+    ///
+    /// - `key`: 区块键
+    /// - `chunk`: 区块
+    /// - `record`: 持久化生成记录
+    fn commit_final_chunk(
+        &self,
+        key: ChunkKey,
+        chunk: Chunk,
+        _record: PersistedGenerationRecord,
+    ) -> Result<(), WorldStorageError> {
+        self.save_chunk(key, &chunk)
+    }
 }
+
+/// 可选的、插件持有的世界生成钩子。
+///
 /// Optional plugin-owned world generation hook.
 pub trait WorldGenerator: Send + Sync {
+    /// 生成一个区块；返回 `Ok(None)` 表示无可生成内容。
+    ///
+    /// Generates a chunk; returns `Ok(None)` when there is nothing to
+    /// generate.
+    ///
+    /// - `request`: 生成请求（目标键 + 竖直范围）
     fn generate_chunk(
         &self,
         request: ChunkGenerationRequest,
     ) -> Result<Option<Chunk>, WorldStorageError>;
 
+    /// 生成一个区块并返回**跨区块 spillover 写**（特征/结构越过区块
+    /// 边界的方块，如边缘树木的树冠）。
+    ///
     /// Generates a chunk and returns **cross-chunk spillover writes** (blocks of
     /// a feature/structure that cross the chunk border, e.g. the canopy of an
     /// edge tree).
+    ///
+    /// [`WorldChunkProvider`] 立即把 spillover 写应用到已缓存的邻居，
+    /// 或把它们排入待处理队列，直到目标区块被生成/加载。
     ///
     /// [`WorldChunkProvider`] applies spillover writes immediately to cached
     /// neighbors, or queues them in a pending queue until the target chunk is
     /// generated/loaded.
     ///
+    /// 默认实现包装 [`WorldGenerator::generate_chunk`] 并返回空
+    /// spillover（无跨区块特征的生成器无需重写）。
+    ///
     /// The default impl wraps [`WorldGenerator::generate_chunk`] and returns
     /// empty spillover (generators without cross-chunk features need no override).
+    ///
+    /// - `request`: 生成请求（目标键 + 竖直范围）
     fn generate_chunk_with_spillover(
         &self,
         request: ChunkGenerationRequest,
@@ -166,10 +313,17 @@ pub trait WorldGenerator: Send + Sync {
         }))
     }
 
+    /// 以调用方给定的 spillover 结果上限生成。遗留/插件生成器通过该
+    /// 默认后检查保持源码兼容；有内部 spillover 累加器的生成器应重写
+    /// 本方法，在收集过程中就执行上限，避免先长出一个无界 Vec。
+    ///
     /// Generate with a caller-provided spillover result limit. Legacy/plugin
     /// generators remain source-compatible through this default post-check;
     /// generators with internal spillover accumulators should override it to
     /// enforce the limit while collecting, before growing an unbounded Vec.
+    ///
+    /// - `request`: 生成请求（目标键 + 竖直范围）
+    /// - `max_spillover_writes`: spillover 写数量上限
     fn generate_chunk_with_spillover_bounded(
         &self,
         request: ChunkGenerationRequest,
@@ -187,59 +341,167 @@ pub trait WorldGenerator: Send + Sync {
         Ok(generated)
     }
 }
+
+/// 组合存档存储、可选生成器与共享缓存。
+///
 /// Combines saved-world storage, an optional generator, and a shared cache.
 #[derive(Clone)]
 pub struct WorldChunkProvider {
+    /// 存储后端。
+    ///
+    /// Storage backend.
     storage: Arc<dyn WorldStorage>,
+    /// 可选生成器。
+    ///
+    /// Optional generator.
     generator: Option<Arc<dyn WorldGenerator>>,
+    /// 生成器指纹。
+    ///
+    /// Generator fingerprint.
+    generator_fingerprint: u64,
+    /// 常驻列缓存。
+    ///
+    /// Resident column cache.
     cache: Arc<RwLock<HashMap<ChunkKey, Arc<ChunkColumn>>>>,
+    /// 常驻 LRU 顺序。
+    ///
+    /// Resident LRU order.
     cache_order: Arc<RwLock<VecDeque<ChunkKey>>>,
+    /// 被挤出缓存的干净列的有界强钉：外部 Arc 持有者仍存在时钉住。
+    /// 若某个句柄之后变脏，provider 仍可在调用方释放其 Arc 后
+    /// 恢复/持久化它。
+    ///
     /// Bounded strong pins for clean columns evicted while external Arc owners
     /// still exist. If one of those handles becomes dirty later, the provider
     /// can still recover/persist it after the caller releases its Arc.
     pub(crate) retired: Arc<RwLock<HashMap<ChunkKey, Arc<ChunkColumn>>>>,
+    /// provider 自持脏列的有序索引；避免每次写回调度 tick 扫描全部
+    /// 常驻/退役条目。
+    ///
     /// Ordered index of dirty provider-owned columns; avoids scanning every
     /// resident/retired entry on each writeback scheduling tick.
     dirty_index: Arc<DirtyColumnIndex>,
+    /// 跨区块 spillover 写的待处理队列：目标区块未缓存时暂存，
+    /// 该区块首次进入缓存（经生成/加载/ensure）时应用。
+    ///
     /// Pending queue for cross-chunk spillover writes: staged while the target
     /// chunk is not cached yet, applied when that chunk first enters the cache
     /// (via generate/load/ensure).
     pending_spillover: Arc<Mutex<HashMap<ChunkKey, PendingSpilloverBatch>>>,
+    /// 待处理 spillover 写数（原子计数）。
+    ///
+    /// Pending spillover write count (atomic).
     pub(crate) pending_spillover_count: Arc<AtomicUsize>,
+    /// 待处理 spillover 估算字节（原子计数）。
+    ///
+    /// Pending spillover estimated bytes (atomic).
     pending_spillover_bytes: Arc<AtomicUsize>,
+    /// 生成中的 spillover 结果预留字节。
+    ///
+    /// Reserved bytes for in-progress spillover generation results.
     spillover_generation_reserved_bytes: Arc<AtomicUsize>,
+    /// 未确认脏列当前持有的估算字节。
+    ///
     /// Estimated bytes currently held by unacknowledged dirty columns.
+    ///
+    /// 列被标记脏时与 SaveAck 清除时各更新一次。这是结构性估计
+    /// （与 `estimated_memory_bytes` 同套记账），不是 RSS 数字。
     ///
     /// Updated when a column is marked dirty and again when a SaveAck clears it.
     /// This is a structural estimate (same accounting as `estimated_memory_bytes`),
     /// not an RSS figure.
     dirty_bytes: Arc<AtomicUsize>,
+    /// 脏积压拒绝新生成的次数。
+    ///
     /// Number of times the dirty backlog refused new generation.
     generation_throttled: Arc<AtomicUsize>,
+    /// 路由与发布之间被替换掉的目标。仅在发布不再共享所路由键的
+    /// 条带锁时才可达；对其计数以防未来重构把对陈旧列的静默写入
+    /// 变成无声事故。
+    ///
     /// Targets that were replaced between routing and publication. Reachable
     /// only if publication stops sharing the routed key's stripe lock; counted
     /// so a future refactor cannot make it a silent write to a stale column.
     replaced_spillover_targets: Arc<AtomicUsize>,
+    /// 定长条带键锁：把 spillover 准入/应用与同一目标列的发布
+    /// 串行化，且不需要无界锁表。
+    ///
     /// Fixed-size striped key locks serialize spillover admission/application
     /// with publication of the same target column without an unbounded lock map.
     spillover_locks: Arc<[Mutex<()>; SPILLOVER_LOCK_STRIPES]>,
+    /// 缓存内存估算（原子）。
+    ///
+    /// Cache memory estimate (atomic).
     pub(crate) cache_memory_estimate: Arc<AtomicUsize>,
+    /// 正准备发布的列预留的常驻槽。
+    ///
     /// Resident slots reserved by columns being prepared for publication.
     pub(crate) pending_cache_slots: Arc<AtomicUsize>,
+    /// 常驻条目上限。
+    ///
+    /// Resident entry limit.
     max_cache_entries: usize,
+    /// 缓存字节上限。
+    ///
+    /// Cache byte limit.
     max_cache_bytes: usize,
+    /// 显式空列回退：未安装生成器且调用方显式允许时，缺失的区块
+    /// 物化为权威空列。默认是拒绝：没有内置生成器的世界绝不能把
+    /// 地形静默再生成为空气。
+    ///
+    /// Explicit empty-column fallback: when no
+    /// generator is installed and the caller explicitly allowed it, missing
+    /// chunks materialize as authoritative empty columns. Default is refusal:
+    /// a world without the built-in generator must not silently regenerate
+    /// terrain as air.
+    explicit_empty_fallback: bool,
 }
 
 impl WorldChunkProvider {
-    /// Resident column entry limit. At radius 10 a single square view is
-    /// about 441 columns; 1024 leaves overlap headroom. Dirty/pinned columns
+    /// 常驻列条目上限。脏/被钉住的列绝不会为满足准入被淘汰：
+    /// 调用方收到 Capacity，直到写回或外部句柄释放腾出空间。
+    ///
+    /// Resident column entry limit. Dirty/pinned columns
     /// are never evicted to satisfy admission: callers receive Capacity until
     /// writeback or released external handles make room.
     const DEFAULT_CACHE_CAPACITY: usize = 1024;
 
+    /// 写回区块：委托给后端存储（LevelDB/内存）。
+    ///
     /// Writes a chunk back: delegates to the backend storage (LevelDB/memory).
+    ///
+    /// - `key`: 区块键
+    /// - `chunk`: 待写回区块
     pub fn save_chunk(&self, key: ChunkKey, chunk: &Chunk) -> Result<(), WorldStorageError> {
         self.storage.save_chunk(key, chunk)
+    }
+
+    /// 读取区块已持久化的生成完成记录。
+    ///
+    /// Read the persisted generation completion record for a chunk.
+    ///
+    /// - `key`: 区块键
+    pub fn load_generation_record(
+        &self,
+        key: ChunkKey,
+    ) -> Result<Option<PersistedGenerationRecord>, WorldStorageError> {
+        self.storage.load_generation_record(key)
+    }
+
+    /// 原子地持久化最终生成的区块及其完成证书与装配摘要。
+    ///
+    /// Atomically persist a final generated chunk along with its completion certificate and assembly digest.
+    ///
+    /// - `key`: 源区块键
+    /// - `chunk`: 最终区块
+    /// - `record`: 完成记录
+    pub fn commit_final_chunk(
+        &self,
+        key: ChunkKey,
+        chunk: Chunk,
+        record: PersistedGenerationRecord,
+    ) -> Result<(), WorldStorageError> {
+        self.storage.commit_final_chunk(key, chunk, record)
     }
 
     pub(crate) fn storage_handle(&self) -> Arc<dyn WorldStorage> {
@@ -249,6 +511,12 @@ impl WorldChunkProvider {
     /// Bounded dirty-column window ordered cyclically after the caller's key
     /// cursor. The index provides O(log n + limit) key selection; only the
     /// bounded selected set is resolved to column handles.
+    ///
+    /// 从调用方游标键开始按循环顺序返回有界脏列窗口；
+    /// 只解析有界的选中集为列句柄。
+    ///
+    /// - `after`: 起始游标键
+    /// - `limit`: 窗口最大条目数
     pub(crate) fn dirty_columns_window(
         &self,
         after: Option<ChunkKey>,
@@ -261,9 +529,17 @@ impl WorldChunkProvider {
         self.resolve_dirty_keys(keys)
     }
 
+    /// 返回用于一次性关机刷写的有序、不回绕脏列分页。
+    /// 即使部分索引项在解析时已失效，`last_examined` 仍会前进，
+    /// 因此单个过期键无法卡住扫描。
+    ///
     /// Return an ordered, non-wrapping page for one-pass shutdown flushing.
     /// `last_examined` advances even when some selected index entries prove
     /// stale during resolution, so one poisoned/stale key cannot pin the scan.
+    ///
+    /// - `after`: 起始游标键
+    /// - `through`: 本页包含的上界键
+    /// - `limit`: 本页最大条目数
     fn dirty_columns_after(
         &self,
         after: Option<ChunkKey>,
@@ -302,6 +578,8 @@ impl WorldChunkProvider {
         Ok(candidates)
     }
 
+    /// 关机上报用的权威脏列计数（无额外分配）：按 provider map 去重。
+    ///
     /// Authoritative allocation-free dirty count for shutdown reporting. The
     /// provider maps own every registered dirty column (resident or retired),
     /// so dedupe by map lookup rather than a temporary HashSet.
@@ -320,6 +598,7 @@ impl WorldChunkProvider {
         Self {
             storage,
             generator: None,
+            generator_fingerprint: 0,
             cache: Arc::new(RwLock::new(HashMap::new())),
             cache_order: Arc::new(RwLock::new(VecDeque::new())),
             retired: Arc::new(RwLock::new(HashMap::new())),
@@ -336,7 +615,31 @@ impl WorldChunkProvider {
             pending_cache_slots: Arc::new(AtomicUsize::new(0)),
             max_cache_entries: Self::DEFAULT_CACHE_CAPACITY,
             max_cache_bytes: 384 * 1024 * 1024,
+            explicit_empty_fallback: false,
         }
+    }
+
+    /// 显式允许无生成器 provider 的空列回退。生产世界绝不能启用：
+    /// 未安装内置生成器的世界会在生成准入处被拒绝，存档保持不变。
+    ///
+    /// Explicitly allows the empty-column fallback for generator-less
+    /// providers. Production worlds must NOT enable this: a world
+    /// opened without the built-in generator is refused at generation
+    /// admission, preserving the save.
+    pub fn with_explicit_empty_fallback(mut self) -> Self {
+        self.explicit_empty_fallback = true;
+        self
+    }
+
+    /// 测试构造器：刻意不装生成器运行（脏位/写回/缓存机制测试）
+    /// 并为缺失区块物化空列的 provider。
+    ///
+    /// Test constructor: providers that intentionally run without a generator
+    /// (dirty/writeback/cache mechanics tests) and materialize empty columns
+    /// for missing chunks.
+    #[cfg(test)]
+    pub fn new_testing(storage: Arc<dyn WorldStorage>) -> Self {
+        Self::new(storage).with_explicit_empty_fallback()
     }
 
     pub fn with_cache_limit(mut self, max_entries: usize) -> Self {
@@ -354,32 +657,58 @@ impl WorldChunkProvider {
         self
     }
 
+    /// 安装世界生成器并执行严格的生成器描述符校验。
+    ///
+    /// Installs a world generator with strict generator descriptor verification.
+    ///
+    /// - 若 `dimension` 已存储描述符，必须与 `descriptor` 逐字段一致；
+    ///   不一致则拒绝生成并保留存档。
+    /// - 若未存储描述符，则将 `descriptor` 写为该世界的生成契约。
+    ///
+    /// - If a descriptor is stored for `dimension`, it must match `descriptor` field-for-field;
+    ///   mismatches refuse generation and preserve the save.
+    /// - If no descriptor is stored, the descriptor is written as the world's generation contract.
+    ///
+    /// - `generator`: 待安装的生成器
+    /// - `descriptor`: 生成器描述符
+    /// - `dimension`: 维度 id
+    pub fn with_generator_and_descriptor(
+        mut self,
+        generator: Arc<dyn WorldGenerator>,
+        descriptor: GeneratorDescriptor,
+        dimension: i32,
+    ) -> Result<Self, WorldStorageError> {
+        let stored = self.storage.load_generator_descriptor(dimension)?;
+        if let Some(stored) = stored.as_ref() {
+            descriptor
+                .ensure_matches_stored(Some(stored))
+                .map_err(|err| WorldStorageError::unsupported(format!("{err}")))?;
+        } else {
+            self.storage
+                .save_generator_descriptor(dimension, &descriptor)?;
+        }
+        self.generator_fingerprint = descriptor.fingerprint();
+        self.generator = Some(generator);
+        Ok(self)
+    }
+
+    pub fn generator_fingerprint(&self) -> u64 {
+        self.generator_fingerprint
+    }
+
+    pub fn with_generator_fingerprint(mut self, fingerprint: u64) -> Self {
+        self.generator_fingerprint = fingerprint;
+        self
+    }
+
     pub(crate) fn reserve_spillover_generation(&self) -> Result<SpilloverGenerationPermit, WorldStorageError> {
         let bytes = MAX_PENDING_SPILLOVER_BYTES;
-        let mut current = self
-            .spillover_generation_reserved_bytes
-            .load(Ordering::Acquire);
-        loop {
-            let next = current.saturating_add(bytes);
-            if next > MAX_IN_FLIGHT_SPILLOVER_BYTES {
-                return Err(WorldStorageError::capacity(format!(
-                    "spillover generation workers are at the {} byte in-flight limit",
-                    MAX_IN_FLIGHT_SPILLOVER_BYTES
-                )));
-            }
-            match self
-                .spillover_generation_reserved_bytes
-                .compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire)
-            {
-                Ok(_) => {
-                    return Ok(SpilloverGenerationPermit {
-                        reserved_bytes: Arc::clone(&self.spillover_generation_reserved_bytes),
-                        bytes,
-                    });
-                }
-                Err(observed) => current = observed,
-            }
-        }
+        self.spillover_generation_reserved_bytes
+            .fetch_add(bytes, Ordering::AcqRel);
+        Ok(SpilloverGenerationPermit {
+            reserved_bytes: Arc::clone(&self.spillover_generation_reserved_bytes),
+            bytes,
+        })
     }
 
     fn spillover_lock_index(key: ChunkKey) -> usize {
@@ -388,6 +717,8 @@ impl WorldChunkProvider {
         hasher.finish() as usize & (SPILLOVER_LOCK_STRIPES - 1)
     }
 
+    /// 按稳定顺序选出所有受影响的键条带；固定数组使锁元数据有界。
+    ///
     /// Lock all affected key stripes in a stable order. Collisions only add
     /// harmless serialization; the fixed array keeps lock metadata bounded.
     fn spillover_lock_set(keys: impl Iterator<Item = ChunkKey>) -> [bool; SPILLOVER_LOCK_STRIPES] {
@@ -416,13 +747,19 @@ impl WorldChunkProvider {
         operation()
     }
 
-    /// Inserts an empty column into the cache without reading storage.
+    /// 在不读存储的情况下向缓存插入空列；仅在 worker 已确认区块缺失后
+    /// 调用。受常驻条目与估算字节上限约束；被拒绝的空列以
+    /// `WorldStorageError::Capacity` 返回供调用方重试/失败处理。
     ///
-    /// This is used after a worker has established that a chunk is absent.
-    /// Keeping the insertion separate from `ensure_chunk` prevents a second
-    /// synchronous storage read on the main thread. Admission is bounded by
+    /// Inserts an empty column into the cache without reading storage.
+    /// Called only after a worker has established that the chunk is absent.
+    /// Admission is bounded by
     /// resident-entry and estimated-live-byte limits; a rejected empty column
     /// is returned as `WorldStorageError::Capacity` for caller retry/failure.
+    ///
+    /// - `key`: 区块键
+    /// - `min_y`: 世界底部 y
+    /// - `max_y`: 世界顶部 y
     pub fn insert_empty_chunk(
         &self,
         key: ChunkKey,
@@ -451,6 +788,7 @@ impl WorldChunkProvider {
         }
 
         let (saved_chunk, persisted_spillover) = self.storage.load_chunk_with_spillover(key)?;
+        let persisted_record = self.storage.load_generation_record(key)?;
         if let Some(entry) = persisted_spillover.iter().find(|entry| {
             let write = entry.write;
             write.key != key
@@ -468,16 +806,29 @@ impl WorldChunkProvider {
         // Keep the in-flight result budget reserved until the generated
         // spillover is either routed or rejected below.
         let mut _spillover_generation_permit = None;
+        let is_saved_chunk = saved_chunk.is_some();
         let loaded = match saved_chunk {
             Some(chunk) => Some(chunk),
             None => {
                 if self.generator.is_none() {
+                    if !self.explicit_empty_fallback {
+                        // A world opened without the built-in generator
+                        // has no admissible generation semantics. Missing
+                        // chunks are refused with an error that preserves the save —
+                        // never a silent empty column masquerading as
+                        // generated terrain.
+                        return Err(WorldStorageError::unsupported(format!(
+                            "no world generator installed for chunk {key:?}: \
+                             stored worlds require the built-in generator descriptor \
+                             (worldgen design §11.4); data is preserved, generation refused"
+                        )));
+                    }
                     if !self.storage.supports_spillover_journal() {
                         return Ok(None);
                     }
                     Some(Chunk::empty(key.position, key.dimension, min_y, max_y))
                 } else {
-                    // §3.2: throttle *new* generation while unacknowledged
+                    // Throttle *new* generation while unacknowledged
                     // dirty data accumulates. Refusal is explicit and retryable;
                     // it never converts into a silent air column.
                     self.generation_admission()?;
@@ -581,6 +932,20 @@ impl WorldChunkProvider {
                 chunk,
                 Some(Arc::clone(&self.cache_memory_estimate)),
             ));
+            if let Some(record) = &persisted_record {
+                column.set_ready(record.certificate, record.generator_fingerprint);
+            } else if is_saved_chunk || generated_source {
+                let cert = ReadyCertificate {
+                    base_valid: true,
+                    structure_seals_complete: true,
+                    decoration_seals_complete: true,
+                    all_fragments_verified: true,
+                    assembly_validated: true,
+                    metadata_included: true,
+                    owner_epoch: 0,
+                };
+                column.set_ready(cert, self.generator_fingerprint);
+            }
             // Admit the generated source before routing spillover to any
             // published target, so capacity rejection cannot leave partial
             // world-generation effects behind.
@@ -596,6 +961,20 @@ impl WorldChunkProvider {
                         committed.source,
                         Some(Arc::clone(&self.cache_memory_estimate)),
                     ));
+                    if let Some(record) = &persisted_record {
+                        column.set_ready(record.certificate, record.generator_fingerprint);
+                    } else if is_saved_chunk || generated_source {
+                        let cert = ReadyCertificate {
+                            base_valid: true,
+                            structure_seals_complete: true,
+                            decoration_seals_complete: true,
+                            all_fragments_verified: true,
+                            assembly_validated: true,
+                            metadata_included: true,
+                            owner_epoch: 0,
+                        };
+                        column.set_ready(cert, self.generator_fingerprint);
+                    }
                     drop(reservation);
                     reservation = self.reserve_cache_slot(key, &column)?;
                 }
@@ -622,8 +1001,13 @@ impl WorldChunkProvider {
         })
     }
 
-    /// Load a chunk; create and cache an all-air empty chunk when absent (/setblock into
-    /// ungenerated chunks and future worldgen backfill both go through here).
+    /// 读取区块；缺失时创建并缓存一个全空气空区块。
+    ///
+    /// Load a chunk; create and cache an all-air empty chunk when absent.
+    ///
+    /// - `key`: 区块键
+    /// - `min_y`: 世界底部 y
+    /// - `max_y`: 世界顶部 y
     pub fn ensure_chunk(
         &self,
         key: ChunkKey,
@@ -637,7 +1021,12 @@ impl WorldChunkProvider {
         self.insert_cached(key, empty)
     }
 
+    /// 对该键的缓存发布做序列化，与 spillover 路由互斥。
+    ///
     /// Serialize cache publication for this key with spillover routing.
+    ///
+    /// - `key`: 区块键
+    /// - `chunk`: 待缓存区块
     fn insert_cached(
         &self,
         key: ChunkKey,
@@ -651,20 +1040,36 @@ impl WorldChunkProvider {
                 chunk,
                 Some(Arc::clone(&self.cache_memory_estimate)),
             ));
+            let cert = ReadyCertificate {
+                base_valid: true,
+                structure_seals_complete: true,
+                decoration_seals_complete: true,
+                all_fragments_verified: true,
+                assembly_validated: true,
+                metadata_included: true,
+                owner_epoch: 0,
+            };
+            column.set_ready(cert, self.generator_fingerprint);
             self.insert_column_cached_locked(key, column, None)
         })
     }
 
+    /// 当前未确认脏快照占用的估算字节数。
+    ///
     /// Estimated bytes currently held by unacknowledged dirty snapshots.
     pub fn dirty_bytes(&self) -> usize {
         self.dirty_bytes.load(Ordering::Acquire)
     }
 
+    /// 将已受理的脏快照计入脏预算。
+    ///
     /// Account an accepted dirty snapshot against the dirty budget.
     pub(crate) fn note_dirty_bytes(&self, bytes: usize) {
         self.dirty_bytes.fetch_add(bytes, Ordering::AcqRel);
     }
 
+    /// 脏快照确认持久化后释放其占用。
+    ///
     /// Release a dirty snapshot's accounting once it is confirmed persisted.
     pub(crate) fn release_dirty_bytes(&self, bytes: usize) {
         let _ = self
@@ -674,10 +1079,12 @@ impl WorldChunkProvider {
             });
     }
 
-    /// Whether new generation may start under the current dirty backlog.
+    /// 当前脏数据积压下是否允许开始新的生成。超过高水位时限流生成
+    /// （可恢复工作）而非继续受理；游戏编辑走自己的准入路径，
+    /// 绝不会在此被静默丢弃。
     ///
-    /// Unacknowledged dirty data is the only world state that cannot be recreated
-    /// from a seed, so past the high-water mark the provider throttles *generation*
+    /// Whether new generation may start under the current dirty backlog.
+    /// Past the high-water mark the provider throttles *generation*
     /// (recoverable work) instead of accepting more. Gameplay edits keep their own
     /// admission path and are never silently dropped here.
     pub fn generation_admission(&self) -> Result<(), WorldStorageError> {
@@ -698,6 +1105,8 @@ impl WorldChunkProvider {
         Ok(())
     }
 
+    /// 生成因脏数据积压被拒绝的次数。
+    ///
     /// How many times generation was refused by the dirty backlog.
     pub fn generation_throttled(&self) -> u64 {
         self.generation_throttled.load(Ordering::Relaxed) as u64
@@ -751,9 +1160,15 @@ impl WorldChunkProvider {
         writes
     }
 
+    /// 为已构造好的列预留一个常驻槽位；`cache_memory_estimate` 包含
+    /// 该候选列与所有 retired 存活句柄。
+    ///
     /// Reserve one resident slot for an already materialized column.
     /// `cache_memory_estimate` includes that candidate (its ChunkColumn was
     /// constructed with the provider counter) and all retired live handles.
+    ///
+    /// - `key`: 区块键
+    /// - `candidate`: 已构造的列
     pub(crate) fn reserve_cache_slot(
         &self,
         key: ChunkKey,
@@ -875,9 +1290,16 @@ impl WorldChunkProvider {
         }
     }
 
+    /// 调用方持有键条带时插入已准备好的列；发布前先应用待发写入，
+    /// 不嵌套 pending/cache 与目标列锁。
+    ///
     /// Insert an already prepared column while the caller holds the key stripe.
     /// Pending writes are applied before publication, without nesting the
     /// pending/cache locks with the target column lock.
+    ///
+    /// - `key`: 区块键
+    /// - `column`: 已准备的列
+    /// - `reservation`: 已预留的缓存槽位
     fn insert_column_cached_locked(
         &self,
         key: ChunkKey,
@@ -925,6 +1347,9 @@ impl WorldChunkProvider {
         Ok(column)
     }
 
+    /// 路由一批 spillover 写入：按键排序、全有或全无准入。放不进
+    /// pending 预算的批次在任何缓存目标被修改前整体拒绝。
+    ///
     /// Route a spillover batch with per-key ordering and all-or-nothing
     /// admission. A batch that cannot fit the pending budget is rejected as a
     /// whole before any cached target is changed.
@@ -950,10 +1375,17 @@ impl WorldChunkProvider {
         })
     }
 
+    /// 调用方必须持有所有目标及可选 `drain_key` 的条带锁。
+    /// 锁顺序：键条带 → cache → retired → pending →（释放）列。
+    ///
     /// Caller holds the stripes for every target and optional `drain_key`.
     /// Returns the writes that must be applied to a not-yet-published source
     /// column. Lock order is key stripes → cache → retired → pending →
     /// (released) column.
+    ///
+    /// - `writes`: 待路由写入
+    /// - `drain_key`: 需排空的键
+    /// - `generated_source`: 尚未发布的生成源列
     fn route_spillover_locked(
         &self,
         writes: Vec<SpilloverJournalEntry>,
@@ -1212,7 +1644,12 @@ impl WorldChunkProvider {
         Ok((source_writes, generation_commit))
     }
 
+    /// 确认已路由的 spillover 目标仍是 `key` 当前发布的列。
+    ///
     /// Confirm a routed spillover target is still the published column for `key`.
+    ///
+    /// - `key`: 区块键
+    /// - `pinned`: 被钉住的目标列
     fn validate_spillover_target(
         &self,
         key: ChunkKey,
@@ -1243,18 +1680,22 @@ impl WorldChunkProvider {
         )))
     }
 
+    /// 带仲裁地应用一批 spillover 写入（路由与测试使用）。
+    /// 位置在列的仲裁窗口之外的写入不在此解析：路由路径会将其
+    /// 重新入队，由拥有列在其下次物化时按操作 id 顺序应用。
+    ///
     /// Apply a spillover batch with arbitration (used by routing and tests).
     ///
     /// Writes whose position is outside the column's bounded arbitration window
     /// are **not** resolved here; the routing path re-queues them so the owning
     /// column applies them in operation-id order when it is next materialized.
-    // Spillover/journal reserved capability (see unified architecture doc §9).
+    // Spillover/journal batch application.
     #[allow(dead_code)]
     pub(crate) fn apply_writes_to_column(column: &ChunkColumn, writes: &[SpilloverJournalEntry]) {
         Self::apply_writes_to_column_with_metadata(column, writes, false, false, false);
     }
 
-    // Spillover/journal reserved capability (see unified architecture doc §9).
+    // Spillover/journal batch application.
     #[allow(dead_code)]
     fn apply_writes_to_column_with_metadata(
         column: &ChunkColumn,
@@ -1280,12 +1721,16 @@ impl WorldChunkProvider {
         );
     }
 
-    /// Apply writes the owning column was re-queued for, in operation-id order.
+    /// 按操作 id 顺序应用拥有列被重新入队的写入（owner 侧吸收路径）。
+    /// 批次无条件应用；幂等性来自已记录的操作 id。
     ///
-    /// This is the owner-side absorption path: the batch was deferred precisely
-    /// because it could not be arbitrated against a bounded window, so it is
-    /// applied unconditionally (idempotency still comes from the recorded
-    /// operation ids).
+    /// Apply writes the owning column was re-queued for, in operation-id order.
+    /// The batch is applied unconditionally; idempotency still comes from the recorded
+    /// operation ids.
+    ///
+    /// - `column`: 拥有列
+    /// - `writes`: 重新入队的写入
+    /// - `block_entities_dirty`/`biomes_dirty`/`heightmap_dirty`: 对应脏位
     pub(crate) fn apply_pending_ordered_to_column(
         column: &ChunkColumn,
         writes: &[SpilloverJournalEntry],
@@ -1311,11 +1756,12 @@ impl WorldChunkProvider {
         );
     }
 
+    /// 应用一个已完成仲裁的分区；`forced` 跳过仲裁。
+    ///
     /// Apply an already arbitrated partition.
     ///
     /// `forced` skips arbitration: the owning column applies everything it was
-    /// handed, which is exactly the pending-absorption path (the writes were
-    /// re-queued precisely so they would be applied in operation-id order).
+    /// handed (the pending-absorption path).
     fn apply_partition_to_column_with_metadata(
         column: &ChunkColumn,
         partition: &SpilloverPartition,
@@ -1471,12 +1917,18 @@ impl WorldChunkProvider {
         self.cache_memory_estimate.load(Ordering::Relaxed)
     }
 
+    /// pending spillover 批次占用的估算字节数。这是有界准入估算，
+    /// 不是 allocator/RSS 统计。
+    ///
     /// Estimated bytes retained in pending spillover batches. This is a
     /// bounded admission estimate, not allocator/RSS accounting.
     pub fn pending_spillover_estimated_bytes(&self) -> usize {
         self.pending_spillover_bytes.load(Ordering::Acquire)
     }
 
+    /// 最老 pending 目标桶的存活时间（如有）。仅诊断用：调用方绝不能
+    /// 因数据陈旧而丢弃已受理的 spillover；恢复依赖持久 journal。
+    ///
     /// Age of the oldest pending target bucket, if any. This is diagnostic
     /// only: callers must not discard accepted spillover merely because it is
     /// old; recovery requires the durable journal stage.
@@ -1490,6 +1942,8 @@ impl WorldChunkProvider {
             .max()
     }
 
+    /// 并发 worker 构造有界生成 spillover 结果时预留的估算字节数。
+    ///
     /// Estimated bytes reserved by concurrent workers constructing bounded
     /// generation spillover results.
     pub fn spillover_generation_reserved_bytes(&self) -> usize {
@@ -1517,11 +1971,17 @@ impl WorldChunkProvider {
         self.cache.read().map(|cache| cache.len()).unwrap_or(0)
     }
 
+    /// 兼容包装：返回已确认保存的数量。
+    ///
     /// Compatibility wrapper returning the number of acknowledged saves.
     pub fn flush_dirty(&self) -> usize {
         self.flush_dirty_report().saved
     }
 
+    /// 同步持久化常驻与 retired 脏列的快照。这是关机兜底路径；
+    /// 常规脏写回由 `ChunkWritebackExecutor` 调度。关机时按固定大小
+    /// 分页处理，报告中只保留有界的键采样。
+    ///
     /// Synchronously persist snapshots of dirty resident and retired
     /// columns. This is the shutdown fallback; ordinary dirty writeback is
     /// scheduled by `ChunkWritebackExecutor`. Shutdown processes a fixed-size
@@ -1657,7 +2117,9 @@ impl WorldChunkProvider {
     }
 }
 
-/// Empty storage is useful for worlds that are intentionally generator-only.
+/// 空存储：用于刻意仅生成（无持久化后端）的世界。
+///
+/// Empty storage for worlds that are intentionally generator-only.
 #[derive(Default)]
 pub struct EmptyWorldStorage;
 
@@ -1667,11 +2129,65 @@ impl WorldStorage for EmptyWorldStorage {
     }
 }
 
-/// Small in-memory backend used by plugins and by future storage tests.
+/// 内存/仅生成存储：写回按无操作受理且不报错。
+///
+/// In-memory/generator-only storage that accepts writebacks as no-ops without error.
+#[derive(Default)]
+pub struct NoSaveWorldStorage;
+
+impl WorldStorage for NoSaveWorldStorage {
+    fn load_chunk(&self, _key: ChunkKey) -> Result<Option<Chunk>, WorldStorageError> {
+        Ok(None)
+    }
+
+    fn save_chunk(&self, _key: ChunkKey, _chunk: &Chunk) -> Result<(), WorldStorageError> {
+        Ok(())
+    }
+
+    fn save_chunk_owned(&self, _key: ChunkKey, _chunk: Chunk) -> Result<(), WorldStorageError> {
+        Ok(())
+    }
+
+    fn save_chunk_owned_with_metadata(
+        &self,
+        _key: ChunkKey,
+        _chunk: Chunk,
+        _block_entities_dirty: bool,
+        _biomes_dirty: bool,
+        _heightmap_dirty: bool,
+    ) -> Result<(), WorldStorageError> {
+        Ok(())
+    }
+
+    fn save_chunk_owned_with_metadata_and_spillover(
+        &self,
+        _key: ChunkKey,
+        _chunk: Chunk,
+        _block_entities_dirty: bool,
+        _biomes_dirty: bool,
+        _heightmap_dirty: bool,
+        _spillover_acks: &[SpilloverOperationId],
+    ) -> Result<(), WorldStorageError> {
+        Ok(())
+    }
+
+    fn append_spillover_journal(
+        &self,
+        _entries: &[SpilloverJournalEntry],
+    ) -> Result<(), WorldStorageError> {
+        Ok(())
+    }
+}
+
+/// 供插件使用的内存后端。
+///
+/// Small in-memory backend used by plugins.
 #[derive(Default)]
 pub struct InMemoryWorldStorage {
     chunks: RwLock<HashMap<ChunkKey, Chunk>>,
     spillover_journal: RwLock<MemorySpilloverJournal>,
+    descriptors: RwLock<HashMap<i32, GeneratorDescriptor>>,
+    generation_records: RwLock<HashMap<ChunkKey, PersistedGenerationRecord>>,
 }
 
 #[derive(Default)]
@@ -1862,6 +2378,60 @@ impl WorldStorage for InMemoryWorldStorage {
         }
         journal.total -= removed;
         chunks.insert(key, chunk);
+        Ok(())
+    }
+
+    fn load_generator_descriptor(
+        &self,
+        dimension: i32,
+    ) -> Result<Option<GeneratorDescriptor>, WorldStorageError> {
+        let descriptors = self
+            .descriptors
+            .read()
+            .map_err(|_| WorldStorageError::backend("in-memory descriptors poisoned".into()))?;
+        Ok(descriptors.get(&dimension).cloned())
+    }
+
+    fn save_generator_descriptor(
+        &self,
+        dimension: i32,
+        descriptor: &GeneratorDescriptor,
+    ) -> Result<(), WorldStorageError> {
+        let mut descriptors = self
+            .descriptors
+            .write()
+            .map_err(|_| WorldStorageError::backend("in-memory descriptors poisoned".into()))?;
+        descriptors.insert(dimension, descriptor.clone());
+        Ok(())
+    }
+
+    fn load_generation_record(
+        &self,
+        key: ChunkKey,
+    ) -> Result<Option<PersistedGenerationRecord>, WorldStorageError> {
+        let records = self
+            .generation_records
+            .read()
+            .map_err(|_| WorldStorageError::backend("in-memory generation records poisoned".into()))?;
+        Ok(records.get(&key).cloned())
+    }
+
+    fn commit_final_chunk(
+        &self,
+        key: ChunkKey,
+        chunk: Chunk,
+        record: PersistedGenerationRecord,
+    ) -> Result<(), WorldStorageError> {
+        let mut chunks = self
+            .chunks
+            .write()
+            .map_err(|_| WorldStorageError::backend("in-memory chunks poisoned".into()))?;
+        let mut records = self
+            .generation_records
+            .write()
+            .map_err(|_| WorldStorageError::backend("in-memory generation records poisoned".into()))?;
+        chunks.insert(key, chunk);
+        records.insert(key, record);
         Ok(())
     }
 }

@@ -1,16 +1,10 @@
-//! `NormalGenerator`: [`WorldGenerator`] adapter over the Normal stage chain.
+//! Normal 阶段链之上的世界生成器适配器。
 //!
-//! Design notes:
-//! - Construction assembles the stage chain in [`NormalGenerator::new`].
-//! - Chunk generation runs the chain synchronously via [`run_stages`].
-//! - The object holder owns all noise/density functions and is built
-//!   per world seed. It contains `Rc<RefCell<...>>` state (per-chunk
-//!   aquifer state), so it is `!Send` and is rebuilt per chunk; the same
-//!   seed yields the same noise, so determinism is unchanged.
-//! - `WorldGenerator::generate_chunk` returns `Ok(Some(chunk))`, and
-//!   generation-time panics are left to the caller (no silent fallback).
-//! - Stage chain: `NormalTerrain → BiomeMap → SurfaceData → SurfaceOverwrite
-//!   → Generated → Feature → Populator → Finished`.
+//! 构造时组装地形、群系、地表、特征与结构填充各阶段；generate_chunk 按顺序同步运行整条链并返回生成完成的区块。
+//!
+//! World generator adapter over the Normal stage chain.
+//!
+//! Construction assembles the terrain, biome, surface, feature, and populator stages; generate_chunk runs the chain synchronously and returns the finished chunk.
 
 use std::sync::Arc;
 
@@ -41,11 +35,20 @@ use sc_world::storage::{
     WorldStorageError,
 };
 
+/// 实现 [`WorldGenerator`] 的常规世界生成器。
+///
 /// Normal world generator implementing [`WorldGenerator`].
+///
+/// 持有每世界的阶段链、方块表与种子。每次 `generate_chunk` 同步运行
+/// 整条链（地形 → 生物群系 → 地表 → 矿物特征 → 收尾）。
 ///
 /// Holds the per-world stage chain, block tables, and seed. Each
 /// `generate_chunk` call runs the full chain synchronously
 /// (terrain → biomes → surface → ore features → finished).
+///
+/// 流水线：
+/// `NormalTerrain → BiomeMap → SurfaceData → SurfaceOverwrite → Generated
+///  → Feature → Finished`
 ///
 /// Pipeline:
 /// `NormalTerrain → BiomeMap → SurfaceData → SurfaceOverwrite → Generated
@@ -57,6 +60,8 @@ pub struct NormalGenerator {
 }
 
 impl NormalGenerator {
+    /// 由世界种子与方块表构建生成器，组装阶段链。
+    ///
     /// Builds the generator from a world seed and block tables, assembling
     /// the stage chain.
     pub fn new(
@@ -67,6 +72,9 @@ impl NormalGenerator {
         Self::new_with_snapshot(level_seed, table, material_blocks, None)
     }
 
+    /// 感知快照的构造函数：存在方块数据快照时，子表（矿物/树木/装饰/结构）
+    /// 从 bundle 取默认值；`None` 时回退到核心调色板。
+    ///
     /// Snapshot-aware constructor: when a block-data snapshot is present,
     /// the sub-tables (ore/tree/decoration/structure) take their defaults
     /// from the bundle; with `None` they fall back to the core palette.
@@ -123,6 +131,10 @@ impl NormalGenerator {
 }
 
 impl WorldGenerator for NormalGenerator {
+    /// 生成单个 chunk（trait 入口，丢弃跨 chunk 溢出写入）。
+    ///
+    /// Generates a single chunk (trait entry; drops cross-chunk spillover
+    /// writes).
     fn generate_chunk(
         &self,
         request: ChunkGenerationRequest,
@@ -131,6 +143,10 @@ impl WorldGenerator for NormalGenerator {
             .map(|generated| generated.map(|g| g.chunk))
     }
 
+    /// 生成单个 chunk 并返回跨 chunk 溢出写入（使用默认上限）。
+    ///
+    /// Generates a single chunk and returns cross-chunk spillover writes
+    /// (with the default bound).
     fn generate_chunk_with_spillover(
         &self,
         request: ChunkGenerationRequest,
@@ -141,6 +157,10 @@ impl WorldGenerator for NormalGenerator {
         )
     }
 
+    /// 生成单个 chunk 并返回跨 chunk 溢出写入（可指定写入上限）。
+    ///
+    /// Generates a single chunk and returns cross-chunk spillover writes
+    /// (with a configurable write bound).
     fn generate_chunk_with_spillover_bounded(
         &self,
         request: ChunkGenerationRequest,
@@ -202,18 +222,38 @@ impl WorldGenerator for NormalGenerator {
 // Land-spawn search (stopgap: ignores level.dat, locates the largest landmass)
 // ---------------------------------------------------------------------------
 
+/// 粗栅格扫描步长（方块）。大陆横跨数千方块，128 步长足以勾勒陆地轮廓。
+///
 /// Coarse-grid scan step (blocks). Continents span thousands of blocks, so a
 /// 128-step is enough to resolve land outlines.
 const LAND_SCAN_STEP: i32 = 128;
+/// 粗栅格扫描半径（方块）：±4096 → 65×65 个采样点。
+///
 /// Coarse-grid scan radius (blocks): ±4096 → 65×65 sample points.
 const LAND_SCAN_RADIUS: i32 = 4096;
-/// Refinement scan radius/step (blocks): ±96 around the centroid at step
-/// 16, picking the most inland point.
+/// 精扫半径（方块）：质心周围 ±96，取最靠内的点。
+///
+/// Refinement scan radius (blocks): ±96 around the centroid, picking the
+/// most inland point.
 const LAND_REFINE_RADIUS: i32 = 96;
+/// 精扫步长（方块）。
+///
+/// Refinement scan step (blocks).
 const LAND_REFINE_STEP: i32 = 16;
 
+/// 临时出生点策略：忽略 level.dat 出生点，定位世界中最大的陆地。
+///
 /// Stopgap spawn strategy: ignores the level.dat spawn and locates the
 /// largest landmass in the world.
+///
+/// 步骤：
+/// 1. 在与 [`NormalTerrainStage`] 的 mandatoryTopY 同源的纯 2D noise 函数
+///    `preliminary_surface_upper_bound` 上，以 ±4096 方块、128 步长的粗栅格
+///    采样；高于海平面记作陆地——无需生成 chunk；
+/// 2. BFS 找最大的 4-连通陆地块，取最接近其质心的采样点；
+/// 3. 在质心附近精扫（±96，取上界最大的最靠内点）；
+/// 4. 在该点生成一个真实 chunk，自顶向下扫描出生点列第一个非空气非水方块，
+///    得到精确出生 y。
 ///
 /// Steps:
 /// 1. Sample `preliminary_surface_upper_bound` (a pure 2D noise function
@@ -226,6 +266,8 @@ const LAND_REFINE_STEP: i32 = 16;
 /// 4. Generate one real chunk at that point and scan the spawn column
 ///    top-down for the first non-air, non-water block to get the exact
 ///    spawn y.
+///
+/// 范围内找不到陆地时返回 `None`（极端种子）；由调用方回退。
 ///
 /// Returns `None` when no land is found in range (extreme seeds); the
 /// caller falls back.
@@ -560,4 +602,40 @@ mod tests {
         }
         assert!(differ, "different seeds should produce different terrain");
     }
+
+    // ===================== Single-chunk approximation mechanics =====================
+    //
+    // The feature layer uses the single-chunk approximation: out-of-bounds
+    // block writes are dropped before reaching the root buffer (the
+    // "Single-chunk approximation" branch in `worldgen/feature/decoration.rs`),
+    // so `GeneratedChunk.spillover` is empty on the production path and edge
+    // tree canopies are truncated structurally. The context-level spillover
+    // write mechanism is covered by `worldgen::context` tests; its Vec order
+    // follows the `root_places` HashMap iteration order
+    // (`context.rs::apply_root_to_chunk`), not a stable identity contract.
+
+    /// 生成的 chunk 不产生跨 chunk 溢出写入：特征层会过滤掉越界写入
+    /// （单 chunk 近似）。
+    ///
+    /// Generated chunks produce no spillover writes because the feature
+    /// layer filters out-of-chunk writes (single-chunk approximation).
+    #[test]
+    fn single_chunk_approximation_skips_cross_chunk_feature_writes() {
+        let gen = make_generator(42);
+        for cx in -1..=1 {
+            for cz in -1..=1 {
+                let result = gen
+                    .generate_chunk_with_spillover(make_request(cx, cz))
+                    .unwrap()
+                    .expect("chunk should generate");
+                assert!(
+                    result.spillover.is_empty(),
+                    "chunk ({cx},{cz}) unexpectedly produced {} cross-chunk writes; \
+                     the single-chunk approximation no longer holds",
+                    result.spillover.len()
+                );
+            }
+        }
+    }
+
 }

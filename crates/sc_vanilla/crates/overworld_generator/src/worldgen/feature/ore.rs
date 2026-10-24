@@ -1,20 +1,6 @@
-//! Port of `feature/ore/OreGeneratorFeature.java` plus all concrete ore features.
+//! 矿石特征：按参数表在区块内生成各类矿脉与地表绿宝石矿。
 //!
-//! Port notes:
-//! - The ~30 `XxxOreGenerationFeature` subclasses collapse into one [`OreFeature`]
-//!   struct plus an [`OreSpec`] parameter table (data-driven, matching the getter
-//!   overrides).
-//! - The `protected BlockState STONE/DEEPSLATE/NETHERRACK` constants are injected
-//!   via [`OreBlockTable`] instead (no global dictionary dependency).
-//! - The two-layer `BlockManager` buffer (per-cluster `object` plus per-chunk
-//!   `manager`) becomes a per-apply `BlockManager`, flushed by `apply_to_chunk`.
-//! - Cross-chunk `level.getBlockStateAt(x, y, z)` reads become current-chunk-only
-//!   (`WorldgenChunk::block_state`); cross-chunk cluster edges clip (full
-//!   cross-chunk routing needs GenSession).
-//! - The per-use random source constructs per apply (see
-//!   [`crate::worldgen::feature::GenerateFeature::make_random`]).
-//! - Operator-precedence trap: `chunkHash ^ level.getSeed() + name().hashCode()`
-//!   parses as `chunkHash ^ (levelSeed + nameHash)` (`+` binds tighter than `^`).
+//! Ore features: generating ore veins and surface emerald ore within a chunk from a parameter table.
 
 use crate::blocks_table::OreBlockTable;
 use crate::worldgen::context::{BlockManager, ChunkGenerateContext};
@@ -28,7 +14,9 @@ use sc_world::chunk::BlockRuntimeId;
 // ConcentrationType enum.
 // ---------------------------------------------------------------------------
 
-/// Java: `OreGeneratorFeature.ConcentrationType { UNIFORM, TRIANGLE }`(L148-151).
+/// 矿石数量的分布方式：均匀或三角分布。
+///
+/// Ore count distribution: uniform or triangular.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConcentrationType {
     /// UNIFORM: even distribution across the Y range.
@@ -41,13 +29,9 @@ pub enum ConcentrationType {
 // OreState (two getState strategies).
 // ---------------------------------------------------------------------------
 
-/// Ore block state resolution strategy.
+/// 矿石方块状态的解析策略：按原方块选择或使用固定方块。
 ///
-/// Two modes:
-/// 1. [`Self::StoneDeepslate`]: pick by the original block (stone goes ore,
-///    deepslate goes deepslate_ore).
-/// 2. [`Self::Single`]: always one block.
-///    Used for dirt/gravel/andesite/diorite/granite/tuff.
+/// Ore block-state resolution strategy: choose by the replaced block or use one fixed block.
 #[derive(Clone, Copy, Debug)]
 pub enum OreState {
     /// Java: `switch(original.getIdentifier()) { case STONE -> TYPE_STONE; case DEEPSLATE -> TYPE_DEEPSLATE; }`
@@ -63,11 +47,9 @@ pub enum OreState {
 // OreReplaceTarget (two canBeReplaced strategies).
 // ---------------------------------------------------------------------------
 
-/// Ore replacement targets.
+/// 矿石替换目标：石头与深板岩或仅石头。
 ///
-/// Two modes:
-/// 1. [`Self::StoneAndDeepslate`]: the default.
-/// 2. [`Self::StoneOnly`]: upper ores, replacing stone only.
+/// Ore replacement target: stone and deepslate, or stone only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OreReplaceTarget {
     /// Java: `state == STONE || state == DEEPSLATE || state == NETHERRACK`
@@ -81,11 +63,9 @@ pub enum OreReplaceTarget {
 // OreSpec (one ore feature parameter table).
 // ---------------------------------------------------------------------------
 
-/// Complete parameter table for one ore feature.
+/// 单个矿石特征的完整参数表。
 ///
-/// Matches each upstream ore feature getter overrides.
-/// `BlockRuntimeId`s resolve from [`OreBlockTable`] at construction
-/// (deferred to `OreFeature::new`).
+/// Complete parameter table for one ore feature.
 #[derive(Clone, Debug)]
 pub struct OreSpec {
     pub name: &'static str,
@@ -104,10 +84,9 @@ pub struct OreSpec {
 // OreFeature (one struct for all ore generator subclasses).
 // ---------------------------------------------------------------------------
 
-/// Unified implementation of the ore generator plus all subclasses.
+/// 统一实现矿脉生成及各类矿物的生成特征。
 ///
-/// Holds [`OreBlockTable`] (block id injection) plus [`OreSpec`];
-/// `apply` implements the apply plus spawn logic directly.
+/// Generation feature implementing ore-vein generation for all ore kinds.
 pub struct OreFeature {
     table: OreBlockTable,
     spec: OreSpec,
@@ -296,7 +275,7 @@ impl GenerateFeature for OreFeature {
             }
         }
 
-        // Java L94: queueObject(chunk, manager) → root.merge(manager)——
+        // Java L94: queueObject(chunk, manager) -> root.merge(manager);
         // Buffer until stage end; the submit phase clips cross-chunk blocks.
         let places = manager.into_places();
         ctx.queue_object(places);
@@ -342,7 +321,7 @@ pub fn build_overworld_ore_specs(table: &OreBlockTable) -> Vec<OreSpec> {
             name: "minecraft:overworld_underground_coal_ore_lower_feature",
             state: sd(table.coal_ore, table.deepslate_coal_ore),
             cluster_count: 20,
-            cluster_size: 17, // 继承 upper
+            cluster_size: 17, // inherited from upper
             min_height: 0,
             max_height: 192,
             concentration: Triangle,
@@ -390,7 +369,7 @@ pub fn build_overworld_ore_specs(table: &OreBlockTable) -> Vec<OreSpec> {
         OreSpec {
             name: "minecraft:overworld_underground_iron_ore_small_feature",
             state: sd(table.iron_ore, table.deepslate_iron_ore),
-            cluster_count: 10, // 继承 middle
+            cluster_count: 10, // inherited from middle
             cluster_size: 4,
             min_height: -64,
             max_height: 72,
@@ -415,7 +394,7 @@ pub fn build_overworld_ore_specs(table: &OreBlockTable) -> Vec<OreSpec> {
         OreSpec {
             name: "minecraft:dripstone_caves_copper_ore_feature",
             state: sd(table.copper_ore, table.deepslate_copper_ore),
-            cluster_count: 16, // 继承
+            cluster_count: 16, // inherited
             cluster_size: 20,
             min_height: -16,
             max_height: 112,
@@ -441,7 +420,7 @@ pub fn build_overworld_ore_specs(table: &OreBlockTable) -> Vec<OreSpec> {
             name: "minecraft:overworld_underground_gold_ore_feature",
             state: sd(table.gold_ore, table.deepslate_gold_ore),
             cluster_count: 4,
-            cluster_size: 9, // 继承 mesa
+            cluster_size: 9, // inherited from mesa
             min_height: -64,
             max_height: 32,
             concentration: Triangle,
@@ -453,7 +432,7 @@ pub fn build_overworld_ore_specs(table: &OreBlockTable) -> Vec<OreSpec> {
             name: "minecraft:overworld_underground_gold_ore_lower_feature",
             state: sd(table.gold_ore, table.deepslate_gold_ore),
             cluster_count: 2,
-            cluster_size: 9, // 继承 mesa
+            cluster_size: 9, // inherited from mesa
             min_height: -64,
             max_height: -48,
             concentration: Uniform,
@@ -478,8 +457,8 @@ pub fn build_overworld_ore_specs(table: &OreBlockTable) -> Vec<OreSpec> {
             name: "minecraft:overworld_underground_redstone_ore_lower_feature",
             state: sd(table.redstone_ore, table.deepslate_redstone_ore),
             cluster_count: 8,
-            cluster_size: 8, // 继承
-            min_height: -64, // 继承
+            cluster_size: 8, // inherited
+            min_height: -64, // inherited
             max_height: -32,
             concentration: Triangle,
             skip_air: 0.0,
@@ -504,10 +483,10 @@ pub fn build_overworld_ore_specs(table: &OreBlockTable) -> Vec<OreSpec> {
             state: sd(table.diamond_ore, table.deepslate_diamond_ore),
             cluster_count: 4,
             cluster_size: 7,
-            min_height: -64, // 继承 square
+            min_height: -64, // inherited from square
             max_height: 16,
             concentration: Triangle,
-            skip_air: 0.5, // 继承 square
+            skip_air: 0.5, // inherited from square
             is_rare: false,
             replace_target: StoneAndDeepslate,
         },
@@ -516,9 +495,9 @@ pub fn build_overworld_ore_specs(table: &OreBlockTable) -> Vec<OreSpec> {
             state: sd(table.diamond_ore, table.deepslate_diamond_ore),
             cluster_count: 9,
             cluster_size: 12,
-            min_height: -64,         // 继承
-            max_height: 16,          // 继承
-            concentration: Triangle, // 继承
+            min_height: -64,         // inherited
+            max_height: 16,          // inherited
+            concentration: Triangle, // inherited
             skip_air: 0.7,
             is_rare: true,
             replace_target: StoneAndDeepslate,
@@ -528,9 +507,9 @@ pub fn build_overworld_ore_specs(table: &OreBlockTable) -> Vec<OreSpec> {
             state: sd(table.diamond_ore, table.deepslate_diamond_ore),
             cluster_count: 8,
             cluster_size: 4,
-            min_height: -64,         // 继承
-            max_height: 16,          // 继承
-            concentration: Triangle, // 继承
+            min_height: -64,         // inherited
+            max_height: 16,          // inherited
+            concentration: Triangle, // inherited
             skip_air: 1.0,
             is_rare: false,
             replace_target: StoneAndDeepslate,
@@ -552,11 +531,11 @@ pub fn build_overworld_ore_specs(table: &OreBlockTable) -> Vec<OreSpec> {
             name: "minecraft:overworld_underground_lapis_ore_feature",
             state: sd(table.lapis_ore, table.deepslate_lapis_ore),
             cluster_count: 2,
-            cluster_size: 7, // 继承 buried
+            cluster_size: 7, // inherited from buried
             min_height: -32,
             max_height: 32,
             concentration: Triangle,
-            skip_air: 1.0, // 继承 buried
+            skip_air: 1.0, // inherited from buried
             is_rare: false,
             replace_target: StoneAndDeepslate,
         },
@@ -642,7 +621,7 @@ pub fn build_overworld_ore_specs(table: &OreBlockTable) -> Vec<OreSpec> {
         OreSpec {
             name: "minecraft:overworld_underground_diorite_upper_feature",
             state: single(table.diorite),
-            cluster_count: 6, // 继承 granite_upper
+            cluster_count: 6, // inherited from granite_upper
             cluster_size: 64,
             min_height: 64,
             max_height: 128,
@@ -655,7 +634,7 @@ pub fn build_overworld_ore_specs(table: &OreBlockTable) -> Vec<OreSpec> {
         OreSpec {
             name: "minecraft:overworld_underground_diorite_lower_feature",
             state: single(table.diorite),
-            cluster_count: 2, // 继承 granite_lower
+            cluster_count: 2, // inherited from granite_lower
             cluster_size: 64,
             min_height: 0,
             max_height: 60,
@@ -668,7 +647,7 @@ pub fn build_overworld_ore_specs(table: &OreBlockTable) -> Vec<OreSpec> {
         OreSpec {
             name: "minecraft:overworld_underground_andesite_upper_feature",
             state: single(table.andesite),
-            cluster_count: 6, // 继承 granite_upper
+            cluster_count: 6, // inherited from granite_upper
             cluster_size: 64,
             min_height: 64,
             max_height: 128,
@@ -681,7 +660,7 @@ pub fn build_overworld_ore_specs(table: &OreBlockTable) -> Vec<OreSpec> {
         OreSpec {
             name: "minecraft:overworld_underground_andesite_lower_feature",
             state: single(table.andesite),
-            cluster_count: 2, // 继承 granite_lower
+            cluster_count: 2, // inherited from granite_lower
             cluster_size: 64,
             min_height: 0,
             max_height: 60,
@@ -710,10 +689,9 @@ pub fn build_overworld_ore_specs(table: &OreBlockTable) -> Vec<OreSpec> {
 // Emerald surface ore (CountGenerateFeature subclass).
 // ---------------------------------------------------------------------------
 
-/// Emerald ore on surface stone (not underground clusters).
+/// 在地表石头生成绿宝石矿的生成特征。
 ///
-/// Emerald ore on surface stone (not underground clusters).
-/// count ranges [-2000, 15]; negative counts skip the loop.
+/// Generation feature placing emerald ore in surface stone.
 pub struct EmeraldOreSurfaceFeature {
     table: OreBlockTable,
 }

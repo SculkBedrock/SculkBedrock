@@ -1,46 +1,6 @@
-//! Port of the `feature/tree/` series (22 tree features).
+//! 树木特征：按生物群系混合放置各类树木、灌木与蜂巢。
 //!
-//! | Rust item | Upstream source |
-//! |---|---|
-//! | [`BambooJungleTreeFeature`] | `tree/BambooJungleTreeFeature.java` |
-//! | [`BirchForestMutatedTreeFeature`] | `tree/BirchForestMutatedTreeFeature.java` |
-//! | [`BirchForestTreeFeature`] | `tree/BirchForestTreeFeature.java` |
-//! | [`CherryTreeFeature`] | `tree/CherryTreeFeature.java` |
-//! | [`FlowerForestTreeFeature`] | `tree/FlowerForestTreeFeature.java` |
-//! | [`ForestTreeFeature`] | `tree/ForestTreeFeature.java` |
-//! | [`GroveTreeFeature`] | `tree/GroveTreeFeature.java` |
-//! | [`IceSurfaceTreeFeature`] | `tree/IceSurfaceTreeFeature.java` |
-//! | [`JungleBushFeature`] | `tree/JungleBushFeature.java` |
-//! | [`JungleEdgeTreeFeature`] | `tree/JungleEdgeTreeFeature.java` |
-//! | [`JungleTreeFeature`] | `tree/JungleTreeFeature.java` |
-//! | [`MangroveTreeFeature`] | `tree/MangroveTreeFeature.java` |
-//! | [`MeadowTreeFeature`] | `tree/MeadowTreeFeature.java` |
-//! | [`MegaTaigaTreeFeature`] | `tree/MegaTaigaTreeFeature.java` |
-//! | [`MesaTreeFeature`] | `tree/MesaTreeFeature.java` |
-//! | [`PaleGardenTreeFeature`] | `tree/PaleGardenTreeFeature.java` |
-//! | [`PlainsTreeFeature`] | `tree/PlainsTreeFeature.java` |
-//! | [`RoofedForestTreeFeature`] | `tree/RoofedForestTreeFeature.java` |
-//! | [`SavannaMutatedTreeFeature`] | `tree/SavannaMutatedTreeFeature.java` |
-//! | [`SavannaTreeFeature`] | `tree/SavannaTreeFeature.java` |
-//! | [`SwampTreeFeature`] | `tree/SwampTreeFeature.java` |
-//! | [`TaigaTreeFeature`] | `tree/TaigaTreeFeature.java` |
-//!
-//! Not ported (blocked on later stages): `MushroomIslandMushroomFeature`,
-//! `MesaPlateauStoneTreeFeature`.
-//!
-//! Inheritance (`FlowerForestTreeFeature extends ForestTreeFeature`,
-//! `MeadowTreeFeature extends PlainsTreeFeature`,
-//! `SavannaMutatedTreeFeature extends SavannaTreeFeature`) expands into
-//! standalone implementations (overrides inlined, shared items re-declared).
-//!
-//! Upstream quirks (faithfully kept):
-//! - `FlowerForestTreeFeature.getMin()=8 > getMax()=6`:
-//!   the range helper's `nextInt() % -1` is always 0, so amount is fixed at 8;
-//! - `PlainsTreeFeature.getGenerator` returns null 19/20, aborting apply
-//!(see [`crate::worldgen::feature::legacy_tree::LegacyTreeGeneratorFeature`]);
-//! - `TaigaTreeFeature`/`GroveTreeFeature` snow post-processing reads after
-//!   the tree lands in the chunk (immediate commit here equals the
-//!   upstream root buffer).
+//! Tree features: placing trees, bushes, and beehives mixed by biome.
 
 use std::sync::Arc;
 
@@ -71,7 +31,9 @@ fn fallen_roll(random: &mut Xoroshiro128) -> bool {
 // ObjectGeneratorFeature family.
 // ---------------------------------------------------------------------------
 
-/// Java: `BambooJungleTreeFeature`(bamboo tag;JungleBigTree(10, 20)).
+/// 生成竹林树木的生成特征：数量 10–20，使用丛林大树生成器。
+///
+/// Generation feature for bamboo-jungle trees, placing 10-20 jungle big trees.
 pub struct BambooJungleTreeFeature {
     table: Arc<TreeBlockTable>,
 }
@@ -114,7 +76,9 @@ impl ObjectGeneratorFeature for BambooJungleTreeFeature {
     }
 }
 
-/// Java: `CherryTreeFeature`(cherry_grove tag;min 2 max 4).
+/// 生成樱花树的生成特征：数量 2–4。
+///
+/// Generation feature for cherry trees, placing 2-4 per attempt.
 pub struct CherryTreeFeature {
     table: Arc<TreeBlockTable>,
 }
@@ -152,7 +116,9 @@ impl ObjectGeneratorFeature for CherryTreeFeature {
     }
 }
 
-/// Ice-surface trees (no biome filter; min -20 max 1).
+/// 在冰面生成树木的生成特征：数量基数 -20、随机范围 1，不做群系过滤。
+///
+/// Generation feature for ice-surface trees with base count -20 and random range 1, without a biome filter.
 pub struct IceSurfaceTreeFeature {
     table: Arc<TreeBlockTable>,
 }
@@ -187,7 +153,9 @@ impl ObjectGeneratorFeature for IceSurfaceTreeFeature {
     }
 }
 
-/// Jungle bushes (jungle tag; default min/max 5-6).
+/// 生成丛林灌木的生成特征：数量 5–6。
+///
+/// Generation feature for jungle bushes, placing 5-6 per attempt.
 pub struct JungleBushFeature {
     table: Arc<TreeBlockTable>,
 }
@@ -214,7 +182,9 @@ impl ObjectGeneratorFeature for JungleBushFeature {
     }
 }
 
-/// Java: `JungleEdgeTreeFeature`(edge tag;min 1 max 2).
+/// 生成丛林边缘树木的生成特征：数量 1–2。
+///
+/// Generation feature for jungle-edge trees, placing 1-2 per attempt.
 pub struct JungleEdgeTreeFeature {
     table: Arc<TreeBlockTable>,
 }
@@ -261,7 +231,9 @@ impl ObjectGeneratorFeature for JungleEdgeTreeFeature {
     }
 }
 
-/// Java: `MangroveTreeFeature`(mangrove_swamp tag;min 12 max 15).
+/// 生成红树林树木的生成特征：数量 12–15。
+///
+/// Generation feature for mangrove trees, placing 12-15 per attempt.
 pub struct MangroveTreeFeature {
     table: Arc<TreeBlockTable>,
 }
@@ -302,8 +274,9 @@ impl ObjectGeneratorFeature for MangroveTreeFeature {
     }
 }
 
-/// Java: `PaleGardenTreeFeature`(pale_garden tag;min 8 max 10;
-/// 1/4 chance of tryCreakingHeart.
+/// 生成苍白花园树木的生成特征：数量 8–10，并以四分之一概率尝试生成嘎枝之心。
+///
+/// Generation feature for pale-garden trees, placing 8-10 per attempt with a one-in-four chance to try placing a creaking heart.
 pub struct PaleGardenTreeFeature {
     table: Arc<TreeBlockTable>,
 }
@@ -343,7 +316,9 @@ impl ObjectGeneratorFeature for PaleGardenTreeFeature {
     }
 }
 
-/// Java: `RoofedForestTreeFeature`(roofed tag;min 8 max 10;DarkOakTree).
+/// 生成黑森林树木的生成特征：数量 8–10，使用深色橡木。
+///
+/// Generation feature for roofed-forest trees, placing 8-10 dark oaks per attempt.
 pub struct RoofedForestTreeFeature {
     table: Arc<TreeBlockTable>,
 }
@@ -382,8 +357,9 @@ impl ObjectGeneratorFeature for RoofedForestTreeFeature {
     }
 }
 
-/// Java: `SavannaTreeFeature`(savanna tag;min 2 max 4;
-/// 1/3 legacy oak, otherwise SavannaTree.
+/// 生成热带草原树木的生成特征：数量 2–4，约三分之一为原版橡木，其余为金合欢。
+///
+/// Generation feature for savanna trees, placing 2-4 per attempt with roughly one third legacy oaks and the rest acacias.
 pub struct SavannaTreeFeature {
     table: Arc<TreeBlockTable>,
 }
@@ -428,8 +404,9 @@ impl ObjectGeneratorFeature for SavannaTreeFeature {
     }
 }
 
-/// Java: `SavannaMutatedTreeFeature extends SavannaTreeFeature`(savanna tag;
-/// min 2 max 4; 1/3 fallen/legacy oak, otherwise SavannaTree.
+/// 生成变种热带草原树木的生成特征：数量 2–4，约三分之一为倒伏或原版橡木，其余为金合欢。
+///
+/// Generation feature for mutated savanna trees, placing 2-4 per attempt with roughly one third fallen or legacy oaks and the rest acacias.
 pub struct SavannaMutatedTreeFeature {
     table: Arc<TreeBlockTable>,
 }
@@ -478,8 +455,9 @@ impl ObjectGeneratorFeature for SavannaMutatedTreeFeature {
     }
 }
 
-/// Java: `SwampTreeFeature`(swamp tag;min 3 max 5;SwampOakTree(7, 8);
-/// checkBlock overridden as canBeReplaced.
+/// 生成沼泽橡木的生成特征：数量 3–5，树高 7–8，并以可替换方块判定支撑。
+///
+/// Generation feature for swamp oaks, placing 3-5 per attempt with heights 7-8 and a replaceable-block support check.
 pub struct SwampTreeFeature {
     table: Arc<TreeBlockTable>,
 }
@@ -523,8 +501,9 @@ impl ObjectGeneratorFeature for SwampTreeFeature {
 // GriddedFeature family.
 // ---------------------------------------------------------------------------
 
-/// Mutated birch forest (no biome override; fancy tall birch
-/// mixed with fallen trees).
+/// 生成变种桦木森林树木的生成特征：高大桦木与倒伏树木混合。
+///
+/// Generation feature for mutated birch-forest trees, mixing tall birches with fallen trees.
 pub struct BirchForestMutatedTreeFeature {
     table: Arc<TreeBlockTable>,
 }
@@ -574,8 +553,9 @@ impl ObjectGeneratorFeature for BirchForestMutatedTreeFeature {
 
 impl GriddedFeature for BirchForestMutatedTreeFeature {}
 
-/// Java: `GroveTreeFeature`(grove tag;split 4;SmallSpruceTree;
-/// Snow lands on spruce leaves after the tree.
+/// 生成雪林树木的生成特征：四分之一为大型云杉，生成后为云杉叶覆雪。
+///
+/// Generation feature for grove trees, using large spruces for one quarter of placements and adding snow to spruce leaves afterwards.
 pub struct GroveTreeFeature {
     table: Arc<TreeBlockTable>,
 }
@@ -638,7 +618,9 @@ impl GriddedFeature for GroveTreeFeature {
     }
 }
 
-/// Jungle trees (jungle tag; four-way mix).
+/// 生成丛林树木的生成特征：按四种树型混合放置。
+///
+/// Generation feature for jungle trees, mixing four tree shapes.
 pub struct JungleTreeFeature {
     table: Arc<TreeBlockTable>,
 }
@@ -688,8 +670,9 @@ impl ObjectGeneratorFeature for JungleTreeFeature {
 
 impl GriddedFeature for JungleTreeFeature {}
 
-/// Java: `MegaTaigaTreeFeature`(taiga tag;distance 1;
-/// 2/5 BigSpruceTree, otherwise SmallSpruceTree.
+/// 生成巨型针叶林树木的生成特征：五分之二为大型云杉，其余为小型云杉。
+///
+/// Generation feature for mega-taiga trees, using big spruces for two fifths of placements and small spruces otherwise.
 pub struct MegaTaigaTreeFeature {
     table: Arc<TreeBlockTable>,
 }
@@ -729,7 +712,9 @@ impl GriddedFeature for MegaTaigaTreeFeature {
     }
 }
 
-/// Taiga trees (taiga tag; 1% fallen spruce; snow post-processing).
+/// 生成针叶林树木的生成特征：百分之一为倒伏云杉，并在生成后处理积雪。
+///
+/// Generation feature for taiga trees, placing fallen spruces for one percent of attempts and applying snow afterwards.
 pub struct TaigaTreeFeature {
     table: Arc<TreeBlockTable>,
 }
@@ -805,7 +790,9 @@ impl GriddedFeature for TaigaTreeFeature {}
 // LegacyTreeGeneratorFeature family.
 // ---------------------------------------------------------------------------
 
-/// Birch forest (birch tag; min 7 max 8; beehive chance 0.00035).
+/// 生成桦木森林树木的生成特征：数量 7–8，蜂巢概率 0.00035。
+///
+/// Generation feature for birch-forest trees, placing 7-8 per attempt with a beehive chance of 0.00035.
 pub struct BirchForestTreeFeature {
     table: Arc<TreeBlockTable>,
 }
@@ -857,8 +844,9 @@ impl LegacyTreeGeneratorFeature for BirchForestTreeFeature {
     }
 }
 
-/// Java: `FlowerForestTreeFeature extends ForestTreeFeature`
-/// (flower_forest tag; min 8 max 6, quirk-fixed at 8; beehive chance 0.03).
+/// 生成繁花森林树木的生成特征：数量 8，蜂巢概率 0.03。
+///
+/// Generation feature for flower-forest trees, placing 8 per attempt with a beehive chance of 0.03.
 pub struct FlowerForestTreeFeature {
     table: Arc<TreeBlockTable>,
 }
@@ -916,7 +904,9 @@ impl LegacyTreeGeneratorFeature for FlowerForestTreeFeature {
     }
 }
 
-/// Forest trees (forest tag; min 7 max 8; beehive chance 0.00035).
+/// 生成森林树木的生成特征：数量 7–8，蜂巢概率 0.00035。
+///
+/// Generation feature for forest trees, placing 7-8 per attempt with a beehive chance of 0.00035.
 pub struct ForestTreeFeature {
     table: Arc<TreeBlockTable>,
 }
@@ -975,8 +965,9 @@ impl LegacyTreeGeneratorFeature for ForestTreeFeature {
     }
 }
 
-/// Java: `MeadowTreeFeature extends PlainsTreeFeature`
-/// (meadow tag; min 1 max 1; beehive chance 1.0, always).
+/// 生成草甸树木的生成特征：数量 1，必定附带蜂巢。
+///
+/// Generation feature for meadow trees, placing one tree with a guaranteed beehive.
 pub struct MeadowTreeFeature {
     table: Arc<TreeBlockTable>,
 }
@@ -1027,7 +1018,9 @@ impl LegacyTreeGeneratorFeature for MeadowTreeFeature {
     }
 }
 
-/// Mesa trees (mesa tag; default min/max 5-6).
+/// 生成恶地树木的生成特征：数量 5–6。
+///
+/// Generation feature for mesa trees, placing 5-6 per attempt.
 pub struct MesaTreeFeature {
     table: Arc<TreeBlockTable>,
 }
@@ -1061,8 +1054,9 @@ impl LegacyTreeGeneratorFeature for MesaTreeFeature {
     }
 }
 
-/// Plains trees (plains tag; min 1 max 1; beehive chance 0.05;
-/// null 19/20 for the savanna effect).
+/// 生成平原树木的生成特征：数量 1，蜂巢概率 0.05，另有约二十分之十九的概率不生成。
+///
+/// Generation feature for plains trees, placing one tree with a beehive chance of 0.05 and otherwise skipping with probability about nineteen in twenty.
 pub struct PlainsTreeFeature {
     table: Arc<TreeBlockTable>,
 }

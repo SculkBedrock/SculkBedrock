@@ -1,18 +1,17 @@
-//! Compiled `sc:mining` / `sc:drops` snapshots plus runtime pure functions (in `sc_block`).
+//! sc:mining 与战利品表掉落的编译快照及运行期纯函数。
 //!
-//! Split: `sc_packloader::block::component` validates shape/range/normalization/allowlist;
-//! this module validates merged per-state semantics (exclusion, inheritance, existence), compiles dense tables,
-//! and computes runtime pure functions (mine time, drop rolls, deterministic RNG). The JSON parse tree stays off hot paths;
-//! runtime only reads the read-only profile compiled here.
+//! 校验逐状态语义后编译稠密表，运行期提供挖掘时长、掉落掷骰与确定性随机数。
 //!
-//! Namespaces: `sc:mining` / `sc:drops` are the only canonical names; any `ur:*` key is rejected.
+//! Compiled sc:mining and loot-table drop snapshots with runtime pure functions.
+//!
+//! Validates per-state semantics, compiles dense tables, and provides mining time, drop rolls, and deterministic RNG at runtime.
 
 use std::collections::HashMap;
 
 pub mod compile;
 pub mod roll;
 
-pub use compile::{compile_drops, compile_mining};
+pub use compile::{compile_drops_from_loot, compile_mining};
 pub use roll::{
     drop_seed, efficiency_bonus, mining_decision, roll_count, roll_drops, roll_fortune_bonus,
     HandSnapshot, MineDecision, RolledDrop, SplitMix64, ROLL_COUNT, ROLL_ENTRY,
@@ -23,6 +22,8 @@ pub use roll::{
 // Compiled output (densely addressed by `BlockStateId`; same length as `states` in the snapshot).
 // ---------------------------------------------------------------------------
 
+/// 单条工具规则（编译产物）。
+///
 /// Single tool rule (compiled).
 #[derive(Clone, Debug)]
 pub struct ToolRuleCompiled {
@@ -31,28 +32,42 @@ pub struct ToolRuleCompiled {
     pub speed_multiplier: f64,
 }
 
+/// 效率附魔规则（编译产物；加成公式为 `speed += level^2 + 1`，此处只存上限）。
+///
 /// Efficiency rule (compiled; bonus formula is `speed += level^2 + 1`, only the clamp stored here).
 #[derive(Clone, Debug)]
 pub struct EfficiencyCompiled {
     pub max_level: u32,
 }
 
+/// 逐状态挖掘配置（编译产物；`None` 表示无 `sc:mining`，走旧路径）。
+///
 /// Per-state mining config (compiled; `None` means no `sc:mining`, legacy path applies).
 #[derive(Clone, Debug)]
 pub struct MiningCompiled {
+    /// 解析出的基础时间（秒；显式或继承；即原始硬度值，公式中作被除数）。
+    ///
     /// Parsed base time (seconds; explicit or inherited; raw hardness value, branch factor in the formula).
     pub base_seconds: f64,
+    /// 是否继承自 `minecraft:destructible_by_mining`（用于告警跟踪）。
+    ///
     /// Whether inherited from `minecraft:destructible_by_mining` (for warning tracking).
     pub base_from_destructible: bool,
+    /// 未收割惩罚倍率（`harvest=false` 时规则时长为 `base*penalty`；默认 `5.0`）。
+    ///
     /// Harvest penalty multiplier (rule time factor `base*penalty` when `harvest=false`; defaults to `5.0`).
     pub penalty: f64,
     pub default_rule: ToolRuleCompiled,
+    /// 精确物品索引（构建期去重；空手从不查此表）。
+    ///
     /// Exact item index (deduped at build time; empty hand never consults this table).
     pub tools: HashMap<Box<str>, ToolRuleCompiled>,
     pub efficiency: Option<EfficiencyCompiled>,
     pub formula_version: u32,
 }
 
+/// 数量分布（编译产物；累积式，按数组顺序）。
+///
 /// Count distribution (compiled; cumulative, in array order).
 #[derive(Clone, Debug)]
 pub struct CountDistCompiled {
@@ -60,6 +75,8 @@ pub struct CountDistCompiled {
     pub cumulative: Vec<f64>,
 }
 
+/// 单行时运加成（编译产物；按等级升序）。
+///
 /// Single fortune-bonus row (compiled; ascending by level).
 #[derive(Clone, Debug)]
 pub struct FortuneCompiled {
@@ -68,18 +85,26 @@ pub struct FortuneCompiled {
     pub chance: f64,
 }
 
+/// 掉落条目（编译产物）。
+///
 /// Drop entry (compiled).
 #[derive(Clone, Debug)]
 pub struct DropEntryCompiled {
     pub item: Box<str>,
     pub chance: f64,
     pub count: CountDistCompiled,
+    /// 按等级升序；`None` 表示无时运规则。
+    ///
     /// Ascending by level; `None` means no fortune rule.
     pub fortune: Option<Vec<FortuneCompiled>>,
+    /// 手持物品条件（已排序；空表示不限制，任意手持物均可掷）。
+    ///
     /// Held-item condition (sorted; empty means unrestricted, any held item rolls).
     pub requires: Vec<Box<str>>,
 }
 
+/// 掉落模式。
+///
 /// Drop mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DropMode {
@@ -87,12 +112,16 @@ pub enum DropMode {
     OneOf,
 }
 
+/// 逐状态掉落配置（编译产物）。
+///
 /// Per-state drop config (compiled).
 #[derive(Clone, Debug)]
 pub struct DropCompiled {
     pub enabled: bool,
     pub mode: DropMode,
     pub entries: Vec<DropEntryCompiled>,
+    /// 收割门（默认 true；为 true 且未收割时走默认空掉落）。
+    ///
     /// Harvest gate (defaults to true; `true` plus unharvested takes the default empty drop).
     pub require_harvest: bool,
 }
@@ -174,7 +203,8 @@ mod tests {
             mining_decision(&m, &hand(Some("minecraft:iron_pickaxe"), 0)),
             MineDecision::Mine {
                 required_ticks: 18,
-                harvested: true
+                harvested: true,
+                correct_tool: true
             }
         );
         // Iron pickaxe Efficiency III: speed=5+(9+1)=15, 4.5/15=0.3s becomes 6 ticks.
@@ -182,7 +212,8 @@ mod tests {
             mining_decision(&m, &hand(Some("minecraft:iron_pickaxe"), 3)),
             MineDecision::Mine {
                 required_ticks: 6,
-                harvested: true
+                harvested: true,
+                correct_tool: true
             }
         );
         // Efficiency above max clamps to max (level 10 as 5: speed=5+26=31, 4.5/31s becomes 3 ticks).
@@ -190,7 +221,8 @@ mod tests {
             mining_decision(&m, &hand(Some("minecraft:iron_pickaxe"), 10)),
             MineDecision::Mine {
                 required_ticks: 3,
-                harvested: true
+                harvested: true,
+                correct_tool: true
             }
         );
         // Wooden pickaxe (lower tier, unharvested): penalty 3*5/2=7.5s becomes 150 ticks, harvested=false.
@@ -198,7 +230,8 @@ mod tests {
             mining_decision(&m, &hand(Some("minecraft:wooden_pickaxe"), 0)),
             MineDecision::Mine {
                 required_ticks: 150,
-                harvested: false
+                harvested: false,
+                correct_tool: true
             }
         );
         // Efficiency does not apply when unharvested (wooden Efficiency V still 150 ticks).
@@ -206,7 +239,8 @@ mod tests {
             mining_decision(&m, &hand(Some("minecraft:wooden_pickaxe"), 5)),
             MineDecision::Mine {
                 required_ticks: 150,
-                harvested: false
+                harvested: false,
+                correct_tool: true
             }
         );
         // base 0 becomes 1 tick (instant-mine floor).
@@ -221,7 +255,8 @@ mod tests {
             mining_decision(&instant, &HandSnapshot::default()),
             MineDecision::Mine {
                 required_ticks: 1,
-                harvested: true
+                harvested: true,
+                correct_tool: false
             }
         );
     }

@@ -1,3 +1,12 @@
+//! 共享的预序列化数据包批次（登录常量数据包发送路径）。
+//!
+//! [`RawBatchPacket`](crate::packet::raw_batch::RawBatchPacket) 以
+//! `Arc<Vec<u8>>` 保存完整序列化后的数据包（`[u16 id BE][payload]`，即
+//! `MinecraftPackets::write_to_bytes` 的输出格式）。ItemComponent、
+//! CreativeContent、BiomeDefinitionList、AvailableEntityIdentifiers 等数 MB
+//! 的登录常量数据包只构造并序列化一次，按引用计数在玩家之间共享；每次发送
+//! 只做按连接压缩与加密。
+//!
 //! Shared pre-serialized packet batches (login constant-packet send path).
 //!
 //! [`RawBatchPacket`](crate::packet::raw_batch::RawBatchPacket) holds
@@ -26,7 +35,12 @@ impl RawBatchPacket {
         }
     }
 
+    /// 序列化结构化数据包一次（写入登录缓存时调用）。
+    ///
     /// Serialize a structured packet once (called when writing the login cache).
+    ///
+    /// 输出与 [`crate::packet::batch_packet::BatchPacket`] 的单包格式完全一致：
+    /// `[u16 id BE][payload]`。
     ///
     /// Output matches the [`crate::packet::batch_packet::BatchPacket`]
     /// per-packet format exactly: `[u16 id BE][payload]`.
@@ -42,6 +56,8 @@ impl RawBatchPacket {
     }
 }
 
+/// 结构化数据包转序列化字节（`[u16 id BE][payload]`）。
+///
 /// Structured packet to serialized bytes (`[u16 id BE][payload]`).
 pub fn packet_to_bytes<P: MinecraftPacket>(packet: P) -> Result<Vec<u8>, Error> {
     let writer = packet.to_packets().write_to_bytes()?;

@@ -1,5 +1,7 @@
 use std::panic::Location;
 
+/// 错误的构造位置。
+///
 /// Construction site of an error.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ScSite {
@@ -17,6 +19,8 @@ impl std::fmt::Display for ScSite {
     }
 }
 
+/// 捕获调用者位置。给构造函数加 `#[track_caller]`
+///
 /// Capture the caller's site. Mark constructors with `#[track_caller]`
 /// so the reported location is the construction point, not this helper.
 #[track_caller]

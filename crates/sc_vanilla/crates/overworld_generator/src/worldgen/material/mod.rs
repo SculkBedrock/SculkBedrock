@@ -13,8 +13,9 @@ pub mod ore_veinifier;
 use sc_block::block_json::BlockJsonSnapshot;
 use sc_world::chunk::BlockRuntimeId;
 
-/// Static blocks referenced by material rules, injected via constructor
-/// (replaces static default-state references; avoids a global dictionary dependency).
+/// 材料规则引用的静态方块，由构造函数注入。
+///
+/// Static blocks referenced by material rules, injected through the constructor.
 #[derive(Clone, Debug)]
 pub struct MaterialBlocks {
     /// Java `BlockAir.STATE` / `BlockAir.PROPERTIES.getDefaultState()`.

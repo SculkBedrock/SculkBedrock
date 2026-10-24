@@ -1,25 +1,16 @@
-//! `sc_console`: standalone command-line console.
+//! `sc_console`：独立的命令行控制台。
 //!
-//! # Role
+//! 纯终端 UI 层，不依赖任何游戏 crate（不引用 `sc_ecs` / `sc_command` /
+//! `sc_game` / `sc_world` / `sc_network`）。日志进、命令出均经有界
+//! `sync_channel`：信道满时丢弃该项并计数，从不阻塞调用线程。
+//! 命令补全经 [`CompletionProvider`] trait 暴露，宿主可随时热替换实现。
 //!
-//! This crate is a **pure terminal UI layer** and deliberately depends on no game crate
-//! (it references none of `sc_ecs` / `sc_command` / `sc_game` / `sc_world` / `sc_network`).
-//! It does exactly three things:
-//!
-//! 1. Draw a flat minimal console TUI on a dedicated thread (version bar + log stream + completion list + input bar + status line);
-//! 2. Expose command completion through the [`CompletionProvider`] trait (caller hot-swaps the implementation);
-//! 3. Exchange data with the host over **bounded channels**: logs in, commands out, never blocking the game thread.
-//!
-//! # Architecture boundaries
-//!
-//! - **Workers prepare; owners publish**: the console thread only does IO and rendering,
-//!   user input travels to the host as owned `String`s over a bounded `sync_channel`;
-//!   the host drains them on its own tick (owner context) and publishes authoritative command events.
-//!   The console thread never touches game state.
-//! - **Every queue needs limits**: log/input channels, history, log window,
-//!   and completion list are all bounded; overload drops with a visible counter, never blocking or growing unboundedly.
-//! - **Game/terminal boundary**: this crate knows no command semantics; the host pushes completion data
-//!   as snapshots (see [`StaticCompletionProvider`]), decoupled from the registry.
+//! Standalone command-line console: a pure terminal UI layer with no game-crate
+//! dependency (it references none of `sc_ecs` / `sc_command` / `sc_game` /
+//! `sc_world` / `sc_network`). Logs in / commands out travel over bounded
+//! `sync_channel`s: overloaded items are dropped with a counter and the caller
+//! is never blocked. Command completion is exposed through the hot-swappable
+//! [`CompletionProvider`] trait.
 //!
 //! # Quick start
 //!
@@ -64,8 +55,8 @@ pub use driver::{spawn_console, spawn_console_hosted, ConsoleDriver, ConsoleHand
 pub use logger::{install_logger, set_console_max_level, ExtraSink};
 pub use model::{ConsoleHeader, ConsoleStats, LogLevel, LogLine, ServerPhase};
 
-// Quote typewriter (`Typewriter` / `TwFrame`) is defined below: the state machine is independent of terminal IO,
-// easy to drive in unit tests (delete old, type new, shine; the right `」` bracket stays pinned).
+// Quote typewriter (`Typewriter` / `TwFrame`): delete old text, type new text, then shine;
+// the right `」` bracket stays pinned.
 
 /// Milliseconds per typed char (quote reveal speed).
 pub const TYPE_MS_PER_CHAR: u64 = 80;
@@ -74,6 +65,16 @@ pub const DELETE_MS_PER_CHAR: u64 = 40;
 /// Shine duration after typing completes (ms).
 pub const SHINE_MS: u64 = 600;
 
+/// 引言打字机：版本变化时先删除旧文案再逐字键入新文案，最后闪光；右括号固定不动。
+///
+/// ```text
+/// 新版本到达 -> 从右到左删除旧文案（`」` 固定） -> 从左到右键入新文案（`」` 固定）
+///            -> 从左到右闪光 -> 稳态
+/// ```
+///
+/// 调用方每帧以 `(完整文案, 版本, 当前毫秒)` 调用 [`Typewriter::update`]，
+/// 并按返回值重绘。
+///
 /// Quote typewriter: on version change delete the old text before typing the new one, then shine; the right bracket stays pinned.
 ///
 /// ```text
@@ -81,8 +82,8 @@ pub const SHINE_MS: u64 = 600;
 ///            -> shine (left to right) -> steady
 /// ```
 ///
-/// Pure state machine plus explicit clock (caller ticks [`Typewriter::update`] per frame), unit-testable;
-/// the driver only passes `(full text, version, now ms)` and repaints per the return value.
+/// The caller ticks [`Typewriter::update`] each frame with `(full text, version, now ms)`
+/// and repaints per the return value.
 #[derive(Clone, Debug)]
 pub struct Typewriter {
     text: String,
@@ -101,6 +102,8 @@ enum TwPhase {
     Shining,
 }
 
+/// 展示帧：文本、动画是否继续，以及闪光进度（`None` 表示无闪光）。
+///
 /// Display frame: text plus whether animation continues plus shine progress (`None` means no shine).
 #[derive(Clone, Debug)]
 pub struct TwFrame {

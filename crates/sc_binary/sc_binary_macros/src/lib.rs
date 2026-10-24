@@ -1,52 +1,18 @@
-//! This crate provides a set of proc-macros that can be used to derive traits from `sc_binary`.
-//! This crate is not intended to be used directly, and is only used as a dependency for `sc_binary`.
-//! If you are looking for a way to implement the `Reader` and `Writer` traits, please see the documentation for `sc_binary`.
+//! `sc_binary` 的派生宏集合，由 `sc_binary` 依赖，不单独使用。
+//!
+//! Derive macros for `sc_binary`, consumed as a dependency by `sc_binary` and
+//! not intended for direct use.
 use proc_macro::TokenStream;
 use syn::{parse_macro_input, DeriveInput};
 
 mod io;
 mod legacy;
 
-/// **DEPRECATED**.
-/// This is a legacy proc-macro that is used to generate a BufferStream.
-/// It provides an easy way to implement the `Streamable` trait.
-/// > ⚠️ This proc-macro has been deprecated since `0.3.0` in favor of `sc_binary::interfaces::Reader` and `sc_binary::interfaces::Writer` and will be removed in `0.4.0`.
+/// 为类型实现 `Streamable` 的派生宏（已弃用），请改用 `BinaryIo`。
+/// 不支持单元结构体与具名枚举变体。
 ///
-/// This proc-macro automatically implements the `Streamable` trait for the struct or enum it is applied to.
-///
-/// Example:
-/// ```ignore
-/// use sc_binary::BinaryStream;
-///
-/// #[derive(BinaryStream)]
-/// struct Test {
-///    a: u8,
-///    b: u16
-/// }
-///
-/// fn main() {
-///   let test = Test { a: 0, b: 0 };
-///   test.parse().unwrap();
-/// }
-/// ```
-///
-/// Please note that this proc-macro does not support unit structs or named enum variants, meaning a code sample like the following will not work:
-/// ```warn
-/// use sc_binary::BinaryStream;
-///
-/// // Error: Unit structs are not supported.
-/// #[derive(BinaryStream)]
-/// struct Test;
-///
-/// // Error: Invalid variant.
-/// #[derive(BinaryStream)]
-/// enum TestEnum {
-///     B(Test)
-/// }
-/// ```
-/// <p style="background:rgba(255,181,77,0.16);padding:0.75em;border-left: 2px solid orange;">
-///     <strong>Warning:</strong> This module is deprecated and will be removed in <strong>v0.4.0</strong>.
-/// </p>
+/// Derive macro implementing `Streamable` (deprecated); use `BinaryIo` instead.
+/// Unit structs and named enum variants are not supported.
 #[proc_macro_derive(BinaryStream)]
 #[deprecated(
     since = "3.0.0",
@@ -63,8 +29,12 @@ pub fn derive_stream(input: TokenStream) -> TokenStream {
         .into()
 }
 
-/// This proc-macro implements both the `Reader` and `Writer` traits from `sc_binary::interfaces`.
-/// It is important to note that not all attributes can be used on all types, and some attributes are exclusive to certain variants.
+/// 为类型实现 `sc_binary::interfaces::Reader` 与 `Writer` 的派生宏。
+/// 支持具名与无名结构体；字段按声明顺序编解码。部分属性仅适用于特定类型。
+///
+/// Derive macro implementing `sc_binary::interfaces::Reader` and `Writer`.
+/// Named and unnamed structs are supported; fields are encoded and decoded in
+/// declaration order. Some attributes only apply to specific variants.
 ///
 /// ## Structs
 /// `BinaryIo` supports both Named, and Unnamed structs. However, this derive macro does not support unit structs.

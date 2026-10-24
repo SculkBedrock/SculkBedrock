@@ -1,3 +1,8 @@
+//! 终端文本工具：`§` 代码转 ANSI、剥离 ANSI、显示宽度与截断。
+//!
+//! 自包含（不依赖 `sc_log`，保持本 crate 独立）；语义与 `sc_log::color`
+//! 一致：未知或单独的 `§` 序列按原样保留。
+//!
 //! Terminal text utilities: `§` codes to ANSI, ANSI stripping, display width, and truncation.
 //!
 //! Self-contained (no `sc_log` dependency, keeping this crate independent); semantics match
@@ -584,6 +589,8 @@ pub fn truncate_to_width(input: &str, max_width: usize) -> String {
     out
 }
 
+/// 精确 RGB 颜色（前景与背景输出 truecolor）。
+///
 /// Exact RGB colors (truecolor output for foreground and background).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rgb(pub u8, pub u8, pub u8);

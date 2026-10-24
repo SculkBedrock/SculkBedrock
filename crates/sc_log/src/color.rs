@@ -1,15 +1,19 @@
-//! Section-code to ANSI conversion (performance-oriented).
+//! 段落码（section code）到 ANSI 转义的转换，以及构建期生成的 i18n 查表。
 //!
-//! Performance design (fastest first):
-//! 1. **Macro level**: `colorize_literal!` converts at compile time, zero runtime cost
-//!    (see `sc_log_macros`).
-//! 2. **Runtime fast path**: `contains_minecraft_code` scans bytes first; strings without codes
-//!    return borrowed with zero allocation.
-//! 3. **With codes**: single pass with precomputed capacity plus byte-level build, one allocation.
-//! 4. **Streaming output**: `ColorizingWriter` wraps `io::Write` and scans chunk by chunk;
-//!    codeless chunks pass through, so the log pipeline no longer allocates an intermediate
-//!    `String` per line.
-//! 5. **Cached env probe**: `ansi_enabled` probes once via `OnceLock`, then reads no env vars per log.
+//! - `colorize_literal!`（见 `sc_log_macros`）在编译期完成转换；
+//! - `contains_minecraft_code` 判断字符串是否含段落码；
+//! - `minecraft_to_ansi` / `strip_minecraft_codes` 单趟逐字节转换；
+//! - `ColorizingWriter` 包装 `io::Write`，逐块扫描：无码块原样写出，有码块转换；
+//! - `ansi_enabled` 经 `OnceLock` 探测一次环境，之后不再读环境变量。
+//!
+//! Section-code to ANSI conversion plus the build-time generated i18n lookup tables.
+//!
+//! - `colorize_literal!` (see `sc_log_macros`) converts at compile time;
+//! - `contains_minecraft_code` reports whether a string carries section codes;
+//! - `minecraft_to_ansi` / `strip_minecraft_codes` convert in one byte-level pass;
+//! - `ColorizingWriter` wraps `io::Write` and scans chunk by chunk: codeless chunks are
+//!   written as-is, chunks with codes are converted;
+//! - `ansi_enabled` probes the environment once via `OnceLock` and reads no env vars after that.
 
 use std::borrow::Cow;
 use std::io;
@@ -19,10 +23,16 @@ use std::sync::OnceLock;
 // Generated at compile time by sc_log/build.rs from locales/*.yml.
 include!(concat!(env!("OUT_DIR"), "/colored_locales.rs"));
 
-/// i18n lookup: prefers the build-time pre-colored/stripped tables (zero convert, zero alloc);
+/// i18n 查询：优先命中构建期预着色/去码表；未知键回退原始 rust_i18n
+/// （原样保留段落码，由 ColorizingWriter 在下游转换）。
+///
+/// 返回 `Cow<'static, str>`：命中表时为 `Borrowed`，回退分支为 `Owned`，
+/// 因此键无需 `'static` 生命周期。
+///
+/// i18n lookup: prefers the build-time pre-colored/stripped tables;
 /// unknown keys fall back to raw rust_i18n (verbatim codes, converted downstream by ColorizingWriter).
 ///
-/// Keys need no 'static lifetime: the fallback branch allocates Owned (table hits stay allocation-free).
+/// Keys need no 'static lifetime: the fallback branch returns `Cow::Owned` while table hits return `Cow::Borrowed`.
 pub fn translate(locale: &str, key: &str) -> Cow<'static, str> {
     let table = if ansi_enabled() {
         COLORED_LOCALES
@@ -35,7 +45,9 @@ pub fn translate(locale: &str, key: &str) -> Cow<'static, str> {
     Cow::Owned(crate::_rust_i18n_translate(locale, key).into_owned())
 }
 
-/// Linear lookup (tiny tables: tens of keys times a few locales, more cache-friendly than hashing).
+/// 线性查表（构建期生成的表很小：数十个键乘少数语言）。
+///
+/// Linear lookup over the generated tables (tens of keys times a few locales).
 #[inline]
 fn lookup<'a>(table: &'a [(&str, &[(&str, &str)])], locale: &str, key: &str) -> Option<&'a str> {
     for (table_locale, entries) in table {
@@ -54,8 +66,11 @@ fn lookup<'a>(table: &'a [(&str, &[(&str, &str)])], locale: &str, key: &str) -> 
 /// UTF-8 encoding of the section mark (U+00A7).
 const SECTION: [u8; 2] = [0xC2, 0xA7];
 
-/// Scans the byte index of the first section mark from `start`; None when absent.
-/// Finds 0xC2 (UTF-8 lead byte) first, then validates 0xA7, avoiding paired per-byte compares.
+/// 从 `start` 起扫描首个段落标记（U+00A7）的字节下标，不存在时返回 None。
+/// 先匹配 UTF-8 前导字节 0xC2，再校验 0xA7。
+///
+/// Byte index of the first section mark from `start`; None when absent.
+/// Matches the UTF-8 lead byte 0xC2 first, then validates 0xA7.
 #[inline]
 fn find_section(bytes: &[u8], start: usize) -> Option<usize> {
     let mut i = start;
@@ -72,12 +87,16 @@ fn find_section(bytes: &[u8], start: usize) -> Option<usize> {
     None
 }
 
-/// Whether a string contains section codes (fast check for the zero-alloc fast path).
+/// 字符串是否包含段落码。
+///
+/// Whether a string contains section codes.
 #[inline]
 pub fn contains_minecraft_code(input: &str) -> bool {
     find_section(input.as_bytes(), 0).is_some()
 }
 
+/// 段落码转 ANSI 转义（查找前把码字符转小写；与 sc_log_macros 编译期表一致）。
+///
 /// Section code to ANSI escape (code char lowercased; matches the sc_log_macros compile-time table).
 #[inline]
 fn ansi_for_code(code: u8) -> Option<&'static str> {
@@ -108,10 +127,13 @@ fn ansi_for_code(code: u8) -> Option<&'static str> {
     })
 }
 
+/// 把段落码替换为 ANSI 转义。
+///
 /// Replaces section codes with ANSI escapes.
 ///
-/// **Zero allocation without codes** (returns `Cow::Borrowed` as-is); with codes, one capacity
-/// precompute plus one allocation. Lone/unknown codes stay verbatim, either case accepted.
+/// Returns `Cow::Borrowed` when the input has no codes (no allocation); with codes it
+/// precomputes capacity and allocates once. Lone or unknown codes stay verbatim and
+/// either case is accepted.
 pub fn minecraft_to_ansi(input: &str) -> Cow<'_, str> {
     let bytes = input.as_bytes();
     if find_section(bytes, 0).is_none() {
@@ -160,7 +182,9 @@ pub fn minecraft_to_ansi(input: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
-/// Strips all section codes. Zero allocation when absent.
+/// 删除全部段落码；输入不含段落码时直接返回借用的输入。
+///
+/// Strips all section codes; returns the input borrowed when none are present.
 pub fn strip_minecraft_codes(input: &str) -> Cow<'_, str> {
     let bytes = input.as_bytes();
     if find_section(bytes, 0).is_none() {
@@ -183,6 +207,8 @@ pub fn strip_minecraft_codes(input: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
+/// 环境是否适合 ANSI 彩色输出（经 `OnceLock` 缓存一次）。
+///
 /// Whether the environment suits ANSI color output (cached once via `OnceLock`).
 ///
 /// Follows the `NO_COLOR` spec; `TERM=dumb` counts as a colorless terminal.
@@ -200,11 +226,15 @@ pub fn ansi_enabled() -> bool {
 
 static ANSI_SUPPORTED: OnceLock<bool> = OnceLock::new();
 
+/// 便捷入口：按终端能力把码转 ANSI，不支持时剥离。
+///
 /// Convenience entry: converts codes to ANSI per terminal capability, strips when unsupported.
 pub fn colorize(input: &str) -> String {
     colorize_cow(input).into_owned()
 }
 
+/// 剥离 ANSI 转义序列（`\x1b[...m` CSI 及同类；UTF-8 安全）。
+///
 /// Strips ANSI escape sequences (`\x1b[...m` CSI and friends; UTF-8 safe).
 pub fn strip_ansi(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
@@ -229,12 +259,17 @@ pub fn strip_ansi(input: &str) -> String {
     out
 }
 
+/// 日志文件的纯文本：先剥离 ANSI，再剥离段落码。
+///
 /// Plain text for log files: strips ANSI first, then section codes.
 pub fn plain_text(input: &str) -> String {
     strip_minecraft_codes(&strip_ansi(input)).into_owned()
 }
 
-/// Convenience entry (zero-alloc fast-path version).
+/// 便捷入口：按环境返回着色或去码结果；无段落码时返回借用的输入。
+///
+/// Convenience entry: colors or strips according to the environment, returning the input
+/// borrowed when it carries no codes.
 pub fn colorize_cow(input: &str) -> Cow<'_, str> {
     if ansi_enabled() {
         minecraft_to_ansi(input)
@@ -243,6 +278,8 @@ pub fn colorize_cow(input: &str) -> Cow<'_, str> {
     }
 }
 
+/// 输出模式。
+///
 /// Output mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ColorMode {
@@ -252,10 +289,14 @@ pub enum ColorMode {
     Strip,
 }
 
+/// 流式着色写入器：包装任意 `io::Write`，逐块扫描段落码。
+///
+/// 无码块直接原样写出；有码块按 `mode` 转换后再写。
+///
 /// Streaming colorizing writer: wraps any `io::Write`, scanning chunk by chunk for codes.
 ///
-/// Codeless chunks pass through untouched (zero alloc); chunks with codes are converted.
-/// With `write_fmt`, the log pipeline no longer stringifies the whole message first.
+/// Codeless chunks pass through untouched; chunks with codes are converted according to
+/// `mode` before writing.
 pub struct ColorizingWriter<'a, W: io::Write> {
     inner: &'a mut W,
     mode: ColorMode,
@@ -360,6 +401,8 @@ mod tests {
     use super::*;
     use std::io::Write as _;
 
+    /// 每个语言文件必须携带完全相同的键集（无缺失或
+    ///
     /// Every locale file must carry exactly the same key set (no missing or
     /// extra keys per language). Parses the flat `key: "value"` format.
     #[test]
@@ -533,6 +576,8 @@ mod tests {
         assert_eq!(String::from_utf8(out).unwrap(), "a\x1b[96mHi");
     }
 
+    /// 两份内置语言在运行时都能解析（显式语言，无全局
+    ///
     /// Both shipped locales resolve at runtime (explicit locale, no global
     /// mutation): zh-CN keeps the Chinese text, en-US the English text.
     #[test]

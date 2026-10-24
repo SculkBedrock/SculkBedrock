@@ -81,6 +81,8 @@ impl GameRule {
         }
     }
 
+    /// 返回所有已知 GameRule 变体以供迭代。
+    ///
     /// Returns all known GameRule variants for iteration.
     pub fn values() -> &'static [GameRule] {
         &[

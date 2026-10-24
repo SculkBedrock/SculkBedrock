@@ -22,10 +22,9 @@ use sc_error::{ScError, ScSite, capture_site};
 use std::collections::{HashMap, VecDeque};
 use std::fmt::{Display, Formatter};
 
-/// Outbound intent queue (resource on the root world).
+/// 出站意图队列资源，按可靠级别分层并保持容量有界。
 ///
-/// The two tiers keep reliable facts from being squeezed out while the
-/// queue stays bounded.
+/// Outbound intent queue resource layered by reliability tier with bounded capacity.
 #[derive(Resource, Clone, Debug)]
 pub struct NetworkOutbox {
     entries: VecDeque<NetworkIntent>,
@@ -52,7 +51,10 @@ enum CoalesceKey {
     ItemMove(u128, u64),
     ItemStack(u128, u64),
     InventorySlot(u64, u8),
+    HeldItem(u64),
     FurnaceProgress(u64, u8),
+    PlayerSwimming(u64),
+    AirSupply(u64),
 }
 
 impl Default for NetworkOutbox {
@@ -307,7 +309,9 @@ impl NetworkOutbox {
     }
 }
 
-/// Outbox admission rejection cause (terminal receipt of push).
+/// 出站队列拒绝入队的原因，作为入队的终止回执。
+///
+/// Reason an outbox push was rejected, returned as its terminal receipt.
 #[derive(Clone, Debug, Eq, PartialEq, ScError)]
 pub enum OutboxPushError {
     /// Overwriteable state rejected: the queue is full with nothing to evict.
@@ -364,7 +368,9 @@ impl Display for OutboxPushError {
 impl std::error::Error for OutboxPushError {}
 
 
-/// Outbox admission counters (observability).
+/// 出站队列入队计数统计。
+///
+/// Admission counter statistics for the outbox.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct OutboxAdmissionStats {
     pub state_rejected: u64,
@@ -413,11 +419,18 @@ fn coalesce_key(intent: &NetworkIntent) -> Option<CoalesceKey> {
         NetworkIntent::UpdateInventorySlot(payload) => {
             Some(CoalesceKey::InventorySlot(payload.entity_id, payload.slot))
         }
+        NetworkIntent::SyncHeldItem(payload) => Some(CoalesceKey::HeldItem(payload.entity_id)),
         NetworkIntent::SyncFurnaceProgress(payload) => {
             Some(CoalesceKey::FurnaceProgress(
                 payload.entity_id,
                 payload.window_id,
             ))
+        }
+        NetworkIntent::SyncPlayerSwimming(payload) => {
+            Some(CoalesceKey::PlayerSwimming(payload.entity_id))
+        }
+        NetworkIntent::SyncAirSupply(payload) => {
+            Some(CoalesceKey::AirSupply(payload.entity_id))
         }
         _ => None,
     }

@@ -1,3 +1,9 @@
+//! 首次生成的网络阶段。
+//!
+//! 区块达到 `spawn_threshold` 后，只发送 `PLAYER_SPAWN` 是不够的。本阶段还会
+//! 补全玩家状态、出生点、玩家列表与传送出生点的数据包。数据包的构造与发送不依赖
+//! 区块流水线，区块流水线只负责触发本阶段。
+//!
 //! First-spawn network phase.
 //!
 //! Once chunks reach `spawn_threshold`, sending `PLAYER_SPAWN` alone is not enough.
@@ -37,6 +43,11 @@ struct InventorySyncContext {
     selected_item: ItemData,
 }
 
+/// 执行首次生成的网络阶段（玩家状态、列表、出生传送）。
+///
+/// 由区块发送器在阈值区块成功入队之后调用。每个数据包都按顺序走正常的数据包
+/// 编码器与 RakNet 路径；不构造原始数据包字节。
+///
 /// Runs the first-spawn network phase (player state, lists, spawn teleport).
 ///
 /// The function is called from the chunk sender after the threshold chunk has
@@ -231,6 +242,11 @@ pub(crate) async fn send_first_spawn(
     Ok(())
 }
 
+/// 区块阶段发送的装备容器状态。
+///
+/// 在少量区块送达客户端之后发送。它不包含主背包内容；那属于出生阈值前的一次
+/// 完整同步。
+///
 /// Equipment container state sent during the chunk phase.
 ///
 /// Sent after a small number of chunks have reached the client. It
@@ -248,6 +264,8 @@ pub(crate) async fn send_equipment_container_inventory(
     send_armor_cursor_offhand(&ctx).await
 }
 
+/// PLAYER_SPAWN 之前发送的完整玩家背包同步。
+///
 /// Full player inventory sync used immediately before PLAYER_SPAWN.
 pub(crate) async fn send_full_player_inventory(
     world: &World,
@@ -436,6 +454,13 @@ fn build_late_joining_player_list(world: &World, joining_entity: EntityId) -> Pl
 }
 
 fn item_stack_to_item_data(stack: sc_item::ItemStack) -> ItemData {
+    let user_data = if let Some(tag) = stack.tag.as_ref() {
+        Some(crate::protocol::client::transaction::build_compound_user_data(tag, stack.damage))
+    } else if stack.damage > 0 {
+        Some(crate::protocol::client::transaction::build_damage_user_data(stack.damage))
+    } else {
+        None
+    };
     ItemData {
         runtime_id: stack.runtime_id,
         count: stack.count,
@@ -444,7 +469,7 @@ fn item_stack_to_item_data(stack: sc_item::ItemStack) -> ItemData {
         has_net_id: false,
         net_id: 0,
         block_runtime_id: stack.block_runtime_id,
-        user_data: None,
+        user_data,
     }
 }
 
@@ -454,6 +479,12 @@ fn normalize_slots(mut items: Vec<ItemData>, slot_count: usize) -> Vec<ItemData>
     items
 }
 
+/// 由共享的配方快照构造 `CraftingData` 数据包。
+///
+/// 没有注册表或物品表时回退为只裁剪名称的空表。酿造项通过 potion damage id
+/// 加上物品注册表解析；无法解析的条目会被报告为禁用并跳过（不会用猜测的 id
+/// 发送）。
+///
 /// Build the `CraftingData` packet from the shared recipe snapshot.
 ///
 /// Falls back to the trim-only empty table when no registry or item table

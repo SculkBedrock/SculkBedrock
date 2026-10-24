@@ -30,6 +30,8 @@ use sc_utils::world::r#type::WorldType;
 use sc_world::manager::{MinecraftWorldId, MinecraftWorldManager};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// 同一世界中所有 InGame 玩家（排除 `exclude`）。
+///
 /// All InGame players in the same world (excludes `exclude`).
 pub(crate) fn same_world_players(
     world: &World,
@@ -78,6 +80,17 @@ use crate::utils::ConnectionThreadManager;
 
 pub struct SCPlayerHandlerPlugin;
 
+/// 登录期常量数据包缓存（预序列化字节，在玩家之间共享）。
+///
+/// ItemComponent / CreativeContent / BiomeDefinitionList /
+/// AvailableEntityIdentifiers 只依赖启动期数据，对所有玩家都相同：
+/// 首次登录时构造并序列化一次，之后通过
+/// [`PlayerConnection::send_raw_packet`] 以共享 `Arc` 字节复用。
+/// 这样避免每玩家重建（数千条 NBT 记录）以及并发登录时的多份 MB 级拷贝。
+///
+/// 若运行期系统改写了这些数据来源，需要调用
+/// [`LoginPacketCache::clear`]（目前不存在这类路径）。
+///
 /// Login-time constant packet cache (pre-serialized bytes shared across players).
 ///
 /// ItemComponent / CreativeContent / BiomeDefinitionList /
@@ -284,6 +297,7 @@ fn build_creative_content(
             count: 1,
             damage: entry.damage as u32,
             block_runtime_id: def.default_block_runtime_id.unwrap_or(0),
+            tag: None,
         });
         debug_assert_eq!(
             grant_id,
@@ -467,6 +481,8 @@ fn create_player(world: World, mut event_reader: EventReader<CreatePlayer>) {
                         // Fall tracking starts at spawn Y; first-move adoption re-pins it.
                         FallState::new(0.0, false),
                         PlayerInventory::default(),
+                        sc_game::movement::Swimming::default(),
+                        sc_game::oxygen::OxygenClock::default(),
                         // Do not pre-insert `sc_game::ContainerOpen`: presence means
                         // "a window is open", and there is no window at login.
                         // Pre-inserting an empty value would permanently trip the

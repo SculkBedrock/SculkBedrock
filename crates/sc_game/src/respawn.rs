@@ -25,13 +25,14 @@ use sc_entity::motion::{Position, Transform, Velocity};
 use sc_packloader::definitions::attribute::EntityAttributes;
 
 use crate::damage::apply::Dead;
-use crate::hunger::{HUNGER_MAX, SATURATION_MAX};
 use crate::net::{
-    IntentPublisher, MovePlayer, NetworkOutbox, PlayerMoveMode, RespawnPlayer, SyncHealth,
+    IntentPublisher, MovePlayer, NetworkOutbox, PlayerMoveMode, RespawnPlayer, SyncAirSupply,
+    SyncHealth,
 };
 
-/// Authoritative respawn point (block coords). Absent until first ensured;
-/// world spawn is the default, bed/gamerule updates overwrite it later.
+/// 权威重生点，使用方块坐标保存。
+///
+/// Authoritative respawn point stored in block coordinates.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct RespawnPoint {
     pub x: i32,
@@ -39,8 +40,9 @@ pub struct RespawnPoint {
     pub z: i32,
 }
 
-/// Respawn button request from the network domain (already filtered to the
-/// RESPAWN action; the game validates `Dead` before acting).
+/// 网络域提交的重生按钮请求。
+///
+/// Respawn button request submitted by the network domain.
 #[derive(Event, Clone, Debug)]
 pub struct RespawnRequest {
     pub entity: EntityId,
@@ -142,10 +144,27 @@ pub fn execute_respawn(
     };
     // Restore vitals first (fail-closed ordering: no teleport on half state).
     health.current_value = health.max_value;
-    hunger.current_value = HUNGER_MAX;
-    saturation.current_value = RESPAWN_SATURATION.min(SATURATION_MAX);
-    exhaustion.current_value = 0.0;
+    hunger.current_value = hunger.max_value;
+    saturation.current_value = RESPAWN_SATURATION.min(saturation.max_value);
+    exhaustion.current_value = exhaustion.min_value;
     drop((health, hunger, saturation, exhaustion));
+    if let Some(mut air) = attributes.get_mut(EntityAttributes::AIR) {
+        air.current_value = air.max_value;
+        publisher.publish(SyncAirSupply {
+            entity_id: runtime_id,
+            air_supply: air.max_value as i16,
+            max_air: air.max_value as i16,
+            is_breathing: true,
+        });
+    }
+    if let Some(clock) = world.get_component::<crate::oxygen::OxygenClock>(entity) {
+        let mut data = clock.inner.write();
+        data.drowning_ticks = 0;
+        data.is_breathing = true;
+        if let Some(air) = attributes.get(EntityAttributes::AIR) {
+            data.last_synced_air = air.max_value as i16;
+        }
+    }
     world.remove_component::<Dead>(entity);
 
     // Authoritative teleport: Transform write plus movement reset arming.
@@ -305,7 +324,7 @@ mod tests {
                 .get(EntityAttributes::MAX_HUNGER)
                 .expect("hunger")
                 .current_value,
-            HUNGER_MAX
+            20.0
         );
         assert_eq!(
             attributes

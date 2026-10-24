@@ -1,21 +1,63 @@
+//! 区块内存结构：16×16 列的调色板化方块/生物群系存储与位打包布局。
+//!
+//! In-memory chunk structures: paletted block/biome storage for 16x16 columns
+//! and the bit-packed word layout shared by disk and network.
+
 use sc_nbt::NbtValue;
 use std::fmt;
 use std::sync::Arc;
 
+/// 子区块边长（方块数）：每个子区块为 16×16×16。
+///
+/// Subchunk side length in blocks: each subchunk is 16x16x16.
 pub const SUBCHUNK_SIZE: i32 = 16;
+/// 子区块体积：16×16×16 = 4096 个方块槽位。
+///
+/// Subchunk volume: 16x16x16 = 4096 block slots.
 pub const SUBCHUNK_VOLUME: usize = 16 * 16 * 16;
+/// 主世界底部 y（1.18+ 世界高度向下延伸至 -64）。
+///
+/// Overworld bottom y (1.18+ world height extends down to -64).
 pub const OVERWORLD_MIN_Y: i32 = -64;
+/// 主世界顶部 y（含）。
+///
+/// Overworld top y (inclusive).
 pub const OVERWORLD_MAX_Y: i32 = 319;
+/// 下界底部 y。
+///
+/// Nether bottom y.
 pub const NETHER_MIN_Y: i32 = 0;
+/// 下界顶部 y（含）。
+///
+/// Nether top y (inclusive).
 pub const NETHER_MAX_Y: i32 = 127;
+/// 末地底部 y。
+///
+/// End bottom y.
 pub const END_MIN_Y: i32 = 0;
+/// 末地顶部 y（含）。
+///
+/// End top y (inclusive).
 pub const END_MAX_Y: i32 = 255;
 
+/// 原版维度 id：主世界。
+///
+/// Vanilla dimension id: overworld.
 pub const DIMENSION_OVERWORLD: i32 = 0;
+/// 原版维度 id：下界。
+///
+/// Vanilla dimension id: nether.
 pub const DIMENSION_NETHER: i32 = 1;
+/// 原版维度 id：末地。
+///
+/// Vanilla dimension id: end.
 pub const DIMENSION_END: i32 = 2;
 
-/// Vertical block bounds (inclusive) for a vanilla dimension id.
+/// 取原版维度 id 对应的竖直方块边界（闭区间）。
+///
+/// Returns the vertical block bounds (inclusive) for a vanilla dimension id.
+///
+/// - `dimension`: 原版维度 id（未知值回退为主世界边界）
 pub const fn dimension_bounds(dimension: i32) -> (i32, i32) {
     match dimension {
         DIMENSION_NETHER => (NETHER_MIN_Y, NETHER_MAX_Y),
@@ -24,6 +66,9 @@ pub const fn dimension_bounds(dimension: i32) -> (i32, i32) {
     }
 }
 
+/// 区块列坐标（chunk x/z，非世界方块坐标）。
+///
+/// Chunk column coordinates (chunk x/z, not world block coordinates).
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct ChunkPosition {
     pub x: i32,
@@ -31,26 +76,42 @@ pub struct ChunkPosition {
 }
 
 impl ChunkPosition {
+    /// 由 chunk 坐标构造。
+    ///
+    /// Constructs from chunk coordinates.
     pub const fn new(x: i32, z: i32) -> Self {
         Self { x, z }
     }
 
+    /// 由世界方块坐标构造（向负无穷取整，保证 -1 → 区块 -1）。
+    ///
+    /// Constructs from world block coordinates (floor division, so -1 maps
+    /// to chunk -1).
     pub fn from_world(x: i32, z: i32) -> Self {
         Self::new(x.div_euclid(SUBCHUNK_SIZE), z.div_euclid(SUBCHUNK_SIZE))
     }
 }
 
+/// 子区块在列内的序号（可为中心世界段为负）。
+///
+/// Index of a subchunk within a column (negative for below-origin sections).
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct SubChunkIndex {
     pub y: i8,
 }
 
 impl SubChunkIndex {
+    /// 由段序号构造。
+    ///
+    /// Constructs from a section index.
     pub const fn new(y: i8) -> Self {
         Self { y }
     }
 }
 
+/// 子区块内局部坐标（各分量 0..16）。
+///
+/// Local coordinates within a subchunk (each component 0..16).
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct LocalBlockPosition {
     pub x: u8,
@@ -59,20 +120,31 @@ pub struct LocalBlockPosition {
 }
 
 impl LocalBlockPosition {
+    /// 校验并构造局部坐标；任一分量 ≥16 返回 `None`。
+    ///
+    /// Validates and builds local coordinates; returns `None` when any
+    /// component is >= 16.
     pub fn new(x: u8, y: u8, z: u8) -> Option<Self> {
         (x < 16 && y < 16 && z < 16).then_some(Self { x, y, z })
     }
 
+    /// 基岩版调色板存储的索引序：XZY（`(x << 8) | (z << 4) | y`），
+    /// x 优先。LevelDB 持久化格式与网络子区块格式共用该顺序，
+    /// 不要与 Java 版的 YZX 顺序混淆。
+    ///
     /// Bedrock paletted-storage index order: XZY
     /// (`(x << 8) | (z << 4) | y`) — x-major, the order used by both the
-    /// LevelDB persistent format and the network sub-chunk format
-    /// (shared by the LevelDB persistent format and the network sub-chunk format). Do NOT confuse with the
-    /// Java Edition YZX order.
+    /// LevelDB persistent format and the network sub-chunk format.
+    /// Do NOT confuse with the Java Edition YZX order.
     pub const fn linear_index(self) -> usize {
         ((self.x as usize) << 8) | ((self.z as usize) << 4) | self.y as usize
     }
 }
 
+/// 内部方块状态 id。LevelDB 解析把 FNV1a 状态哈希存在这里。
+/// 协议 2168 哈希模式下网络层直接序列化该值；旧版/非哈希包路径
+/// 仍可能经版本包 runtime-id 字典映射它。
+///
 /// Internal block state id. LevelDB parsing stores the FNV1a state hash here.
 /// For protocol 2168 hashed mode, the network layer serializes this value
 /// directly; legacy/non-hashed packet paths may still map it through the
@@ -84,6 +156,13 @@ pub struct BlockRuntimeId(pub u32);
 // Bit-packed storage (u32 word layout shared by disk and network)
 // ---------------------------------------------------------------------------
 
+/// 调色板条目数 → 基岩版位宽（2/3/4/5/6/8/16 档）。
+///
+/// 内存 `Paletted*Storage::words` 的规范位宽；网络层使用相同宽度
+/// （V2 位数组，最小 2 位），因此网络发送可直接照抄打包字。
+/// 持久化（LevelDB）宽度仅在条目 ≤2 时为 1 位；磁盘读写在该唯一
+/// 分歧点上重打包。
+///
 /// Palette entry count to Bedrock bit width (1/2/3/4/5/6/8/16 set).
 ///
 /// Canonical bit width of in-memory `Paletted*Storage::words`; the network layer uses the same
@@ -103,12 +182,16 @@ pub fn palette_bits(palette_len: usize) -> u8 {
     }
 }
 
+/// 每个 u32 字容纳的条目数（3 位→10、5 位→6、6 位→5；高位为填充）。
+///
 /// Entries per u32 word (3 bits to 10, 5 bits to 6, 6 bits to 5; high bits are padding).
 #[inline]
 pub fn values_per_word(bits: u8) -> usize {
     32 / bits as usize
 }
 
+/// 打包 4096 个条目所需的 u32 字数。
+///
 /// u32 words needed to pack 4096 entries.
 #[inline]
 pub fn packed_word_count(bits: u8) -> usize {
@@ -116,7 +199,13 @@ pub fn packed_word_count(bits: u8) -> usize {
     (SUBCHUNK_VOLUME + vpw - 1) / vpw
 }
 
+/// 读取一个位打包条目（LSB 优先，与磁盘/网络字布局一致）。
+///
 /// Read one bit-packed entry (LSB first, matching the disk/network word layout).
+///
+/// 返回 `None` 表示索引越界（超出给定字数）。
+///
+/// Returns `None` when the index is out of bounds for the given words.
 #[inline]
 pub fn read_packed_word(words: &[u32], bits: u8, index: usize) -> Option<u32> {
     let vpw = values_per_word(bits);
@@ -125,7 +214,15 @@ pub fn read_packed_word(words: &[u32], bits: u8, index: usize) -> Option<u32> {
     Some((word >> shift) & ((1u32 << bits) - 1))
 }
 
+/// 写入一个位打包条目（LSB 优先）。
+///
 /// Write one bit-packed entry (LSB first).
+///
+/// # Panics
+///
+/// 索引越界（`index / vpw >= words.len()`）时panic。
+///
+/// Panics when the index is out of bounds for `words`.
 #[inline]
 pub fn write_packed_word(words: &mut [u32], bits: u8, index: usize, value: u32) {
     let vpw = values_per_word(bits);
@@ -135,6 +232,9 @@ pub fn write_packed_word(words: &mut [u32], bits: u8, index: usize, value: u32) 
     *word = (*word & !(mask << shift)) | ((value & mask) << shift);
 }
 
+/// 位宽迁移：把 `from_bits` 的打包字整体转为 `to_bits`（全部 4096 条目）。
+/// 仅在调色板增长跨过宽度档位或磁盘/规范宽度分歧时调用（罕见路径）。
+///
 /// Bit-width migration: `from_bits` packed words to `to_bits` packed words (all 4096 entries).
 /// Only called when palette growth crosses a width step or disk/canonical widths diverge (rare path).
 pub fn repack_packed_words(words: &[u32], from_bits: u8, to_bits: u8) -> Box<[u32]> {
@@ -152,11 +252,20 @@ pub fn repack_packed_words(words: &[u32], from_bits: u8, to_bits: u8) -> Box<[u3
     out.into_boxed_slice()
 }
 
+/// 一个子区块段的调色板化方块存储：单值时零分配，
+/// 多值时调色板 + 位打包索引。
+///
+/// Paletted block storage for one subchunk section: zero-allocation when a
+/// single value fills the section, palette plus bit-packed indices otherwise.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PalettedBlockStorage {
     Single(BlockRuntimeId),
     Paletted {
         palette: Vec<BlockRuntimeId>,
+        /// 位打包的调色板索引：每条目 [`palette_bits(palette.len())`] 位，
+        /// 字内 LSB 优先，每字 `32 / bits` 条。与网络 V2 位数组布局
+        /// 逐字一致，可整块发送。
+        ///
         /// Bit-packed palette indices: [`palette_bits(palette.len())`] bits per entry,
         /// LSB first within a word, `32 / bits` entries per word. Matches the network V2 bit-array layout
         /// word for word, so it can be sent as whole blocks.
@@ -165,11 +274,19 @@ pub enum PalettedBlockStorage {
 }
 
 impl PalettedBlockStorage {
+    /// 构造单值存储（整段同一方块）。
+    ///
+    /// Builds a single-value storage (the whole section is one block).
     pub fn single(value: BlockRuntimeId) -> Self {
         Self::Single(value)
     }
 
+    /// 由显式索引表构造（生成器/测试路径），按规范位宽打包。
+    ///
     /// Build from an explicit index table (generator/test path), packed at the canonical width.
+    ///
+    /// - `palette`: 调色板条目（索引 → 状态 id）
+    /// - `indices`: 4096 个调色板索引（线性索引序）
     pub fn from_indices(palette: Vec<BlockRuntimeId>, indices: &[u16]) -> Self {
         if palette.len() == 1 {
             return Self::Single(palette[0]);
@@ -185,8 +302,15 @@ impl PalettedBlockStorage {
         }
     }
 
+    /// 由磁盘宽度的打包字构造（LevelDB 读路径）：宽度与规范不一致时
+    /// 重打包（唯一分歧：磁盘 1 位 vs 规范 2 位）。
+    ///
     /// Build from on-disk-width packed words (LevelDB read path): repacks when the width
     /// disagrees with canonical (single divergence: disk 1 bit vs canonical 2 bits).
+    ///
+    /// - `palette`: 调色板条目
+    /// - `words`: 磁盘宽度的打包字
+    /// - `bits`: 磁盘位宽
     pub fn from_packed(palette: Vec<BlockRuntimeId>, words: Vec<u32>, bits: u8) -> Self {
         if palette.len() == 1 {
             return Self::Single(palette[0]);
@@ -200,7 +324,10 @@ impl PalettedBlockStorage {
         Self::Paletted { palette, words }
     }
 
-    /// Canonical-width packed words (the network layer can send them word for word).
+    /// 规范宽度的打包字（网络层可逐字发送）；单值存储返回 `None`。
+    ///
+    /// Canonical-width packed words (the network layer can send them word for word);
+    /// returns `None` for single-value storage.
     pub fn packed_words(&self) -> Option<&[u32]> {
         match self {
             Self::Single(_) => None,
@@ -208,6 +335,10 @@ impl PalettedBlockStorage {
         }
     }
 
+    /// 按线性索引读取方块状态；越界返回 `None`。
+    ///
+    /// Reads the block state at a linear index; returns `None` when out of
+    /// bounds.
     pub fn get(&self, index: usize) -> Option<BlockRuntimeId> {
         if index >= SUBCHUNK_VOLUME {
             return None;
@@ -222,10 +353,19 @@ impl PalettedBlockStorage {
         }
     }
 
+    /// 写入一个索引处的方块，返回旧值。
+    /// 惰性升级：`Single` 写入相同值是零成本 no-op；不同值升级为
+    /// `Paletted`（一次 1KB 打包字分配，之后存储内写入不再分配）。
+    /// 调色板增长跨过宽度档位时整体重打包（罕见，4096 次移位掩码操作）。
+    ///
     /// Write the block at one index, returning the old value.
     /// Lazy upgrade: `Single` with an equal value is a zero-cost no-op; a different value upgrades to
     /// `Paletted` (one 1KB packed-word allocation, then no more allocation for writes in the store).
     /// Palette growth across a width step repacks everything (rare, 4096 shift-mask ops).
+    ///
+    /// 索引越界返回 `None`。
+    ///
+    /// Returns `None` when the index is out of bounds.
     pub fn set(&mut self, index: usize, value: BlockRuntimeId) -> Option<BlockRuntimeId> {
         if index >= SUBCHUNK_VOLUME {
             return None;
@@ -275,6 +415,10 @@ impl PalettedBlockStorage {
         }
     }
 
+    /// 在应用一次替换的同时重建饱和调色板。反复编辑后调色板可能
+    /// 残留失效状态；在基岩版子区块状态数上限处压缩，保证持久化
+    /// 永不面对无界调色板或超出存储格式支持的索引宽度。
+    ///
     /// Rebuild a saturated palette while applying one replacement. Palettes
     /// may contain stale states after repeated edits; compact at the Bedrock
     /// subchunk state-count limit so persistence never sees an unbounded
@@ -331,11 +475,17 @@ impl PalettedBlockStorage {
         Some(previous)
     }
 
+    /// 是否为单值存储。
+    ///
+    /// Whether the storage holds a single value.
     pub fn is_single(&self) -> bool {
         matches!(self, Self::Single(_))
     }
 }
 
+/// 一个子区块段的三维生物群系存储：布局与方块存储相同，
+/// 但调色板条目是纯数字生物群系 id。
+///
 /// A 3D biome storage for one subchunk section, mirroring the block storage
 /// layout but with plain numeric biome ids as palette entries.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -343,17 +493,27 @@ pub enum PalettedBiomeStorage {
     Single(u32),
     Paletted {
         palette: Vec<u32>,
+        /// 位打包的调色板索引（布局同 [`PalettedBlockStorage::Paletted`]）。
+        ///
         /// Bit-packed palette indices (same layout as [`PalettedBlockStorage::Paletted`]).
         words: Box<[u32]>,
     },
 }
 
 impl PalettedBiomeStorage {
+    /// 构造单值生物群系存储。
+    ///
+    /// Builds a single-value biome storage.
     pub fn single(value: u32) -> Self {
         Self::Single(value)
     }
 
+    /// 由显式索引表构造（生成器/测试路径）。
+    ///
     /// Build from an explicit index table (generator/test path).
+    ///
+    /// - `palette`: 生物群系 id 调色板
+    /// - `indices`: 4096 个调色板索引（线性索引序）
     pub fn from_indices(palette: Vec<u32>, indices: &[u16]) -> Self {
         if palette.len() == 1 {
             return Self::Single(palette[0]);
@@ -369,7 +529,13 @@ impl PalettedBiomeStorage {
         }
     }
 
+    /// 由磁盘宽度的打包字构造（LevelDB 读路径）：宽度不符时重打包。
+    ///
     /// Build from on-disk-width packed words (LevelDB read path): repacks on width mismatch.
+    ///
+    /// - `palette`: 生物群系 id 调色板
+    /// - `words`: 磁盘宽度的打包字
+    /// - `bits`: 磁盘位宽
     pub fn from_packed(palette: Vec<u32>, words: Vec<u32>, bits: u8) -> Self {
         if palette.len() == 1 {
             return Self::Single(palette[0]);
@@ -383,7 +549,10 @@ impl PalettedBiomeStorage {
         Self::Paletted { palette, words }
     }
 
-    /// Packed words at spec width (the network layer sends them verbatim).
+    /// 规范宽度的打包字（网络层原样发送）；单值存储返回 `None`。
+    ///
+    /// Packed words at spec width (the network layer sends them verbatim);
+    /// returns `None` for single-value storage.
     pub fn packed_words(&self) -> Option<&[u32]> {
         match self {
             Self::Single(_) => None,
@@ -391,6 +560,10 @@ impl PalettedBiomeStorage {
         }
     }
 
+    /// 按线性索引读取生物群系 id；越界返回 `None`。
+    ///
+    /// Reads the biome id at a linear index; returns `None` when out of
+    /// bounds.
     pub fn get(&self, index: usize) -> Option<u32> {
         if index >= SUBCHUNK_VOLUME {
             return None;
@@ -405,7 +578,14 @@ impl PalettedBiomeStorage {
         }
     }
 
+    /// 写入一个索引处的生物群系 id，返回旧值
+    ///（语义同 [`PalettedBlockStorage::set`]）。
+    ///
     /// Write the biome id at one index, returning the old value (same semantics as PalettedBlockStorage::set).
+    ///
+    /// 索引越界返回 `None`。
+    ///
+    /// Returns `None` when the index is out of bounds.
     pub fn set(&mut self, index: usize, value: u32) -> Option<u32> {
         if index >= SUBCHUNK_VOLUME {
             return None;
@@ -449,6 +629,11 @@ impl PalettedBiomeStorage {
     }
 }
 
+/// 一个 16×16×16 子区块段：段序号 + 多层方块存储
+///（layer 0 为方块层，layer 1 为水等第二层）。
+///
+/// One 16x16x16 subchunk section: section index plus multiple block-storage
+/// layers (layer 0 is blocks, layer 1 is the second layer such as water).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SubChunk {
     pub index: SubChunkIndex,
@@ -456,6 +641,9 @@ pub struct SubChunk {
 }
 
 impl SubChunk {
+    /// 构造带单层空气层的子区块（磁盘/生成路径）。
+    ///
+    /// Builds a subchunk with one all-air layer (disk/generation path).
     pub fn empty(index: SubChunkIndex, air: BlockRuntimeId) -> Self {
         Self {
             index,
@@ -463,6 +651,10 @@ impl SubChunk {
         }
     }
 
+    /// 构造无层的空子区块（网络路径：空段只占位，不发送数据）。
+    ///
+    /// Builds a layer-less empty subchunk (network path: an empty section is
+    /// only a placeholder and sends no data).
     pub fn empty_network(index: SubChunkIndex) -> Self {
         Self {
             index,
@@ -470,8 +662,19 @@ impl SubChunk {
         }
     }
 
+    /// 写入指定层的方块，返回旧值。缺失的层按需惰性物化为
+    /// 全空气存储（向缺失层写空气是返回空气的 no-op）。
+    ///
     /// Write the block at the given layer, returning the old value. Missing layers lazily materialize
     /// as all-air storage (writing air to a missing layer is a no-op returning air).
+    ///
+    /// - `layer`: 层号（0 方块 / 1 第二层）
+    /// - `local`: 子区块内局部坐标
+    /// - `value`: 方块状态 id
+    ///
+    /// 层号 ≥2 返回 `None`。
+    ///
+    /// Returns `None` when the layer index is >= 2.
     pub fn set_block(
         &mut self,
         layer: usize,
@@ -492,6 +695,8 @@ impl SubChunk {
         self.layers[layer].set(local.linear_index(), value)
     }
 
+    /// 读取指定层的方块；缺失的层读作空气。
+    ///
     /// Read the block at the given layer. Missing layers read as air.
     pub fn get_block(&self, layer: usize, local: LocalBlockPosition) -> Option<BlockRuntimeId> {
         match self.layers.get(layer) {
@@ -500,8 +705,10 @@ impl SubChunk {
         }
     }
 
+    /// 是否整段皆空气：无层（空段）或每层调色板全为空气条目。
+    /// 网络 `subChunkCount` 以此计数空段。
+    ///
     /// Whether the subchunk is all air: no layers (empty section) or air-only entries in every layer.
-    /// Counts empty sections for the network `subChunkCount`;
     /// Counts empty sections for the network `subChunkCount`.
     pub fn is_all_air(&self, air: BlockRuntimeId) -> bool {
         self.layers.iter().all(|storage| match storage {
@@ -511,6 +718,11 @@ impl SubChunk {
     }
 }
 
+/// 一个 16×16 世界列：段列表、三维生物群系、方块实体 NBT 与
+/// Data3D 高度图原始字节。
+///
+/// One 16x16 world column: section list, 3D biomes, block-entity NBT and the
+/// raw Data3D heightmap bytes.
 #[derive(Clone, Debug)]
 pub struct Chunk {
     pub position: ChunkPosition,
@@ -518,18 +730,30 @@ pub struct Chunk {
     pub min_y: i32,
     pub max_y: i32,
     pub subchunks: Vec<SubChunk>,
+    /// 每个子区块段一条，自底向上。源世界没有三维生物群系数据时为空，
+    /// 网络层随后发送全零回退值。
+    ///
     /// One entry per subchunk section, bottom-up. Empty when the source world
     /// had no 3D biome data; the network layer then sends a zeroed fallback.
     pub biomes: Vec<PalettedBiomeStorage>,
+    /// 方块实体 NBT 复合标签，与磁盘存储完全一致。未知字段一并保留，
+    /// 保证重新序列化不丢数据。
+    ///
     /// Block entity NBT compounds exactly as stored on disk. Unknown fields
     /// are preserved so re-serialization does not lose data.
     pub block_entities: Vec<NbtValue>,
+    /// 已知时保留的基岩版 Data3D 高度图原始 512 字节前缀。字节保持
+    /// 不透明可在无关元数据编辑下保留存储语义。
+    ///
     /// Raw 512-byte Bedrock Data3D heightmap prefix when known. Keeping the
     /// bytes opaque preserves storage semantics across unrelated metadata edits.
     pub data_3d_heightmap: Option<Arc<[u8; 512]>>,
 }
 
 impl Chunk {
+    /// 构造主世界空列（-64..319）。
+    ///
+    /// Builds an empty overworld column (-64..319).
     pub fn empty_overworld(position: ChunkPosition) -> Self {
         Self::empty(
             position,
@@ -539,6 +763,15 @@ impl Chunk {
         )
     }
 
+    /// 按维度/竖直范围构造空列：只放底部占位段加真实方块段，
+    /// 绝不显式填空气（空气是客户端默认值）。
+    ///
+    /// Builds an empty column for a dimension and vertical range: encode only the bottom placeholder plus real block sections,
+    /// never an explicit air fill (air is the client default).
+    ///
+    /// - `position`: 列坐标
+    /// - `dimension`: 维度 id
+    /// - `min_y` / `max_y`: 竖直范围（含）
     pub fn empty(position: ChunkPosition, dimension: i32, min_y: i32, max_y: i32) -> Self {
         let height = max_y
             .checked_sub(min_y)
@@ -573,10 +806,17 @@ impl Chunk {
         }
     }
 
+    /// 段数量。
+    ///
+    /// Number of subchunk sections.
     pub fn subchunk_count(&self) -> usize {
         self.subchunks.len()
     }
 
+    /// 估算该列占用的内存字节数（含子区块、生物群系、方块实体）。
+    ///
+    /// Estimates the memory footprint of the column in bytes, including
+    /// subchunks, biomes and block entities.
     pub fn estimated_memory_bytes(&self) -> usize {
         let mut bytes = std::mem::size_of::<Self>()
             + self.subchunks.capacity() * std::mem::size_of::<SubChunk>()
@@ -603,6 +843,9 @@ impl Chunk {
         bytes
     }
 
+    /// 保守估算写回快照 `Chunk::clone()` 请求的堆字节数。复合 NBT 的
+    /// map 经 Arc 共享，而自持的 NBT 字符串、数组与列表缓冲区会被复制。
+    ///
     /// Conservative estimate of the heap requested by `Chunk::clone()` for a
     /// writeback snapshot. Compound NBT maps are shared through Arc, while
     /// owned NBT strings, arrays and list buffers are duplicated.
@@ -614,10 +857,16 @@ impl Chunk {
             })
     }
 
+    /// 列中最高非空子区块的数组下标（0 起、自底向上；0 即最低世界段）。
+    /// 全空列返回 `None`。
+    ///
     /// Array index of the highest non-empty subchunk in the column (0-based, bottom-up; index 0 is the lowest world section).
     /// Returns `None` for an all-air column.
     ///
-    /// Non-empty matches the network-send semantics: any layer palette holding a non-air entry counts as non-empty.
+    /// 非空判定与网络发送语义一致：任一层调色板含非空气条目即非空
+    /// （见 [`SubChunk::is_all_air`]）。
+    ///
+    /// Non-empty matches the network-send semantics: any layer palette holding a non-air entry counts as non-empty
     /// (`SubChunk::is_all_air`).
     pub fn highest_non_empty_section(&self) -> Option<usize> {
         let air = BlockRuntimeId(crate::block_dictionary::air_runtime_id());
@@ -629,8 +878,15 @@ impl Chunk {
             .map(|(index, _)| index)
     }
 
+    /// 网络 `LevelChunk.subChunkCount` 值：自底至最高非空段的段数
+    ///（含底部空段与最高非空段；全空为 0）。
+    ///
     /// Network `LevelChunk.subChunkCount` value: subchunk count from the bottom to the highest non-empty section
     /// (including bottom empty sections and the highest non-empty one; 0 when all empty).
+    ///
+    /// 载荷携带的段头数恰等于该字段值，段头自底向上排序，各带真实
+    /// 世界段 y；负 y 空段本身就是占位，不再额外前置占位数据。
+    /// 三维生物群系仍发送整个维度高度（24 段），与段数无关。
     ///
     /// Payload holds exactly as many section headers as the field value, headers ordered bottom-up,
     /// each carrying the true world-section y; negative-y empty sections are themselves
@@ -641,7 +897,13 @@ impl Chunk {
             .map_or(0, |index| index + 1)
     }
 
+    /// 世界 y 所在的子区块对应的 `subchunks` 数组下标。
+    ///
     /// Array index into `subchunks` for the subchunk containing world_y.
+    ///
+    /// y 越界返回 `None`。
+    ///
+    /// Returns `None` when the y is out of range.
     pub fn section_of(&self, world_y: i32) -> Option<usize> {
         if world_y < self.min_y || world_y > self.max_y {
             return None;
@@ -649,11 +911,24 @@ impl Chunk {
         Some(((world_y - self.min_y) / SUBCHUNK_SIZE) as usize)
     }
 
+    /// 读取一个方块（layer 0）。y 越界返回 `None`；空子区块读作空气。
+    ///
     /// Read a block (layer 0). Out-of-range y returns None; empty subchunks read as air.
+    ///
+    /// - `local_x` / `local_z`: 列内局部 x/z（0..16）
+    /// - `world_y`: 世界 y
     pub fn block_at(&self, local_x: u8, world_y: i32, local_z: u8) -> Option<BlockRuntimeId> {
         self.block_at_layer(0, local_x, world_y, local_z)
     }
 
+    /// 读取指定层的方块；y 越界返回 `None`，空子区块读作空气。
+    ///
+    /// Reads the block at the given layer; returns `None` when the y is out
+    /// of range, empty subchunks read as air.
+    ///
+    /// - `layer`: 层号（0 方块 / 1 第二层）
+    /// - `local_x` / `local_z`: 列内局部 x/z（0..16）
+    /// - `world_y`: 世界 y
     pub fn block_at_layer(
         &self,
         layer: usize,
@@ -671,7 +946,12 @@ impl Chunk {
         subchunk.get_block(layer, local)
     }
 
+    /// 列内该 (x, z) 最高的非空气方块 y（自顶向下扫描，跳过全空子区块）。
+    ///
     /// Highest non-air block y in the column (scans top-down, skipping fully empty subchunks).
+    ///
+    /// - `local_x` / `local_z`: 列内局部 x/z（0..16）
+    /// - `air`: 空气的状态 id
     pub fn highest_block_at(&self, local_x: u8, local_z: u8, air: BlockRuntimeId) -> Option<i32> {
         for (section, subchunk) in self.subchunks.iter().enumerate().rev() {
             if subchunk.layers.is_empty() {
@@ -689,7 +969,14 @@ impl Chunk {
         None
     }
 
+    /// 写入一个方块，返回旧值。y/坐标越界返回 `None`。
+    ///
     /// Write a block, returning the old value. Out-of-range y/coords return None.
+    ///
+    /// - `layer`: 层号（0 方块 / 1 第二层）
+    /// - `local_x` / `local_z`: 列内局部 x/z（0..16）
+    /// - `world_y`: 世界 y
+    /// - `value`: 方块状态 id
     pub fn set_block_at(
         &mut self,
         layer: usize,
@@ -710,6 +997,9 @@ impl Chunk {
 }
 
 impl fmt::Display for ChunkPosition {
+    /// 格式化为 `(x, z)`。
+    ///
+    /// Formats as `(x, z)`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "({}, {})", self.x, self.z)
     }

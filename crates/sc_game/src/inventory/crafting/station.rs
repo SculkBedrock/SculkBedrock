@@ -14,14 +14,13 @@ use crate::net::{NetworkOutbox, OpenCraftingStation};
 
 // ===================== block-entity processors =====================
 
-/// Owner-local duration-process state (furnace / blast / smoker / campfire /
-/// brewing / smithing). Bounded, ticked by the owning region; async workers
-/// never write this directly.
+/// 区域本地维护的时长型加工状态（熔炉、高炉、烟熏炉、营火、酿造台与锻造台）。
 ///
-/// Generic over slot count: `slots`/`roles` mirror the block's
-/// `sc:workstation` decl slots one-to-one (furnace 3, campfire 4+ with
-/// `Extra`). Dual clocks are mandatory (burn runs on its own, cook only
-/// advances while smeltable; one `progress_ticks` cannot express a furnace).
+/// 按槽位数量泛型化，槽位与角色和方块的 sc:workstation 声明一一对应。
+///
+/// Region-local duration-based processing state for furnaces, blast furnaces, smokers, campfires, brewing stands, and smithing tables.
+///
+/// Generic over slot count; slots and roles correspond one-to-one with the block's sc:workstation declaration.
 #[derive(Component, Clone, Debug)]
 pub struct BlockProcessState {
     inner: Arc<RwLock<ProcessData>>,
@@ -41,8 +40,9 @@ struct ProcessData {
     generation: u64,
 }
 
-/// Full-slot snapshot for persistence without holding the guard across IO
-/// (storage wiring is a later slice; this only defines the interface).
+/// 用于持久化的全槽位快照。
+///
+/// Full-slot snapshot used for persistence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessSnapshot {
     pub generation: u64,
@@ -91,17 +91,12 @@ impl BlockProcessState {
     pub fn cook_total(&self) -> u16 {
         self.inner.read().cook_total
     }
-    /// Lit-time progress for `ContainerSetData` property 1
-    /// (`ceil(burn/max * cook_total)`, burn-duration scaling). Duration is
-    /// owned (decl-fed), so no parameter unlike the store-side version.
+    /// Lit-time progress for `ContainerSetData` property 1 (`FURNACE_LIT_TIME`).
+    /// In Bedrock protocol, property 1 is the remaining fuel burn ticks, and
+    /// property 2 is the total fuel burn duration (`FURNACE_LIT_DURATION`).
+    /// The client renders flame height from the ratio (lit_ticks / lit_duration).
     pub fn lit_progress(&self) -> u16 {
-        let data = self.inner.read();
-        if data.burn_max == 0 || data.burn_remaining == 0 {
-            return 0;
-        }
-        let ready = data.cook_total as u32;
-        ((data.burn_remaining as u64 * ready as u64 + data.burn_max as u64 - 1)
-            / data.burn_max as u64) as u16
+        self.inner.read().burn_remaining.min(u16::MAX as u32) as u16
     }
     /// Slots in furnace window order `[input, fuel, result]` (missing roles
     /// read as empty; decls always carry all three for fuel processes, so a
@@ -209,6 +204,10 @@ impl BlockProcessState {
         }
         if data.burn_remaining > 0 {
             data.burn_remaining = data.burn_remaining.saturating_sub(1);
+            if data.burn_remaining == 0 {
+                data.burn_max = 0;
+                data.cook_progress = 0;
+            }
             if can_smelt {
                 if let Some(out) = output {
                     data.cook_progress = data.cook_progress.saturating_add(1);
@@ -280,10 +279,9 @@ impl BlockProcessState {
 }
 
 
-/// Player container window id allocator.
+/// 玩家容器窗口 ID 分配器：从 1 开始递增，按 100 取模并跳过 0。
 ///
-/// First window is 1, then increments with `% 100` wraparound skipping 0.
-/// The inventory window (0) never allocates here.
+/// Player container window ID allocator: starts at 1 and increments modulo 100 while skipping 0.
 #[derive(Component, Debug, Default)]
 pub struct ContainerWindowAllocator {
     pub(super) next: parking_lot::Mutex<u8>,
@@ -320,17 +318,21 @@ pub fn open_crafting_station(
         return false;
     };
     let pos = (position.x, position.y, position.z);
-    let Some(decl) = workstation_decl_at(world, &world_id, pos) else {
+    let (station, container_type) = if let Some(table) = crafting_table_decl_at(world, &world_id, pos) {
+        let station = StationKind::from_tag(&table.station);
+        if station == StationKind::Unknown {
+            return false;
+        }
+        (station, table.container_type)
+    } else if let Some(furnace) = furnace_decl_at(world, &world_id, pos) {
+        let station = StationKind::from_tag(&furnace.kind);
+        if station == StationKind::Unknown {
+            return false;
+        }
+        (station, furnace.container_type)
+    } else {
         return false;
     };
-    let station = StationKind::from_tag(&decl.station);
-    let container_type = decl.container;
-    // Only windowed workstations open (brewing/smithing/campfire decls
-    // address but never open); unknown tags fail closed (load validation
-    // rejects such packs, this is the defense in depth).
-    if station == StationKind::Unknown || !decl.window {
-        return false;
-    }
     // Requires the OPEN_CONTAINERS ability.
     if !world
         .get_component::<sc_entity::player::adventure_settings::AdventureSettings>(&entity)
@@ -392,18 +394,18 @@ pub fn open_crafting_station(
         "[craft] workstation opened {station:?} (block {pos:?}, window {window_id}, feet {feet:?}, dist2={distance:.1})"
     );
     let mut faults = world.get_resource_mut::<crate::net::PendingConnectionFaults>();
-    crate::net::IntentPublisher::new(outbox)
+    let mut publisher = crate::net::IntentPublisher::new(outbox)
         .with_world(world)
-        .maybe_with_faults(faults.as_deref_mut())
-        .publish(OpenCraftingStation {
-            entity_id: actor.0,
-            station,
-            window_id,
-            container_type,
-            x: position.x,
-            y: position.y,
-            z: position.z,
-        });
+        .maybe_with_faults(faults.as_deref_mut());
+    publisher.publish(OpenCraftingStation {
+        entity_id: actor.0,
+        station,
+        window_id,
+        container_type,
+        x: position.x,
+        y: position.y,
+        z: position.z,
+    });
     if crate::furnace::is_furnace_station(station) {
         // Identity ensure (creation-only here; reads below go through the
         // component). A refused ensure opens with empty slots, exactly like
@@ -414,19 +416,32 @@ pub fn open_crafting_station(
             pos,
             crate::block_entity::BlockEntityKind::Furnace(station),
         );
-        let slots = crate::block_entity::process_state_at(world, world_id.as_ref(), pos)
-            .map(|process| process.furnace_slots())
-            .unwrap_or_default();
-        crate::net::IntentPublisher::new(outbox)
-            .with_world(world)
-            .publish(crate::net::SyncFurnaceWindow {
-                entity_id: actor.0,
-                window_id,
-                station,
-                input: slots[0].clone(),
-                fuel: slots[1].clone(),
-                result: slots[2].clone(),
-            });
+        let (slots, cook, lit, lit_max) =
+            if let Some(process) = crate::block_entity::process_state_at(world, world_id.as_ref(), pos) {
+                (
+                    process.furnace_slots(),
+                    process.cook_progress(),
+                    process.lit_progress(),
+                    process.burn_max().min(u16::MAX as u32) as u16,
+                )
+            } else {
+                (Default::default(), 0, 0, 0)
+            };
+        publisher.publish(crate::net::SyncFurnaceWindow {
+            entity_id: actor.0,
+            window_id,
+            station,
+            input: slots[0].clone(),
+            fuel: slots[1].clone(),
+            result: slots[2].clone(),
+        });
+        publisher.publish(crate::net::SyncFurnaceProgress {
+            entity_id: actor.0,
+            window_id,
+            cook_ticks: cook,
+            lit_ticks: lit,
+            lit_duration: lit_max,
+        });
     }
     true
 }
@@ -436,19 +451,28 @@ pub(crate) fn station_block_kind(
     world_id: &sc_world::manager::MinecraftWorldId,
     pos: (i32, i32, i32),
 ) -> Option<StationKind> {
-    let decl = workstation_decl_at(world, world_id, pos)?;
-    let station = StationKind::from_tag(&decl.station);
-    (station != StationKind::Unknown).then_some(station)
+    if let Some(table) = crafting_table_decl_at(world, world_id, pos) {
+        let station = StationKind::from_tag(&table.station);
+        if station != StationKind::Unknown {
+            return Some(station);
+        }
+    }
+    if let Some(furnace) = furnace_decl_at(world, world_id, pos) {
+        let station = StationKind::from_tag(&furnace.kind);
+        if station != StationKind::Unknown {
+            return Some(station);
+        }
+    }
+    None
 }
 
-/// Workstation declaration for the block at a position (`None` when the
-/// chunk is unloaded, the cell is empty, or the block serves no station).
-/// Single chunk-read behind `station_block_kind` and container resolution.
-pub(crate) fn workstation_decl_at(
+/// Crafting table declaration for the block at a position (`None` when the
+/// chunk is unloaded, the cell is empty, or the block is not a crafting table).
+pub(crate) fn crafting_table_decl_at(
     world: &sc_ecs::world::World,
     world_id: &sc_world::manager::MinecraftWorldId,
     pos: (i32, i32, i32),
-) -> Option<sc_block::workstation::WorkstationDecl> {
+) -> Option<sc_block::workstation::CraftingTableDecl> {
     use sc_block::position::BlockPosition;
     use sc_world::storage::ChunkKey;
     let manager = world.get_resource::<sc_world::manager::MinecraftWorldManager>()?;
@@ -466,7 +490,79 @@ pub(crate) fn workstation_decl_at(
         .get_resource::<sc_block::block_json::BlockJsonRegistry>()
         .and_then(|registry| registry.get())?;
     let dense = registry.by_runtime_id(state)?;
-    snapshot.workstation_of(dense.0).cloned()
+    snapshot.crafting_table_of(dense.0).cloned()
+}
+
+/// Furnace declaration for the block at a position (`None` when the
+/// chunk is unloaded, the cell is empty, or the block is not a furnace).
+pub(crate) fn furnace_decl_at(
+    world: &sc_ecs::world::World,
+    world_id: &sc_world::manager::MinecraftWorldId,
+    pos: (i32, i32, i32),
+) -> Option<sc_block::workstation::FurnaceDecl> {
+    use sc_block::position::BlockPosition;
+    use sc_world::storage::ChunkKey;
+    let manager = world.get_resource::<sc_world::manager::MinecraftWorldManager>()?;
+    let minecraft_world = manager.get_world(world_id)?;
+    let target = BlockPosition::new(pos.0, pos.1, pos.2);
+    let key = ChunkKey::new(
+        minecraft_world.world_data.get_dimension(),
+        target.chunk_position(),
+    );
+    let column = minecraft_world.chunk_provider.cached_chunk(key)?;
+    let chunk = column.read();
+    let state = chunk.block_at(target.local_x(), target.y, target.local_z())?;
+    let registry = world.get_resource::<sc_block::registry::BlockStateRegistry>()?;
+    let snapshot = world
+        .get_resource::<sc_block::block_json::BlockJsonRegistry>()
+        .and_then(|registry| registry.get())?;
+    let dense = registry.by_runtime_id(state)?;
+    snapshot.furnace_of(dense.0).cloned()
+}
+
+/// Chest declaration for the block at a position (`None` when the
+/// chunk is unloaded, the cell is empty, or the block is not a chest).
+pub(crate) fn chest_decl_at(
+    world: &sc_ecs::world::World,
+    world_id: &sc_world::manager::MinecraftWorldId,
+    pos: (i32, i32, i32),
+) -> Option<sc_block::workstation::ChestDecl> {
+    use sc_block::position::BlockPosition;
+    use sc_world::storage::ChunkKey;
+    let manager = world.get_resource::<sc_world::manager::MinecraftWorldManager>()?;
+    let minecraft_world = manager.get_world(world_id)?;
+    let target = BlockPosition::new(pos.0, pos.1, pos.2);
+    let key = ChunkKey::new(
+        minecraft_world.world_data.get_dimension(),
+        target.chunk_position(),
+    );
+    let column = minecraft_world.chunk_provider.cached_chunk(key)?;
+    let chunk = column.read();
+    let state = chunk.block_at(target.local_x(), target.y, target.local_z())?;
+    let registry = world.get_resource::<sc_block::registry::BlockStateRegistry>()?;
+    let snapshot = world
+        .get_resource::<sc_block::block_json::BlockJsonRegistry>()
+        .and_then(|registry| registry.get())?;
+    let dense = registry.by_runtime_id(state)?;
+    snapshot.chest_of(dense.0).cloned()
+}
+
+/// Bedrock container type for the block at a position (`None` when unresolvable).
+pub(crate) fn container_type_at(
+    world: &sc_ecs::world::World,
+    world_id: &sc_world::manager::MinecraftWorldId,
+    pos: (i32, i32, i32),
+) -> Option<i8> {
+    if let Some(table) = crafting_table_decl_at(world, world_id, pos) {
+        return Some(table.container_type);
+    }
+    if let Some(furnace) = furnace_decl_at(world, world_id, pos) {
+        return Some(furnace.container_type);
+    }
+    if let Some(chest) = chest_decl_at(world, world_id, pos) {
+        return Some(chest.container_type);
+    }
+    None
 }
 
 /// Find a usable recipe workstation near the player.

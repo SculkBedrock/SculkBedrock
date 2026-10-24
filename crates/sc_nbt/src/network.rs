@@ -1,3 +1,8 @@
+//! Bedrock 网络 NBT（`BedrockNetworkNbt`）：varint 长度字符串、zigzag varint / LE 数值。
+//! 用于网络包内嵌的 NBT（方块实体、物品等）。
+//!
+//! 另含 `JavaNetworkNbt`（BE 字符串 + BE 数值）与网络/本地之间的转换辅助函数。
+//!
 //! Bedrock network NBT (`BedrockNetworkNbt`): varint-length strings,
 //! zigzag varint / LE numbers. Used for NBT embedded in network packets (block entities, items, etc.).
 //!
@@ -72,6 +77,8 @@ fn tag_min_payload_bytes(type_id: u8) -> usize {
     }
 }
 
+/// 读取无符号 varint 并 zigzag 解码为 i32。
+///
 /// Read an unsigned varint and zigzag-decode it to i32.
 /// The logical right shift must happen on the unsigned value: shifting after
 /// casting to i32 would be an arithmetic shift and would sign-extend raw values
@@ -82,6 +89,8 @@ fn read_zigzag_var_i32(reader: &mut ByteReader) -> io::Result<i32> {
     Ok(((raw >> 1) as i32) ^ -((raw & 1) as i32))
 }
 
+/// 读取无符号 varint 并 zigzag 解码为 i64（与上面相同的逻辑右移规则）。
+///
 /// Read an unsigned varint and zigzag-decode it to i64 (same logical-shift rule as above).
 #[inline]
 fn read_zigzag_var_i64(reader: &mut ByteReader) -> io::Result<i64> {
@@ -90,6 +99,8 @@ fn read_zigzag_var_i64(reader: &mut ByteReader) -> io::Result<i64> {
 }
 
 impl BedrockNetworkNbt {
+    /// 写字符串：无符号 varint 长度 + UTF-8 字节。
+    ///
     /// Write a string: unsigned varint length + UTF-8 bytes.
     #[inline]
     fn write_string(writer: &mut ByteWriter, string: &str) -> io::Result<()> {
@@ -98,6 +109,8 @@ impl BedrockNetworkNbt {
         Ok(())
     }
 
+    /// 写 ByteArray：zigzag varint 长度 + 原始字节。
+    ///
     /// Write a ByteArray: zigzag varint length + raw bytes.
     #[inline]
     fn write_i8_array(writer: &mut ByteWriter, array: &Vec<i8>) -> io::Result<()> {
@@ -108,6 +121,8 @@ impl BedrockNetworkNbt {
         Ok(())
     }
 
+    /// 写 IntArray：zigzag varint 长度 + 每元素一个 zigzag varint。
+    ///
     /// Write an IntArray: zigzag varint length + one zigzag varint per element.
     #[inline]
     fn write_i32_array(writer: &mut ByteWriter, array: &Vec<i32>) -> io::Result<()> {
@@ -118,6 +133,8 @@ impl BedrockNetworkNbt {
         Ok(())
     }
 
+    /// 写 LongArray：zigzag varint 长度 + 每元素一个 zigzag varlong。
+    ///
     /// Write a LongArray: zigzag varint length + one zigzag varlong per element.
     fn write_i64_array(writer: &mut ByteWriter, array: &Vec<i64>) -> io::Result<()> {
         writer.write_var_i32(array.len() as i32)?;
@@ -127,6 +144,8 @@ impl BedrockNetworkNbt {
         Ok(())
     }
 
+    /// 写 NBT 值载荷（不含标签类型或名称）。
+    ///
     /// Write an NBT value payload (no tag type or name).
     #[inline]
     fn write_any(writer: &mut ByteWriter, value: &NbtValue) -> io::Result<()> {
@@ -159,6 +178,8 @@ impl BedrockNetworkNbt {
         Ok(())
     }
 
+    /// 写 List：元素类型（u8）+ zigzag varint 长度 + 元素载荷。
+    ///
     /// Write a List: element type (u8) + zigzag varint length + element payloads.
     #[inline]
     fn write_list(writer: &mut ByteWriter, vec: &Vec<NbtValue>) -> io::Result<()> {
@@ -188,6 +209,8 @@ impl BedrockNetworkNbt {
         Ok(())
     }
 
+    /// 写 compound 内容（条目 + 结束标记），不含名称。
+    ///
     /// Write compound content (entries + end marker) without the name.
     #[inline]
     fn write_compound_content(writer: &mut ByteWriter, compound: &CompoundNbt) -> io::Result<()> {
@@ -281,6 +304,8 @@ impl BedrockNetworkNbt {
 }
 
 impl NbtWriteTrait for BedrockNetworkNbt {
+    /// 写根标签：标签类型（u8）+ 根名（字符串）+ 载荷。
+    ///
     /// Write the root tag: tag type (u8) + root name (string) + payload.
     fn write(writer: &mut ByteWriter, value: &NbtValue) -> io::Result<()> {
         match value {

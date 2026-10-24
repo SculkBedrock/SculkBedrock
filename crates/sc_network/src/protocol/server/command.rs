@@ -4,41 +4,95 @@ use sc_network_macros::MinecraftPacket;
 use std::io::Error;
 use uuid::Uuid;
 
-/// CommandOutputPacket (0x4f).
+/// CommandOutputPacket (0x4f)：命令执行结果回包。
 ///
-/// Command result reply. The origin triple must match the triggering
-/// CommandRequest so the client links output to that command call.
+/// CommandOutputPacket (0x4f): command execution result reply.
+///
+/// origin 三元组必须与触发它的 CommandRequest 一致，客户端据此把输出
+/// 关联回对应的命令调用。
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct CommandOutput {
-    /// Origin type string id ("player" and similar).
+    /// 来源类型字符串 id（如 "player"）。
+    ///
+    /// Origin type string id (e.g. "player").
     pub origin_type: String,
+    /// 命令发起者 UUID。
+    ///
+    /// UUID of the command issuer.
     pub uuid: Uuid,
+    /// 对应 CommandRequest 的请求 id。
+    ///
+    /// Request id matching the triggering CommandRequest.
     pub request_id: String,
+    /// 玩家 id，固定 64 位小端。
+    ///
     /// Player id, always fixed 64-bit little-endian.
     pub player_id: i64,
+    /// 输出类型，见 [`CommandOutput`] 的 TYPE_* 常量。
+    ///
+    /// Output type, see the TYPE_* constants on [`CommandOutput`].
     pub output_type: u8,
+    /// 成功执行的命令数量。
+    ///
+    /// Number of successfully executed commands.
     pub success_count: u32,
+    /// 输出消息列表。
+    ///
+    /// Output messages.
     pub messages: Vec<CommandOutputMessage>,
-    /// Written only when output_type is TYPE_DATA_SET.
+    /// 仅当 output_type 为 [`CommandOutput::TYPE_DATA_SET`] 时写入。
+    ///
+    /// Written only when output_type is [`CommandOutput::TYPE_DATA_SET`].
     pub data_set: String,
 }
 
+/// CommandOutputMessage：单条命令输出消息。
+///
+/// CommandOutputMessage: a single command output message.
 #[derive(Clone, Debug)]
 pub struct CommandOutputMessage {
+    /// 该条消息是否表示成功。
+    ///
+    /// Whether this message reports success.
     pub success: bool,
+    /// 翻译键或原文；客户端缺少该键时按原文展示。
+    ///
     /// Translation key or raw text; shown raw when the client lacks the key.
     pub message_id: String,
+    /// 消息参数列表（按序填入翻译键占位符）。
+    ///
+    /// Message parameters (fill the translation key placeholders in order).
     pub parameters: Vec<String>,
 }
 
 impl CommandOutput {
+    /// TYPE_LAST_OUTPUT：仅发送最后一条输出。
+    ///
+    /// TYPE_LAST_OUTPUT: send only the last output.
     pub const TYPE_LAST_OUTPUT: u8 = 1;
+    /// TYPE_SILENT：静默，不显示输出。
+    ///
+    /// TYPE_SILENT: silent, no output shown.
     pub const TYPE_SILENT: u8 = 2;
+    /// TYPE_ALL_OUTPUT：发送全部输出。
+    ///
+    /// TYPE_ALL_OUTPUT: send all outputs.
     pub const TYPE_ALL_OUTPUT: u8 = 3;
+    /// TYPE_DATA_SET：携带 dataSet 字符串。
+    ///
+    /// TYPE_DATA_SET: carries a dataSet string.
     pub const TYPE_DATA_SET: u8 = 4;
 }
 
 impl Writer for CommandOutput {
+    /// 写入 CommandOutput 包体。
+    ///
+    /// Writes the CommandOutput packet body.
+    ///
+    /// - `buf`: 输出字节写入器
+    ///
+    /// # Errors
+    /// 写入缓冲区失败时返回 IO 错误。
     fn write(&self, buf: &mut ByteWriter) -> Result<(), Error> {
         // Origin: string type + uuid + string requestId + fixed i64LE playerId.
         buf.write_string(&self.origin_type)?;
@@ -75,6 +129,15 @@ impl Writer for CommandOutput {
 }
 
 impl Reader<CommandOutput> for CommandOutput {
+    /// 解码 CommandOutput 包体。
+    ///
+    /// Decodes a CommandOutput packet body.
+    ///
+    /// - `buf`: 输入字节读取器
+    ///
+    /// # Errors
+    /// 输出类型字符串未知、消息或参数数量超过 4096 上限、缓冲区不足时
+    /// 返回 [`std::io::ErrorKind::InvalidData`] 错误。
     fn read(buf: &mut ByteReader) -> Result<CommandOutput, Error> {
         let origin_type = buf.read_string()?;
         let most = buf.read_u64_le()?;

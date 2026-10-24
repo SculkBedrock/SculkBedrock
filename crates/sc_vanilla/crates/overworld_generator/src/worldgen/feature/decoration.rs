@@ -1,42 +1,6 @@
-//! Port of the `feature/decoration/` series.
+//! 地表装饰特征：圆盘状与列式散布的花、草、蘑菇、仙人掌、睡莲与甘蔗。
 //!
-//! | Rust item | Upstream source |
-//! |---|---|
-//! | [`DecorationBlockTable`] | per-feature static `BlockState` constants plus tag checks |
-//! | [`GroupedDiscFeature`] | `decoration/GroupedDiscFeature.java` |
-//! | [`SurfaceGenerateFeature`] | `decoration/SurfaceGenerateFeature.java` |
-//! | [`ScatterOverworldFlowerFeature`] | `decoration/ScatterOverworldFlowerFeature.java` |
-//! | [`ScatterPlainsFlowerFeature`] | `decoration/ScatterPlainsFlowerFeature.java` |
-//! | [`ScatterBrownMushroomFeature`] | `decoration/ScatterBrownMushroomFeature.java` |
-//! | [`ScatterRedMushroomFeature`] | `decoration/ScatterRedMushroomFeature.java` |
-//! | [`ScatterDryGrassFeature`] | `decoration/ScatterDryGrassFeature.java` |
-//! | [`SwampFlowerFeature`] | `decoration/SwampFlowerFeature.java` |
-//! | [`DeadBushFeature`] | `decoration/DeadBushFeature.java` |
-//! | [`ScatterSweetBerryBushFeature`] | `decoration/ScatterSweetBerryBushFeature.java` |
-//! | [`TallGrassPatchFeature`] | `decoration/TallGrassPatchFeature.java` |
-//! | [`TallGrassGenerateFeature`] | `decoration/TallGrassGenerateFeature.java` |
-//! | [`TallFernPatchFeature`] | `decoration/TallFernPatchFeature.java` |
-//! | [`TaigaGrassFeature`] | `decoration/TaigaGrassFeature.java` |
-//! | [`JungleGrassFeature`] | `decoration/JungleGrassFeature.java` |
-//! | [`BushFeature`] | `decoration/BushFeature.java` |
-//! | [`DesertCactusFeature`] | `decoration/DesertCactusFeature.java` |
-//! | [`PumpkinGenerateFeature`] | `decoration/PumpkinGenerateFeature.java` |
-//! | [`ReedsFeature`] | `decoration/ReedsFeature.java` |
-//! | [`WaterlilyFeature`] | `decoration/WaterlilyFeature.java` |
-//! | [`SunflowerDoublePlantPatchFeature`] | `decoration/SunflowerDouplePlantPatchFeature.java` |
-//!
-//! Port notes:
-//! - Upstream biome gating comes from biome-definition `consolidatedFeatures`
-//!   lists; this port filters per column against biome-id lists (sourced entry
-//!   by entry from `.tools/gamedata/biome_features.json`).
-//! - Upstream `GroupedDiscFeature` discs may spill across chunks (reading
-//!   neighbors); single-chunk generation skips non-current columns (matching
-//!   the upstream skip when the neighbor chunk is unloaded).
-//! - `ScatterDryGrassFeature.getSourceBlock` seeds randomly by time upstream
-//!   (nondeterministic); this port uses the feature random instead, with
-//!   identical 1/3 tall-grass odds.
-//! - Features writing chunks directly (cactus/waterlily/reeds) maintain the
-//!   heightmap by hand (matching the heightmap update inside `setBlockState`).
+//! Surface decoration features: disc-shaped and column-scattered flowers, grass, mushrooms, cacti, waterlilies, and reeds.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -66,12 +30,13 @@ const SAND_TAG_MEMBERS: [&str; 3] = [
     "minecraft:suspicious_sand",
 ];
 
-/// Block table plus predicate sets for surface decoration.
+/// 地表装饰使用的方块运行时 ID 表与判定集合。
 ///
-/// Predicate sets approximate the upstream property/tag system:
-/// - `dirt`: `BlockTags.DIRT` members;
-/// - `sand`:`BlockTags.SAND`;
-/// - `non_solid`/`liquids`: solid/flowable approximations.
+/// 字段保存空气、花、草、蘑菇、仙人掌等方块 ID，以及泥土、沙子、草方块、非固体、液体等判定集合。
+///
+/// Block runtime ID table and predicate sets used by surface decoration.
+///
+/// Fields hold block IDs for air, flowers, grass, mushrooms, cacti and similar, plus predicate sets for dirt, sand, grass blocks, non-solid blocks and liquids.
 pub struct DecorationBlockTable {
     pub air: BlockRuntimeId,
     // Flowers (default states).
@@ -299,8 +264,9 @@ impl DecorationBlockTable {
 // SupportProbe (coordinate context for support checks).
 // ---------------------------------------------------------------------------
 
-/// Carries block id plus chunk and world coordinates,
-/// equivalent to the positioned block object.
+/// 支撑检测使用的坐标上下文：区块引用、世界坐标与方块 ID。
+///
+/// Coordinate context for support checks: chunk reference, world position, and block ID.
 pub struct SupportProbe<'a> {
     pub chunk: &'a WorldgenChunk,
     pub x: i32,
@@ -326,10 +292,13 @@ impl<'a> SupportProbe<'a> {
 // GroupedDiscFeature.
 // ---------------------------------------------------------------------------
 
-/// Java: `abstract class GroupedDiscFeature extends CountGenerateFeature`.
+/// 以随机源列为中心、按随机半径生成圆盘状装饰的生成特征接口。
 ///
-/// Each populate centers a disc of decoration on a random source column
-/// (`getBase()+nextBoundedInt(getRandom())` calls).
+/// 实现者提供源方块、半径范围、放置概率与支撑判定。
+///
+/// Generation feature interface for disc-shaped decoration centered on a random source column with a random radius.
+///
+/// Implementors provide the source block, radius range, placement probability, and support predicate.
 pub trait GroupedDiscFeature: CountGenerateFeature {
     /// Java: `abstract BlockState getSourceBlock()`.
     fn source_block(&self, random: &mut dyn RandomSourceProvider) -> BlockRuntimeId;
@@ -459,9 +428,13 @@ pub trait GroupedDiscFeature: CountGenerateFeature {
 // SurfaceGenerateFeature.
 // ---------------------------------------------------------------------------
 
-/// Java: `abstract class SurfaceGenerateFeature extends CountGenerateFeature`.
+/// 从高度图向下寻找支撑方块并随机放置装饰的生成特征接口。
 ///
-/// Random columns scan down from the heightmap to support, then decorate.
+/// 实现者提供计数范围与具体放置逻辑。
+///
+/// Generation feature interface that scans down from the heightmap to a supporting block and places decoration at random columns.
+///
+/// Implementors provide the count range and the placement logic.
 pub trait SurfaceGenerateFeature: CountGenerateFeature {
     /// Java: `abstract void place(BlockManager, int x, int y, int z)`.
     fn place(
@@ -975,8 +948,9 @@ const SUNFLOWER_BIOMES: &[i32] = &[SUNFLOWER_PLAINS];
 // GroupedDiscFeature subclasses.
 // ---------------------------------------------------------------------------
 
-/// Red mushroom scatter (probability 0.1; custom support plus
-/// downward getY scan; mushrooms need shade or mushroom islands).
+/// 散射红色蘑菇的生成特征：概率 0.1，使用自定义支撑检测与向下扫描。
+///
+/// Generation feature scattering red mushrooms with probability 0.1, a custom support check, and a downward scan.
 pub struct ScatterRedMushroomFeature {
     table: Arc<DecorationBlockTable>,
 }
@@ -1057,8 +1031,9 @@ impl GroupedDiscFeature for ScatterRedMushroomFeature {
     }
 }
 
-/// Java: `ScatterBrownMushroomFeature`(extends ScatterRedMushroomFeature,
-/// Only blocks/counts change; support/getY overrides inline here.
+/// 散射棕色蘑菇的生成特征：复用红色蘑菇的生成流程，仅替换方块与数量。
+///
+/// Generation feature scattering brown mushrooms, reusing the red-mushroom flow with different blocks and counts.
 pub struct ScatterBrownMushroomFeature {
     table: Arc<DecorationBlockTable>,
 }
@@ -1136,7 +1111,9 @@ impl GroupedDiscFeature for ScatterBrownMushroomFeature {
     }
 }
 
-/// Dry grass scatter (radius 3-4; probability 0.4; 1/3 tall).
+/// 散射干草的生成特征：半径 3–4，概率 0.4，约三分之一为高干草。
+///
+/// Generation feature scattering dry grass with radius 3-4, probability 0.4, and roughly one third tall dry grass.
 pub struct ScatterDryGrassFeature {
     table: Arc<DecorationBlockTable>,
 }
@@ -1192,7 +1169,9 @@ impl GroupedDiscFeature for ScatterDryGrassFeature {
     }
 }
 
-/// Swamp flowers (blue orchid discs, radius 1-2, probability 0.7).
+/// 生成沼泽花（蓝兰花圆盘）的生成特征：半径 1–2，概率 0.7。
+///
+/// Generation feature placing swamp flowers as blue-orchid discs with radius 1-2 and probability 0.7.
 pub struct SwampFlowerFeature {
     table: Arc<DecorationBlockTable>,
 }
@@ -1232,7 +1211,9 @@ impl GroupedDiscFeature for SwampFlowerFeature {
     }
 }
 
-/// Dead bushes (radius 3-4, probability 0.2).
+/// 生成枯灌木的生成特征：半径 3–4，概率 0.2。
+///
+/// Generation feature placing dead bushes with radius 3-4 and probability 0.2.
 pub struct DeadBushFeature {
     table: Arc<DecorationBlockTable>,
 }
@@ -1283,7 +1264,9 @@ impl GroupedDiscFeature for DeadBushFeature {
 // SurfaceGenerateFeature subclasses.
 // ---------------------------------------------------------------------------
 
-/// Sweet berry bushes at max growth.
+/// 生成生长阶段为最大的甜浆果丛的生成特征。
+///
+/// Generation feature placing sweet berry bushes at maximum growth.
 pub struct ScatterSweetBerryBushFeature {
     table: Arc<DecorationBlockTable>,
 }
@@ -1328,7 +1311,9 @@ impl SurfaceGenerateFeature for ScatterSweetBerryBushFeature {
     }
 }
 
-/// Tall grass two-high plants.
+/// 放置两格高草的生成特征（下半与上半）。
+///
+/// Generation feature placing two-block-tall grass (lower and upper halves).
 pub struct TallGrassGenerateFeature {
     table: Arc<DecorationBlockTable>,
 }
@@ -1377,7 +1362,9 @@ impl SurfaceGenerateFeature for TallGrassGenerateFeature {
     }
 }
 
-/// Tall fern two-high plants.
+/// 放置两格高大型蕨的生成特征（下半与上半）。
+///
+/// Generation feature placing two-block-tall large ferns (lower and upper halves).
 pub struct TallFernPatchFeature {
     table: Arc<DecorationBlockTable>,
 }
@@ -1425,7 +1412,9 @@ impl SurfaceGenerateFeature for TallFernPatchFeature {
     }
 }
 
-/// Taiga grass (position-seeded: 1/7 short grass, else fern).
+/// 生成针叶林草地的生成特征：按位置种子约七分之一为矮草，其余为蕨。
+///
+/// Generation feature for taiga grass, choosing short grass for roughly one seventh of positions by position seed and ferns otherwise.
 pub struct TaigaGrassFeature {
     table: Arc<DecorationBlockTable>,
 }
@@ -1477,7 +1466,9 @@ impl SurfaceGenerateFeature for TaigaGrassFeature {
     }
 }
 
-/// Jungle grass (1/7 fern, else short grass; count 100+10).
+/// 生成丛林草地的生成特征：约七分之一为蕨，其余为矮草。
+///
+/// Generation feature for jungle grass, choosing ferns for roughly one seventh of positions and short grass otherwise.
 pub struct JungleGrassFeature {
     table: Arc<DecorationBlockTable>,
 }
@@ -1525,7 +1516,9 @@ impl SurfaceGenerateFeature for JungleGrassFeature {
     }
 }
 
-/// Bushes.
+/// 生成灌木的生成特征。
+///
+/// Generation feature placing bushes.
 pub struct BushFeature {
     table: Arc<DecorationBlockTable>,
 }
@@ -1567,7 +1560,9 @@ impl SurfaceGenerateFeature for BushFeature {
     }
 }
 
-/// Sparse pumpkins (-2000 + 2015).
+/// 稀疏生成南瓜的生成特征。
+///
+/// Generation feature placing pumpkins sparsely.
 pub struct PumpkinGenerateFeature {
     table: Arc<DecorationBlockTable>,
 }
@@ -1613,7 +1608,9 @@ impl SurfaceGenerateFeature for PumpkinGenerateFeature {
 // CountGenerateFeature subclasses with custom populate.
 // ---------------------------------------------------------------------------
 
-/// Overworld flower scatter (dandelion/poppy discs, 0.2 probability).
+/// 散射主世界花（蒲公英与虞美人圆盘）的生成特征，概率 0.2。
+///
+/// Generation feature scattering overworld flowers as dandelion and poppy discs with probability 0.2.
 pub struct ScatterOverworldFlowerFeature {
     table: Arc<DecorationBlockTable>,
 }
@@ -1704,7 +1701,9 @@ crate::impl_feature!(count,
     "minecraft:scatter_overworld_flower_feature"
 );
 
-/// Plains flower scatter (9 flowers, 0.1 probability, grass support).
+/// 散射平原花的生成特征：九种花，概率 0.1，需要草方块支撑。
+///
+/// Generation feature scattering plains flowers (nine species) with probability 0.1 on grass-block support.
 pub struct ScatterPlainsFlowerFeature {
     table: Arc<DecorationBlockTable>,
 }
@@ -1783,7 +1782,9 @@ crate::impl_feature!(count,
     "minecraft:scatter_plains_flower_feature"
 );
 
-/// Sunflower patches (0.3 probability).
+/// 生成两格高向日葵丛的生成特征，概率 0.3。
+///
+/// Generation feature placing two-block-tall sunflower patches with probability 0.3.
 pub struct SunflowerDoublePlantPatchFeature {
     table: Arc<DecorationBlockTable>,
 }
@@ -1861,7 +1862,9 @@ crate::impl_feature!(count,
     "minecraft:sunflower_double_plant_patch_feature"
 );
 
-/// Short grass patches (mushroom islands excluded, custom scan floor).
+/// 生成矮草斑块的生成特征：排除蘑菇岛，并使用自定义扫描下限。
+///
+/// Generation feature placing short-grass patches, excluding mushroom islands and using a custom scan floor.
 pub struct TallGrassPatchFeature {
     table: Arc<DecorationBlockTable>,
 }
@@ -1945,7 +1948,9 @@ crate::impl_feature!(count,
     "minecraft:scatter_tall_grass_feature"
 );
 
-/// Desert cacti (columns plus half flowers; direct chunk writes).
+/// 生成沙漠仙人掌（含半格花）的生成特征，直接写入区块。
+///
+/// Generation feature placing desert cacti, including half-height flowers, with direct chunk writes.
 pub struct DesertCactusFeature {
     table: Arc<DecorationBlockTable>,
 }
@@ -2038,7 +2043,9 @@ crate::impl_feature!(count,
     "minecraft:desert_after_surface_cactus_feature_rules"
 );
 
-/// Waterlilies (sea-level water surface plus direct chunk writes).
+/// 生成水面睡莲的生成特征，直接写入区块。
+///
+/// Generation feature placing waterlilies on the water surface with direct chunk writes.
 pub struct WaterlilyFeature {
     table: Arc<DecorationBlockTable>,
 }
@@ -2090,7 +2097,9 @@ crate::impl_feature!(count,
 // ReedsFeature.
 // ---------------------------------------------------------------------------
 
-/// Reeds (1/20 chunks, sea level plus up to 3 high).
+/// 生成甘蔗的生成特征：约二十分之一区块，自海平面起最高三格。
+///
+/// Generation feature placing reeds in roughly one in twenty chunks, up to three blocks above sea level.
 pub struct ReedsFeature {
     table: Arc<DecorationBlockTable>,
 }
@@ -2342,7 +2351,7 @@ mod tests {
     }
 
     #[test]
-    fn pumpkin_sparse() {
+    fn pumpkin_feature_places_sparsely() {
         let table = Arc::new(test_table());
         let feature = PumpkinGenerateFeature::new(table.clone());
         let holder = test_holder();
@@ -2417,7 +2426,6 @@ mod tests {
             "minecraft:block": {
                 "description": {"identifier": "minecraft:air", "states": {}},
                 "components": {},
-                "sc:default_state": {},
                 "sc:protocol_runtime_ids": [0]
             }
         }"#;
@@ -2429,7 +2437,6 @@ mod tests {
                     "states": [{"name": "upper_block_bit", "values": [false, true]}]
                 },
                 "components": {},
-                "sc:default_state": {"upper_block_bit": false},
                 "sc:protocol_runtime_ids": [10, 11]
             }
         }"#;
@@ -2456,6 +2463,7 @@ mod tests {
             network_id_mode: "hashed".to_string(),
             fingerprint: fingerprint_bundle(&refs, "hashed"),
             files,
+            loot_tables: Default::default(),
         };
         let snap = compile_bundle(&bundle, "test", &budgets, &|_| None, &|_| true)
             .expect("tall_grass bundle compiles")

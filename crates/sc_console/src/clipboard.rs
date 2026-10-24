@@ -1,3 +1,15 @@
+//! 尽力而为的剪贴板写入（零第三方依赖）。
+//!
+//! - macOS：`pbcopy`（任何终端可用，含 Terminal.app）；
+//! - Linux：`wl-copy` / `xclip` / `xsel`（按顺序取第一个可用的）；
+//! - Windows：`clip`；
+//! - 都不可用：直接向终端写 OSC 52 转义（可经 SSH 到达本地剪贴板；需终端
+//!   支持，如 iTerm2/WezTerm/kitty/ghostty；旧版 Terminal.app 不支持）。
+//!
+//! 每个后端只探测一次（缓存在 `OnceLock`）。外部命令由调用方交给后台线程
+//! 执行（Wayland 上剪贴板服务需要常驻进程，`wait` 会永久阻塞）；OSC 52 由
+//! 拥有 stdout 的调用线程直接写入。
+//!
 //! Best-effort clipboard writes (zero third-party dependencies).
 //!
 //! - macOS: `pbcopy` (works in every terminal, including Terminal.app);
@@ -12,6 +24,8 @@
 
 use std::sync::OnceLock;
 
+/// 剪贴板写入后端（只探测一次，之后缓存）。
+///
 /// Clipboard write backend (probed once, then cached).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Backend {
@@ -24,6 +38,8 @@ pub enum Backend {
     Osc52,
 }
 
+/// 后台复制线程回报的结果。
+///
 /// Result reported back by the background copy thread.
 pub struct CopyOutcome {
     /// Character count of the copied text (for the "copied N chars" notice).
@@ -107,14 +123,14 @@ pub fn copy_via_command(backend: Backend, text: &str) -> bool {
     child.wait().map(|status| status.success()).unwrap_or(false)
 }
 
-/// OSC 52 escape sequence (`\x1b]52;c;<base64>\x07`; text capped at 20k chars against flooding).
+/// OSC 52 escape sequence (`\x1b]52;c;<base64>\x07`; text capped at 20k chars).
 pub fn osc52_escape(text: &str) -> String {
     const MAX_CHARS: usize = 20_000;
     let clipped: String = text.chars().take(MAX_CHARS).collect();
     format!("\x1b]52;c;{}\x07", base64_encode(clipped.as_bytes()))
 }
 
-/// Minimal base64 encoder (standard alphabet, `=` padding; avoids a new dependency for OSC 52).
+/// Minimal base64 encoder (standard alphabet, `=` padding).
 pub fn base64_encode(input: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);

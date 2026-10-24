@@ -14,9 +14,9 @@ use sc_recipe::{
 
 // ===================== components / resources =====================
 
-/// Per-player crafting revisions. Bumped on every accepted inventory or
-/// container change; client requests carry the observed values and stale
-/// ones are rejected.
+/// 每个玩家的合成修订号，用于拒绝过期请求。
+///
+/// Per-player crafting revision used to reject stale requests.
 #[derive(Component, Clone, Debug, Default)]
 pub struct CraftingRevision {
     inner: Arc<RwLock<RevisionData>>,
@@ -54,7 +54,9 @@ impl CraftingRevision {
     }
 }
 
-/// Per-player idempotency log + bounded craft queue.
+/// 每个玩家的幂等日志与有界合成队列。
+///
+/// Per-player idempotency log and bounded craft queue.
 #[derive(Component, Clone, Debug)]
 pub struct CraftingSession {
     pub(super) seen: Arc<RwLock<SeenOperations>>,
@@ -82,7 +84,9 @@ impl CraftingSession {
     }
 }
 
-/// Minimal player recipe-book state (persisted next to player data).
+/// 玩家配方书状态，随玩家数据持久化。
+///
+/// Player recipe-book state persisted alongside player data.
 #[derive(Component, Clone, Debug, Default)]
 pub struct RecipeBookState {
     pub(super) inner: Arc<RwLock<PlayerRecipeBook>>,

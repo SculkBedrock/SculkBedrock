@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::block::BlockPlacementReservations;
-use crate::block::{block_changed_to_outbox, DropReceipts};
+use crate::block::{block_changed_to_outbox, BreakSettlementReceipts};
 use crate::block::{
     AbortBreakRequest, BreakBlockRequest, CloseInventoryRequest, HeldSlotChanged,
     OpenInventoryRequest, PlaceBlockRequest, StartBreakRequest,
@@ -54,10 +54,13 @@ use sc_item::ItemRegistry;
 const GAME_TICK_INTERVAL: Duration = Duration::from_millis(50);
 const TELEPORT_COMPLETE_TIMEOUT_TICKS: u32 = 100;
 
-/// All game-domain events in one macro call (mirrors
-/// `MinecraftPackets::add_events`): add new game events as variants here
-/// instead of extending an `add_event` chain by hand. Variant names must
-/// equal the wrapped event type names (the derive reuses them as types).
+/// 游戏域的全部事件定义。
+///
+/// 新增游戏事件时在此添加变体；变体名需与包装的事件类型名一致。
+///
+/// All game-domain event definitions.
+///
+/// Add new game events as variants here; each variant name must match its wrapped event type name.
 #[derive(Clone, Debug, sc_ecs::event::EnumEvents)]
 pub enum GameEvents {
     BreakBlockRequest(BreakBlockRequest),
@@ -91,7 +94,7 @@ impl Plugin for SCGamePlugin {
             // Block-entity identities ((world, pos) -> process entity).
             .insert_resource(crate::block_entity::BlockEntityIndex::default())
             // Break drop idempotency receipts.
-            .insert_resource(DropReceipts::default())
+            .insert_resource(BreakSettlementReceipts::default())
             .insert_resource(IntentSendHooks::default())
             .insert_resource(RegionDriver::<RegionId>::default())
             // Item registry (item to block mapping; filled after version packs load).
@@ -125,6 +128,8 @@ impl Plugin for SCGamePlugin {
             .add_systems(sc_ecs::schedule::Update, crate::furnace::process_tick)
             // Survival hunger tick (metabolic drain, starvation, regen).
             .add_systems(sc_ecs::schedule::Update, crate::hunger::hunger_tick)
+            // Oxygen & drowning tick (air drain underwater, regen on surface, drowning damage).
+            .add_systems(sc_ecs::schedule::Update, crate::oxygen::oxygen_tick)
             // Death-screen button flow (teleport + vitals + dismiss).
             .add_systems(sc_ecs::schedule::Update, crate::respawn::respawn_tick)
             .add_systems(sc_ecs::schedule::Update, demo_cross_world_transfer)
@@ -165,11 +170,9 @@ impl Plugin for SCGamePlugin {
     }
 }
 
-/// Demo systems switch (resource) from server properties (default false).
+/// 由服务器属性控制的演示系统开关资源。
 ///
-/// Demos emit region events and entity migrations even with no players, so
-/// production runs keep them off; the cross-world teleport demo would also
-/// disturb real players.
+/// Resource holding demo-system switches controlled by server properties.
 #[derive(sc_ecs::resource::Resource, Clone, Copy, Debug, Default)]
 pub struct DemoSystems(pub bool);
 

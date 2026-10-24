@@ -29,8 +29,7 @@ pub(crate) struct SearchCtx<'a> {
 }
 
 /// Case-insensitive search for all non-overlapping hits in plain text; returns display column ranges.
-///
-/// Pure function for unit tests; columns use [`crate::ansi::display_width`] (same as render truncation).
+/// Columns use [`crate::ansi::display_width`] (same as render truncation).
 pub(crate) fn find_matches(plain: &str, query: &str) -> Vec<(usize, usize)> {
     if query.is_empty() {
         return Vec::new();
@@ -275,8 +274,8 @@ pub(super) fn render_search_bar(
 
 /// One log plain-text row (visible text, same as the `build_frame` log section; reused for selection extraction).
 ///
-/// ANSI escapes and section-sign color codes in messages must be stripped, or copies to the clipboard would carry them
-/// (they render as zero-width styles, and column mapping must use the stripped visible columns).
+/// ANSI escapes and section-sign color codes are stripped so clipboard copies carry plain text;
+/// column mapping uses the stripped visible columns (styles are zero width).
 pub(crate) fn log_row_plain(line: &LogLine) -> String {
     let mut row = String::new();
     row.push_str(&line.ts);

@@ -11,32 +11,89 @@ use sc_world::chunk::{
 };
 use std::io::{Error, ErrorKind};
 
+/// ChunkRadiusUpdatedPacket：通知客户端新的视距（区块半径）。
+///
+/// ChunkRadiusUpdatedPacket: notifies the client of the new view distance
+/// (chunk radius).
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct ChunkRadiusUpdated {
+    /// 区块半径（视距）。
+    ///
+    /// Chunk radius (view distance).
     pub radius: i32,
 }
 
+/// NetworkChunkPublisherUpdatePacket：更新区块发布者位置与半径。
+///
+/// NetworkChunkPublisherUpdatePacket: updates the chunk publisher position
+/// and radius.
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct NetworkChunkPublisherUpdate {
+    /// 发布者 X 坐标。
+    ///
+    /// Publisher X coordinate.
     pub x: i32,
+    /// 发布者 Y 坐标。
+    ///
+    /// Publisher Y coordinate.
     pub y: i32,
+    /// 发布者 Z 坐标。
+    ///
+    /// Publisher Z coordinate.
     pub z: i32,
+    /// 发布半径。
+    ///
+    /// Publish radius.
     pub radius: u32,
+    /// 已保存的区块 (x, z) 列表，各为 zigzag varint。
+    ///
     /// Saved chunk (x, z) pairs, each a zigzag varint.
     pub saved_chunks: Vec<(i32, i32)>,
 }
 
+/// LevelChunkPacket (0x3a)：向客户端下发完整区块数据。
+///
+/// LevelChunkPacket (0x3a): sends a full chunk to the client.
+///
+/// 负载为 v9 section 格式序列化后的字节（见 [`encode_subchunks`]）。
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct LevelChunk {
+    /// 区块 X 坐标。
+    ///
+    /// Chunk X coordinate.
     pub chunk_x: i32,
+    /// 区块 Z 坐标。
+    ///
+    /// Chunk Z coordinate.
     pub chunk_z: i32,
+    /// 维度 id。
+    ///
+    /// Dimension id.
     pub dimension: i32,
+    /// 子区块（section）数量。
+    ///
+    /// Sub-chunk (section) count.
     pub sub_chunk_count: u32,
+    /// 是否启用缓存（blob 缓存）。
+    ///
+    /// Whether caching (blob cache) is enabled.
     pub cache_enabled: bool,
+    /// 序列化后的区块负载。
+    ///
+    /// Serialized chunk payload.
     pub payload: Vec<u8>,
 }
 
 impl LevelChunk {
+    /// 从内存区块构造 LevelChunk 包（序列化全部 section）。
+    ///
+    /// Builds a LevelChunk packet from an in-memory chunk (serializes all
+    /// sections).
+    ///
+    /// - `chunk`: 源区块
+    ///
+    /// # Errors
+    /// 负载序列化失败时返回错误。
     pub fn from_chunk(chunk: &Chunk) -> Result<Self, Error> {
         // Send the full vertical range: clients disconnect during chunk
         // loading when subChunkCount is below the dimension height, so flat
@@ -64,12 +121,28 @@ impl LevelChunk {
 }
 
 impl Writer for ChunkRadiusUpdated {
+    /// 写入 ChunkRadiusUpdated 包体（单个 zigzag varint32）。
+    ///
+    /// Writes the ChunkRadiusUpdated body (a single zigzag varint32).
+    ///
+    /// - `buf`: 输出字节写入器
+    ///
+    /// # Errors
+    /// 写入缓冲区失败时返回 IO 错误。
     fn write(&self, buf: &mut ByteWriter) -> Result<(), Error> {
         buf.write_var_i32(self.radius)
     }
 }
 
 impl Reader<ChunkRadiusUpdated> for ChunkRadiusUpdated {
+    /// 解码 ChunkRadiusUpdated 包体。
+    ///
+    /// Decodes a ChunkRadiusUpdated body.
+    ///
+    /// - `buf`: 输入字节读取器
+    ///
+    /// # Errors
+    /// 缓冲区不足时返回解码错误。
     fn read(buf: &mut ByteReader) -> Result<Self, Error> {
         Ok(Self {
             radius: buf.read_var_i32()?,
@@ -78,6 +151,14 @@ impl Reader<ChunkRadiusUpdated> for ChunkRadiusUpdated {
 }
 
 impl Writer for NetworkChunkPublisherUpdate {
+    /// 写入 NetworkChunkPublisherUpdate 包体。
+    ///
+    /// Writes the NetworkChunkPublisherUpdate body.
+    ///
+    /// - `buf`: 输出字节写入器
+    ///
+    /// # Errors
+    /// 写入缓冲区失败时返回 IO 错误。
     fn write(&self, buf: &mut ByteWriter) -> Result<(), Error> {
         buf.write_var_i32(self.x)?;
         buf.write_var_i32(self.y)?;
@@ -90,6 +171,14 @@ impl Writer for NetworkChunkPublisherUpdate {
 }
 
 impl Reader<NetworkChunkPublisherUpdate> for NetworkChunkPublisherUpdate {
+    /// 解码 NetworkChunkPublisherUpdate 包体。
+    ///
+    /// Decodes a NetworkChunkPublisherUpdate body.
+    ///
+    /// - `buf`: 输入字节读取器
+    ///
+    /// # Errors
+    /// 已保存区块数超过 4096 上限或缓冲区不足时返回错误。
     fn read(buf: &mut ByteReader) -> Result<Self, Error> {
         let x = buf.read_var_i32()?;
         let y = buf.read_var_i32()?;
@@ -119,6 +208,15 @@ impl Reader<NetworkChunkPublisherUpdate> for NetworkChunkPublisherUpdate {
 }
 
 impl Writer for LevelChunk {
+    /// 写入 LevelChunk 包头（坐标、计数、缓存/请求标志与负载）。
+    ///
+    /// Writes the LevelChunk header (coordinates, counts, cache/request
+    /// flags and payload).
+    ///
+    /// - `buf`: 输出字节写入器
+    ///
+    /// # Errors
+    /// 写入缓冲区失败时返回 IO 错误。
     fn write(&self, buf: &mut ByteWriter) -> Result<(), Error> {
         buf.write_var_i32(self.chunk_x)?;
         buf.write_var_i32(self.chunk_z)?;
@@ -151,6 +249,14 @@ impl Writer for LevelChunk {
 }
 
 impl Reader<LevelChunk> for LevelChunk {
+    /// 解码 LevelChunk 包。
+    ///
+    /// Decodes a LevelChunk packet.
+    ///
+    /// - `buf`: 输入字节读取器
+    ///
+    /// # Errors
+    /// blob 数量超过 4096 上限或缓冲区不足时返回错误。
     fn read(buf: &mut ByteReader) -> Result<Self, Error> {
         let chunk_x = buf.read_var_i32()?;
         let chunk_z = buf.read_var_i32()?;
@@ -192,13 +298,19 @@ impl Reader<LevelChunk> for LevelChunk {
     }
 }
 
+/// 以 v9 section 格式编码 LevelChunk 负载。
+///
 /// Encodes a LevelChunk payload in v9 section format.
 ///
-/// `subChunkCount` is the number of sections in the complete vertical range
-/// represented by the chunk. Every section has
-/// exactly two block layers, including absent/empty sections, and every
-/// palette is written as a complete V2 bit array (single-value palettes are
-/// not encoded using the legacy compact form).
+/// `subChunkCount` 是该区块完整垂直范围内的 section 数。每个 section 恰好
+/// 两个方块层（含空 section），每个调色板都写为完整的 V2 位数组（单值
+/// 调色板不使用旧式紧凑形式）。
+///
+/// - `chunk`: 源区块
+/// - `count`: 要序列化的 section 数
+///
+/// # Errors
+/// 调色板为空或写入失败时返回错误。
 fn encode_subchunks(chunk: &Chunk, count: usize) -> Result<Vec<u8>, Error> {
     let mut buf = ByteWriter::new();
     let air = BlockRuntimeId(air_runtime_id());
@@ -236,10 +348,19 @@ fn encode_subchunks(chunk: &Chunk, count: usize) -> Result<Vec<u8>, Error> {
     Ok(buf.into())
 }
 
+/// 把 4096 个调色板索引打包进 32 位字。
+///
 /// Packs 4096 palette indices into 32-bit words.
 ///
-/// V3/V5/V6 are padded bit arrays: they use 10/6/5 entries per word rather
-/// than `32 / bits` (the remaining high bits are padding).
+/// V3/V5/V6 是补齐位数组：每字 10/6/5 项，而非 `32 / bits`
+/// （高位剩余为填充位）。
+///
+/// - `indices`: 调色板索引表
+/// - `bits`: 每项位宽
+/// - `buf`: 输出字节写入器
+///
+/// # Errors
+/// 位宽不受支持时返回 [`std::io::ErrorKind::InvalidData`] 错误。
 fn encode_packed_indices(indices: &[u16], bits: u8, buf: &mut ByteWriter) -> Result<(), Error> {
     let values_per_word = match bits {
         1 => 32,
@@ -275,12 +396,22 @@ fn encode_packed_indices(indices: &[u16], bits: u8, buf: &mut ByteWriter) -> Res
     Ok(())
 }
 
+/// 哈希方块调色板存储：头部 `(bits << 1) | 1`、打包字、随后是
+/// zigzag-varint 调色板长度与 zigzag-varint FNV1a 方块状态哈希。
+///
 /// Hashed block paletted storage: header `(bits << 1) | 1`, packed words,
 /// then a zigzag-varint palette length and zigzag-varint FNV1a block-state
-/// Block-state hashes (FNV plus varint).
+/// hashes.
 ///
-/// In-memory `words` are already packed at spec width (= wire width);
-/// send word by word with no repacking.
+/// 内存中的 `words` 已按协议位宽（= 线上位宽）打包，逐字写出即可，
+/// 无需重新打包。
+///
+/// - `storage`: 可选的方块存储
+/// - `air`: 空气运行时 id（空 section 使用）
+/// - `buf`: 输出字节写入器
+///
+/// # Errors
+/// 调色板为空或写入失败时返回错误。
 fn encode_storage(
     storage: Option<&PalettedBlockStorage>,
     air: BlockRuntimeId,
@@ -317,8 +448,17 @@ fn encode_storage(
     }
 }
 
-/// A single-value palette always serialises as a full V2 palette:
-/// header, 256 packed words, palette size, and the single value.
+/// 单值调色板始终序列化为完整 V2 调色板：头部、256 个打包字、
+/// 调色板大小与单值。
+///
+/// A single-value palette always serialises as a full V2 palette: header,
+/// 256 packed words, palette size, and the single value.
+///
+/// - `value`: 单值（方块/生物群系 id）
+/// - `buf`: 输出字节写入器
+///
+/// # Errors
+/// 写入失败时返回 IO 错误。
 fn encode_single_palette(value: i32, buf: &mut ByteWriter) -> Result<(), Error> {
     buf.write_u8((2 << 1) | 1)?;
     encode_packed_indices(&[], 2, buf)?;
@@ -327,10 +467,29 @@ fn encode_single_palette(value: i32, buf: &mut ByteWriter) -> Result<(), Error> 
     Ok(())
 }
 
+/// 单值方块调色板编码（委托 [`encode_single_palette`]）。
+///
+/// Single-value block palette encoding (delegates to
+/// [`encode_single_palette`]).
+///
+/// - `runtime_id`: 方块运行时 id
+/// - `buf`: 输出字节写入器
+///
+/// # Errors
+/// 写入失败时返回 IO 错误。
 fn encode_single_block_palette(runtime_id: u32, buf: &mut ByteWriter) -> Result<(), Error> {
     encode_single_palette(runtime_id as i32, buf)
 }
 
+/// 生物群系调色板存储编码（单值或 V2 位数组形式）。
+///
+/// Biome paletted storage encoding (single-value or V2 bit-array form).
+///
+/// - `storage`: 生物群系存储
+/// - `buf`: 输出字节写入器
+///
+/// # Errors
+/// 调色板为空或写入失败时返回错误。
 fn encode_biome_storage(storage: &PalettedBiomeStorage, buf: &mut ByteWriter) -> Result<(), Error> {
     match storage {
         PalettedBiomeStorage::Single(biome_id) => encode_single_palette(*biome_id as i32, buf)?,
@@ -367,7 +526,9 @@ mod tests {
     use sc_world::block_dictionary::{BlockStateDictionary, BlockStateEntry};
     use sc_world::chunk::{ChunkPosition, OVERWORLD_MAX_Y, OVERWORLD_MIN_Y};
 
-    /// Register the global test protocol (writers take version branches).
+    /// 注册测试用全局协议（写入器据此选择版本分支）。
+    ///
+    /// Registers the global test protocol (writers take version branches).
     fn init_protocol_2168() {
         use sc_utils::game::structs::minecraft_version::MinecraftVersions;
         use sc_utils::game::structs::protocol_versions::MinecraftProtocolVersions;
@@ -382,6 +543,8 @@ mod tests {
         });
     }
 
+    /// zigzag 变长整数的编码长度。
+    ///
     /// Zigzag varint encoded length.
     fn var_i32_len(value: i32) -> usize {
         let mut buf = ByteWriter::new();
@@ -474,43 +637,6 @@ mod tests {
             assert_eq!(layers, 2);
             offset += storage_len + air_storage_len;
         }
-    }
-
-    #[test]
-    #[ignore = "legacy size assertions are superseded by the V2 palette format"]
-    fn ground_at_world_y0_sends_full_column() {
-        register_test_network_ids(&[777]);
-        // Raised ground at section 0: still full 24 sections (first 4 are
-        // 0-layer placeholders, section 0 has ground).
-        let mut chunk = Chunk::empty(
-            ChunkPosition::new(0, 0),
-            0,
-            OVERWORLD_MIN_Y,
-            OVERWORLD_MAX_Y,
-        );
-        for lx in 0..16u8 {
-            for lz in 0..16u8 {
-                chunk.set_block_at(0, lx, 0, lz, BlockRuntimeId(777));
-            }
-        }
-        let packet = LevelChunk::from_chunk(&chunk).expect("chunk encoding");
-        assert_eq!(packet.sub_chunk_count, 5);
-        let air = air_runtime_id() as i32;
-        let _storage_len = 1 // storage header
-            + 128 * 4 // bits=1 → 4096/32=128 words × 4B
-            + var_i32_len(2) // palette length ([air, 777])
-            + var_i32_len(air)
-            + var_i32_len(777);
-        assert!(packet.payload.len() > 10000);
-        // First 4 sections have 0 layers, section 0 has 1.
-        for section in 0..4usize {
-            assert_eq!(
-                packet.payload[section * 3 + 1],
-                0,
-                "placeholder section {section} layers"
-            );
-        }
-        assert_eq!(packet.payload[4 * 3 + 1], 1, "section 0 layers");
     }
 
     #[test]
@@ -632,6 +758,8 @@ mod version_tests {
     };
     use sc_binary::interfaces::{Reader, Writer};
 
+    /// 生物群系更新标记仅在协议 2225 及之后追加。
+    ///
     /// Biome update marker is appended only for protocol 2225 and later.
     #[test]
     fn level_chunk_biome_marker_round_trips_only_on_2225() {

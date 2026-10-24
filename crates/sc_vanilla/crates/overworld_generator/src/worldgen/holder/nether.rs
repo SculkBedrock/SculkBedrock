@@ -12,6 +12,8 @@ use std::sync::Arc;
 // NetherObjectHolder
 // ---------------------------------------------------------------------------
 
+/// 下界对象 holder。
+///
 /// Nether object holder.
 pub struct NetherObjectHolder {
     random: Xoroshiro128,
@@ -48,6 +50,8 @@ impl ObjectHolder for NetherObjectHolder {}
 // TerrainHolder
 // ---------------------------------------------------------------------------
 
+/// 下界地形 holder。
+///
 /// Nether terrain holder.
 pub struct NetherTerrainHolder {
     random: Xoroshiro128,
@@ -151,6 +155,8 @@ impl NetherTerrainHolder {
 // BasaltDeltaHolder
 // ---------------------------------------------------------------------------
 
+/// 玄武岩三角洲 holder。
+///
 /// Basalt delta holder.
 pub struct BasaltDeltaHolder {
     random: Xoroshiro128,

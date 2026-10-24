@@ -81,7 +81,9 @@ struct DropSlot {
     value: Option<ItemDrop>,
 }
 
-/// Per-world authoritative storage for ordinary item drops.
+/// 单个世界的普通物品掉落权威存储。
+///
+/// Authoritative storage for ordinary item drops in one world.
 #[derive(Default)]
 pub struct RegionItemDropStore {
     slots: Vec<DropSlot>,
@@ -242,6 +244,9 @@ impl RegionItemDropStore {
             let new_count = stack.count + absorbed.stack.count;
             if let Some(survivor) = self.get_mut(handle) {
                 survivor.stack.count = new_count;
+                if survivor.stack.block_runtime_id == 0 && absorbed.stack.block_runtime_id != 0 {
+                    survivor.stack.block_runtime_id = absorbed.stack.block_runtime_id;
+                }
             }
             // Close first (RemoveEntity), then broadcast the new count.
             publisher.publish(DespawnItemEntity {
@@ -285,7 +290,9 @@ impl RegionItemDropStore {
                         };
                         let same_item = drop.stack.runtime_id == survivor_stack.runtime_id
                             && drop.stack.damage == survivor_stack.damage
-                            && drop.stack.block_runtime_id == survivor_stack.block_runtime_id;
+                            && (drop.stack.block_runtime_id == survivor_stack.block_runtime_id
+                                || drop.stack.block_runtime_id == 0
+                                || survivor_stack.block_runtime_id == 0);
                         let other = drop.position;
                         if !same_item
                             || !drop.on_ground
@@ -317,11 +324,9 @@ fn merge_pass(
     }
 }
 
-/// Root-owned collection of per-world drop stores.
+/// 按世界划分的掉落存储集合。
 ///
-/// The store is intentionally partitioned by world and spatial cell. A future
-/// region owner can move one `RegionItemDropStore` behind a region mailbox
-/// without changing the network or item semantics.
+/// Collection of drop stores partitioned by world.
 #[derive(Resource, Default)]
 pub struct ItemDropStore {
     worlds: HashMap<MinecraftWorldId, RegionItemDropStore>,

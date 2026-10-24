@@ -1,13 +1,21 @@
+//! 权威的服务端物品模型。
+//!
 //! Authoritative server-side item model.
+//!
+//! 本 crate 不依赖网络协议：网络层只负责 `ItemData` 与 `ItemStack` 的互转，
+//! 玩法层校验交易并提交库存。版本包因此可以注册新物品，
+//! 而无需把物品 id 硬编进协议或区块核心。
 //!
 //! This crate does not depend on the network protocol: the network layer only converts `ItemData`
 //! to/from `ItemStack`, while gameplay validates transactions and commits inventory. Version packs can
 //! therefore register new items without hardcoding item ids into the protocol or chunk core.
 
+pub mod facets;
 pub mod registry;
 pub mod stack;
 pub mod tag;
 
+pub use facets::{DamageFacet, DisplayFacet, RepairCostFacet};
 pub use registry::{ItemDefinition, ItemRegistry};
 pub use stack::{ItemStack, PlayerInventory};
 pub use tag::CreativeGrantTable;

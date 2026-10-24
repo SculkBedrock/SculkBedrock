@@ -1,11 +1,21 @@
-//! High-throughput local log persistence (async batched writes + custom filename format + flush on exit).
+//! 本地日志落盘（异步批量写 + 自定义文件名格式 + 退出时刷盘）。
 //!
-//! Performance design:
-//! - A **dedicated thread** drains the channel so logging never blocks the main/game threads (region/tokio);
-//! - **Batched writes**: `BufWriter` (64KB) batches disk writes, **no per-line fsync**;
-//! - **Live flush**: `recv_timeout(flush_interval)` flushes on idle poll (default 200ms), so logs
-//!   reach the file **in real time** instead of only at exit; tail -f tracks them live;
-//! - **Exit guarantee**: `shutdown()` sends a `Shutdown` control message, the thread flushes, exits, and is `join`ed,
+//! - 独立线程排空通道，写日志不阻塞生产日志的线程；
+//! - `BufWriter`（64KB）批量写盘，不逐行 fsync；
+//! - 空闲轮询 `recv_timeout(flush_interval)`（默认 200ms）时刷盘，日志实时进文件；
+//! - `shutdown()` 发送 `Shutdown` 控制消息，线程刷盘后退出并被 `join`，退出时数据已落盘。
+//!
+//! 文件名格式（strftime 子集，`init_file_sink_with_name`）：
+//! `%Y` 年 `%m` 月 `%d` 日 `%H` 时 `%M` 分 `%S` 秒 `%f` 毫秒 `%%` 字面 %。
+//! 例：`sc_log_%Y-%m-%d_%H-%M-%S.log` 渲染为 `sc_log_2026-08-05_06-30-45.log`。
+//!
+//! Local log persistence (async batched writes + custom filename format + flush on exit).
+//!
+//! - A dedicated thread drains the channel, so logging does not block the producing thread;
+//! - `BufWriter` (64KB) batches disk writes, with no per-line fsync;
+//! - `recv_timeout(flush_interval)` (default 200ms) flushes on idle polling, so records reach
+//!   the file while running instead of only at exit;
+//! - `shutdown()` sends a `Shutdown` control message; the thread flushes, exits and is `join`ed,
 //!   so everything is on disk at exit.
 //!
 //! Filename format (strftime subset, `init_file_sink_with_name`):
@@ -35,6 +45,8 @@ pub const LOG_QUEUE_CAPACITY: usize = 16_384;
 /// is visible without flooding the console.
 const DROP_REPORT_INTERVAL: u64 = 1_000;
 
+/// 写入线程的控制消息。
+///
 /// Writer-thread control message.
 enum LogMsg {
     /// One log line (UTF-8 bytes, newline included).
@@ -45,6 +57,8 @@ enum LogMsg {
     Shutdown,
 }
 
+/// 异步日志文件落盘器（全局单例）。
+///
 /// Async log file sink (global singleton).
 pub struct AsyncLogFile {
     tx: SyncSender<LogMsg>,
@@ -52,6 +66,8 @@ pub struct AsyncLogFile {
     dropped: AtomicU64,
 }
 
+/// 有界队列饱和时保留哪一类记录。
+///
 /// Which records are kept when the bounded queue is saturated.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub enum LogClass {
@@ -75,6 +91,14 @@ impl LogClass {
 
 static FILE_SINK: OnceLock<AsyncLogFile> = OnceLock::new();
 
+/// 按格式渲染文件名（**标准 strftime 子集**）：
+///
+/// `%Y` 四位年 `%y` 短年 `%m` 月（两位）`%d` 日（两位）`%H` 时（24h）
+/// `%M` 分 `%S` 秒 `%f` 毫秒（三位，用于区分同秒）`%%` 字面 %
+///
+/// 例：`sc_log_%Y-%m-%d_%H-%M-%S.log` 渲染为 `sc_log_2026-08-05_06-30-45.log`。
+/// 未知的 `%x` 原样保留（不 panic）。
+///
 /// Filename format (**standard strftime subset**):
 ///
 /// `%Y` year (4-digit) `%y` short year `%m` month (2-digit) `%d` day (2-digit) `%H` hour (24h)
@@ -110,12 +134,11 @@ pub fn render_file_name(format: &str, now: &DateTime<Local>) -> String {
     out
 }
 
+/// 全局初始化：从格式渲染文件名并打开文件（写入 logs 目录；重复调用返回已有实例）。
+/// 更短的 `flush_interval` 意味着更实时的输出（建议默认 200ms）。
+///
 /// Global init: renders the filename from the format (logs dir; repeat calls return the existing instance).
 /// Shorter `flush_interval` means more real-time output (default 200ms recommended).
-///
-/// **Performance guarantee**: filename rendering and file opening happen exactly once during
-/// this init (`OnceLock` + writer-thread startup); afterwards all logs flow `write_line` -> channel ->
-/// the same file handle in batches, so the hot path never renders filenames, opens files, or does per-line IO.
 pub fn init_file_sink_with_name(
     name_format: &str,
     log_dir: PathBuf,
@@ -129,11 +152,15 @@ pub fn init_file_sink_with_name(
     })
 }
 
-/// Legacy-compatible entry point: fixed filename `server.log`.
+/// 使用固定文件名 `server.log` 的入口。
+///
+/// Entry point that keeps the fixed filename `server.log`.
 pub fn init_file_sink(path: PathBuf, flush_interval: Duration) -> &'static AsyncLogFile {
     FILE_SINK.get_or_init(|| AsyncLogFile::start(path, flush_interval))
 }
 
+/// 非阻塞写入一行（无 sink 时静默丢弃；队列饱和时按 [`LogClass::Normal`] 处理）。
+///
 /// Non-blocking write of one line (silently dropped without a sink; treated as [`LogClass::Normal`] when saturated).
 #[inline]
 pub fn write_line(line: String) {
@@ -142,6 +169,8 @@ pub fn write_line(line: String) {
     }
 }
 
+/// 带级别非阻塞写入一行；队列饱和时按优先级保留。
+///
 /// Non-blocking write of one line with a level, kept by priority when the queue saturates.
 #[inline]
 pub fn write_line_with_level(line: String, level: log::Level) {
@@ -150,6 +179,8 @@ pub fn write_line_with_level(line: String, level: log::Level) {
     }
 }
 
+/// 因队列饱和丢弃的日志行总数（可观测指标）。
+///
 /// Total log lines dropped due to queue saturation (observable metric).
 pub fn dropped_lines() -> u64 {
     FILE_SINK
@@ -158,6 +189,8 @@ pub fn dropped_lines() -> u64 {
         .unwrap_or_default()
 }
 
+/// 请求立即刷盘（异步生效；退出前请调用 [`shutdown`]）。
+///
 /// Requests an immediate flush (applies async; call [`shutdown`] before exit).
 #[inline]
 pub fn flush_now() {
@@ -166,6 +199,8 @@ pub fn flush_now() {
     }
 }
 
+/// 退出刷盘：发送 Shutdown，线程刷盘后退出，`join` 保证完成。
+///
 /// Exit flush: sends Shutdown, the thread flushes and exits, then join guarantees completion.
 #[inline]
 pub fn shutdown() {
@@ -199,11 +234,13 @@ impl AsyncLogFile {
         self.write_line_classified(line, LogClass::Normal);
     }
 
+    /// 带显式保留类别的非阻塞入队。
+    /// 队列满时丢弃该记录而不阻塞生产者；丢弃数会计入并周期性上报到 stderr。
+    ///
     /// Non-blocking enqueue with an explicit retention class.
     ///
     /// A full queue drops the record instead of blocking the producer, and the
-    /// loss is counted and periodically reported on stderr (the log file itself
-    /// may be the thing that cannot keep up).
+    /// loss is counted and periodically reported on stderr.
     pub fn write_line_classified(&self, line: String, class: LogClass) {
         let bytes = line.into_bytes();
         match self.tx.try_send(LogMsg::Line(bytes)) {
@@ -225,6 +262,8 @@ impl AsyncLogFile {
         }
     }
 
+    /// 因有界队列拒收而丢弃的记录数。
+    ///
     /// Number of records dropped because the bounded queue refused them.
     pub fn dropped(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
@@ -235,6 +274,8 @@ impl AsyncLogFile {
         let _ = self.tx.try_send(LogMsg::Flush);
     }
 
+    /// 刷盘并退出（幂等；后续发送静默失败）。
+    ///
     /// Flush to disk and exit (idempotent; later sends fail silently).
     pub fn shutdown(&self) {
         let dropped = self.dropped.load(Ordering::Relaxed);
@@ -253,10 +294,9 @@ impl AsyncLogFile {
     }
 }
 
-/// Writer thread: batched writes plus periodic live flush.
+/// 写入线程：批量写盘加周期性实时刷盘。
 ///
-/// The file is **opened once** when this thread starts and the same handle (append) is reused;
-/// it is never reopened per line/message, avoiding per-log filesystem overhead.
+/// Writer thread: batched writes plus periodic live flush.
 fn writer_loop(rx: Receiver<LogMsg>, path: PathBuf, flush_interval: Duration) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);

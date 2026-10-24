@@ -1,3 +1,6 @@
+//! Minecraft 专用的二进制类型：游戏结构体（Gamemode/GameRules/Motd/experiments）
+//! 与 `ByteReader`/`ByteWriter` 之间的序列化桥接。
+//!
 //! Minecraft-specific binary types: serialization bridge between game structs
 //! (Gamemode/GameRules/Motd/experiments) and `ByteReader`/`ByteWriter`.
 

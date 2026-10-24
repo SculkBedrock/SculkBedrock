@@ -1,7 +1,12 @@
-//! `ByteReader` / `ByteWriter`: binary read/write over `bytes` (panic-free).
+//! `ByteReader` / `ByteWriter`：基于 `bytes` 的二进制读写，无 panic。
 //!
-//! Big/little-endian and varint/zigzag primitive read/write; the `BinaryIo` derive macro
-//! generates struct/enum serialization on top of this module.
+//! 提供大小端与 varint/zigzag 原生类型的读写；`BinaryIo` 派生宏在此之上
+//! 生成结构体与枚举的序列化。
+//!
+//! `ByteReader` / `ByteWriter`: panic-free binary IO over `bytes`.
+//!
+//! Provides big/little-endian and varint/zigzag primitive reads and writes; the
+//! `BinaryIo` derive macro generates struct/enum serialization on top of it.
 
 use crate::interfaces::{Reader, Writer};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -68,7 +73,10 @@ macro_rules! write_fn {
     };
 }
 
-/// ByteReader is a panic-free way to read bytes from the `byte::Buf` trait.
+/// 从字节流读取数据，读取失败返回 `std::io::Error` 而不是 panic。
+///
+/// Reads data from a byte stream, returning `std::io::Error` instead of
+/// panicking on failure.
 ///
 /// ## Example
 /// ```rust
@@ -703,7 +711,10 @@ impl ByteReader {
     }
 }
 
-/// ByteWriter is a panic-free way to write bytes to a `BufMut` trait.
+/// 向字节流写入数据，写入失败返回 `std::io::Error` 而不是 panic。
+///
+/// Writes data to a byte stream, returning `std::io::Error` instead of
+/// panicking on failure.
 ///
 /// ## Example
 /// A generic example of how to use the `ByteWriter` struct.
@@ -739,14 +750,12 @@ impl ByteReader {
 /// }
 /// ```
 ///
-/// #### ByteWriter Implementation Notice
-/// While most of the methods are reversible, some are not.
-/// Meaning there is a chance that if you call a method in a edge case, it will corrupt the stream.
+/// 写入失败时可能已写入部分字节：`write_var_u32` 逐字节写入，中途失败会在流中
+/// 留下已写入的字节。调用方不应假设失败后流保持原样。
 ///
-/// For example, `write_var_u32` is not reversible because we currently do not
-/// allocate a buffer to store the bytes before writing them to the buffer.
-/// While you should never encounter this issue, it is possible when you run out of memory.
-/// This issue is marked as a todo, but is low priority.
+/// A failed write may leave partial bytes in the stream: `write_var_u32` writes
+/// byte by byte, so a mid-way failure keeps the bytes already written. Callers
+/// must not assume the stream is unchanged after a failed write.
 #[derive(Debug, Clone)]
 pub struct ByteWriter {
     pub(crate) buf: BytesMut,

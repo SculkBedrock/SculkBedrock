@@ -38,23 +38,33 @@ use sc_ecs::component::Component;
 use sc_error::{ScError, ScSite, capture_site};
 use sc_log::t_log;
 
-/// Shared count window for game-layer outbound commands and reserved
-/// packet admission. Capacity bounds command count, not bytes.
+/// 出站命令与槽位预留共用的计数窗口；容量限制命令条数而非字节数。
+///
+/// Shared count window for game-layer outbound commands and reserved packet
+/// admission; the capacity bounds command count, not bytes.
 const OUTBOUND_CHANNEL_CAPACITY: usize = 256;
 
+/// 出站槽位准入失败。
+///
 /// Outbound slot admission failure.
 #[derive(Clone, Debug, Eq, PartialEq, ScError)]
 pub enum OutboundAdmissionError {
+    /// 当前没有可用的出站槽位。
+    ///
     /// No outbound slot is available.
     #[sc_error(code = "raknet.outbound.busy")]
     Busy { detail: String, site: ScSite },
+    /// 出站信道已关闭。
+    ///
     /// The outbound channel is closed.
     #[sc_error(code = "raknet.outbound.closed")]
     Closed { detail: String, site: ScSite },
 }
 
 impl OutboundAdmissionError {
-    /// Build a busy error, capturing the call site.
+    /// 构造 busy 错误并捕获调用位置。
+    ///
+    /// Builds a busy error, capturing the call site.
     #[track_caller]
     pub fn busy(detail: impl Into<String>) -> Self {
         Self::Busy {
@@ -63,7 +73,9 @@ impl OutboundAdmissionError {
         }
     }
 
-    /// Build a closed error, capturing the call site.
+    /// 构造 closed 错误并捕获调用位置。
+    ///
+    /// Builds a closed error, capturing the call site.
     #[track_caller]
     pub fn closed(detail: impl Into<String>) -> Self {
         Self::Closed {
@@ -89,18 +101,28 @@ impl Display for OutboundAdmissionError {
 impl Error for OutboundAdmissionError {}
 
 
+/// 出站命令槽位计数（信号量封装）。
+///
+/// Outbound command slot budget (semaphore wrapper).
 #[derive(Clone, Debug)]
 struct OutboundSlotBudget {
     semaphore: Arc<Semaphore>,
 }
 
 impl OutboundSlotBudget {
+    /// 以给定容量创建槽位计数。
+    ///
+    /// Creates a budget with the given capacity.
     fn new(capacity: usize) -> Self {
         Self {
             semaphore: Arc::new(Semaphore::new(capacity)),
         }
     }
 
+    /// 获取一个槽位（等待可用槽位）。信道关闭时返回 `SendError`。
+    ///
+    /// Acquires one slot, waiting until a slot is free. Returns `SendError`
+    /// once the channel is closed.
     async fn acquire(&self) -> Result<OutboundSlotPermit, SendQueueError> {
         let permit = Arc::clone(&self.semaphore)
             .acquire_owned()
@@ -113,6 +135,10 @@ impl OutboundSlotBudget {
         })
     }
 
+    /// 非阻塞获取一个槽位；无槽位返回 busy 错误，信道关闭返回 closed 错误。
+    ///
+    /// Acquires a slot without blocking; returns a busy error when no slot is
+    /// free and a closed error when the channel is closed.
     fn try_acquire(&self) -> Result<OutboundSlotPermit, OutboundAdmissionError> {
         let permit =
             Arc::clone(&self.semaphore)
@@ -133,6 +159,8 @@ impl OutboundSlotBudget {
     }
 }
 
+/// 单连接上一个出站命令槽位的 RAII 预留。
+///
 /// RAII reservation for one outbound command slot on a single connection.
 pub struct OutboundSlotPermit {
     budget: Arc<Semaphore>,
@@ -147,36 +175,53 @@ impl std::fmt::Debug for OutboundSlotPermit {
 }
 
 impl OutboundSlotPermit {
-    /// Keep an owned accounting/pinning guard alive until the outbound command
+    /// 挂载一个自有记账/固定守卫，使其存活到该出站命令被发送循环消费
+    /// （或命令被取消）为止。
+    ///
+    /// Keeps an owned accounting/pinning guard alive until the outbound command
     /// has been consumed by the send loop (or the command is cancelled).
     pub fn attach_guard(&mut self, guard: impl Send + 'static) {
         self.guards.push(Box::new(guard));
     }
 }
 
+/// 出站命令与其槽位预留的配对；预留随命令一同排队并在入队后释放。
+///
+/// An outbound command paired with its slot reservation; the permit is queued
+/// with the command and released after insertion.
 #[derive(Debug)]
 pub(crate) struct QueuedOutboundCommand {
     command: OutboundCommand,
     _permit: OutboundSlotPermit,
 }
 
-/// High-priority protocol command channel capacity.
-/// Handlers are microsecond-scale; capacity absorbs short bursts.
+/// 高优先级协议命令信道的容量（限制命令条数）。
+///
+/// Capacity of the high-priority protocol command channel (bounds command
+/// count).
 const PRIORITY_CHANNEL_CAPACITY: usize = 64;
 
-/// Debug interval (seconds) for net_recv health summaries.
+/// net_recv 健康摘要日志的最小间隔（秒）。
+///
+/// Minimum interval (seconds) between net_recv health summary logs.
 const RECV_HEALTH_LOG_INTERVAL_SECS: u64 = 10;
 
+/// 入站游戏层接收失败。
+///
 /// Inbound game-layer receive failure.
 #[derive(Debug, ScError)]
 pub enum RecvError {
+    /// 游戏层接收信道已关闭。
+    ///
     /// The game-layer channel is closed.
     #[sc_error(code = "raknet.recv.closed")]
     Closed { detail: String, site: ScSite },
 }
 
 impl RecvError {
-    /// Build a closed error, capturing the call site.
+    /// 构造 closed 错误并捕获调用位置。
+    ///
+    /// Builds a closed error, capturing the call site.
     #[track_caller]
     pub fn closed(detail: impl Into<String>) -> Self {
         Self::Closed {
@@ -199,18 +244,31 @@ impl Display for RecvError {
 impl Error for RecvError {}
 
 
+/// 连接的对外元信息（MTU 与最近收包时间）。
+///
+/// External metadata for a connection (MTU and last receive time).
 #[derive(Debug, Clone, Copy)]
 pub struct ConnMeta {
-    /// This is important, and is stored within the server itself
-    /// This value is 0 until the connection state is `Connecting`
+    /// 该连接协商到的 MTU；状态为 `Connecting` 之前为 0。
+    ///
+    /// MTU negotiated for this connection; 0 until the state is `Connecting`.
     pub mtu_size: u16,
-    /// The time this connection last sent any data. This will be used during server tick.
+    /// 最近一次收到任意数据的时间（Unix 秒），供服务端 tick 判定存活。
+    ///
+    /// Time (Unix seconds) this connection last received any data; used by
+    /// the server tick.
     pub recv_time: u64,
 }
 
+/// net_recv 任务读取的会话级数据报信道。
+///
+/// Per-session datagram channel read by the net_recv task.
 pub(crate) type ConnNetChan = Arc<Receiver<Vec<u8>>>;
 
 impl ConnMeta {
+    /// 以给定 MTU 创建元信息，收包时间取当前时间。
+    ///
+    /// Creates metadata with the given MTU and the current receive time.
     pub fn new(mtu_size: u16) -> Self {
         Self {
             mtu_size,
@@ -219,48 +277,59 @@ impl ConnMeta {
     }
 }
 
+/// 游戏层出站命令（普通优先级）：已编码的批量字节。
+///
 /// Game-layer outbound commands (normal priority): encoded batch bytes.
 #[derive(Debug)]
 pub enum OutboundCommand {
+    /// 游戏层编码后的原始字节（批量），以 ReliableOrd / 信道 0 发送。
+    ///
     /// Game-layer encoded raw bytes (batch) over ReliableOrd / channel 0.
     Send { bytes: Vec<u8>, immediate: bool },
 }
 
-/// High-priority protocol-layer commands.
+/// 高优先级协议层命令。
 ///
-/// The send loop consumes this channel first: control plane (pong replies,
-/// ACK cleanup, NACK retransmit, disconnect) stays isolated from game data,
-/// so chunk-send storms never queue-block control traffic. Control handlers
-/// are microsecond-scale memory operations.
+/// High-priority protocol-layer commands.
 #[derive(Debug)]
 pub enum PriorityCommand {
+    /// RakNet 协议报文（ConnectedPong / ConnectionAccept / Disconnect）。
+    ///
     /// RakNet protocol packets (ConnectedPong / ConnectionAccept / Disconnect).
     RakPacket {
         packet: RakPacket,
         reliability: Reliability,
         immediate: bool,
     },
-    /// Client ACKs drop acknowledged datagrams from the recovery queue.
+    /// 客户端 ACK：从恢复队列移除已确认的数据报。
+    ///
+    /// Client ACK: drops acknowledged datagrams from the recovery queue.
     Ack(Ack),
-    /// Client NACKs retransmit lost datagrams immediately.
+    /// 客户端 NACK：立即重传丢失的数据报。
+    ///
+    /// Client NACK: retransmits lost datagrams immediately.
     Nack(Ack),
-    /// Shut down send_loop (queued after earlier commands for flush semantics).
+    /// 关闭发送循环；排在先前命令之后，保证先刷新后退出。
+    ///
+    /// Shuts down the send loop; queued after earlier commands for flush
+    /// semantics.
     Close,
 }
 
+/// 专用的保活发送路径（ConnectedPing/ConnectedPong）。
+///
+/// 该路径不经过队列与 SendQueue，直接 `try_send_to`：
+/// 1. 数据报序号来自共享原子计数器（每连接单调递增）；
+/// 2. 探测报文不入恢复队列，由周期性重发恢复；
+/// 3. 乱序到达由客户端接收侧的 UDP 乱序处理承担。
+///
 /// Dedicated keepalive send path (ConnectedPing/ConnectedPong).
 ///
-/// Ping/pong is the critical liveness path: clients disconnect after ~5s
-/// without a response, so it never queues behind game packets. The path
-/// bypasses queues and SendQueue:
-///
-/// 1. datagram numbers come from a shared atomic counter (per-connection
-///    monotonic unique numbers for client ordering and ACK/NACK);
-/// 2. unreliable probes skip the recovery queue entirely and recover
-///    through the periodic 3s resend;
-/// 3. direct `try_send_to` with no queueing, channels, or lock waits.
-///
-/// Out-of-order arrival is harmless: client recv already handles UDP reorder.
+/// The path bypasses queues and SendQueue and calls `try_send_to` directly:
+/// 1. datagram numbers come from a shared atomic counter (monotonic per
+///    connection);
+/// 2. probes skip the recovery queue and recover through the periodic resend;
+/// 3. out-of-order arrival is handled by the client's UDP reorder support.
 #[derive(Clone, Debug)]
 pub(crate) struct KeepaliveChannel {
     socket: Arc<UdpSocket>,
@@ -269,7 +338,9 @@ pub(crate) struct KeepaliveChannel {
 }
 
 impl KeepaliveChannel {
-    /// Send one keepalive packet immediately (unreliable, no retransmit).
+    /// 立即发送一个保活报文（不可靠、不重传）。
+    ///
+    /// Sends one keepalive packet immediately (unreliable, no retransmit).
     pub(crate) fn send(&self, packet: RakPacket) -> Result<(), SendQueueError> {
         let buf = packet
             .write_to_bytes()
@@ -301,28 +372,41 @@ impl KeepaliveChannel {
     }
 }
 
+/// 一轮周期性维护的间隔。
+///
+/// 维护内容包括保活探测、冲刷待发帧并重传未确认数据报、执行未确认年龄
+/// 策略。
+///
 /// Cadence of one housekeeping round.
 ///
-/// Housekeeping covers the three duties that must keep running for a healthy
-/// connection no matter how busy the command channels are: the keepalive probe,
-/// flushing queued frames with retransmission, and the unacknowledged-age
-/// policy.
+/// Housekeeping covers the keepalive probe, flushing queued frames with
+/// retransmission, and the unacknowledged-age policy.
 const HOUSEKEEPING_INTERVAL: Duration = Duration::from_millis(50);
 
+/// 对端仍在响应时，两次保活探测之间的间隔。
+///
 /// Interval between keepalive probes of a peer that is answering.
 const KEEPALIVE_INTERVAL: Duration = Duration::from_millis(3_000);
 
+/// 按墙钟 deadline 运行、而非由 `select!` 分支驱动的记账状态。
+///
 /// Bookkeeping that runs on a wall-clock deadline rather than on a `select!`
 /// branch.
 #[derive(Debug, Default)]
 struct HousekeepingState {
-    /// When the last round ran. `None` means "never ran".
+    /// 上一轮维护的执行时刻；`None` 表示从未执行。
+    ///
+    /// When the last round ran; `None` means "never ran".
     last_round: Option<Instant>,
+    /// 上一次保活探测的发送时刻。
+    ///
     /// When the last keepalive probe was sent.
     last_ping: Option<Instant>,
 }
 
 impl HousekeepingState {
+    /// 判断 `now` 时刻是否到了执行一轮维护的时间。
+    ///
     /// Whether a round is due at `now`.
     fn due(&self, now: Instant) -> bool {
         match self.last_round {
@@ -331,10 +415,14 @@ impl HousekeepingState {
         }
     }
 
+    /// 判断 `now` 时刻是否该向对端发送保活探测。
+    ///
+    /// 该判定独立于维护轮次间隔，额外的维护轮不会加快探测频率。
+    ///
     /// Whether the peer is due for a keepalive probe at `now`.
     ///
-    /// Kept separate from the round cadence so that running extra rounds — which
-    /// is exactly what happens under load — never turns into a faster ping.
+    /// Kept separate from the round cadence, so extra rounds never turn into
+    /// a faster ping.
     fn ping_due(&self, now: Instant) -> bool {
         match self.last_ping {
             None => true,
@@ -343,23 +431,16 @@ impl HousekeepingState {
     }
 }
 
+/// 执行一轮周期性维护；返回 `true` 表示必须关闭连接。
+///
+/// 调用方在每个 `select!` 分支后都通过 [`HousekeepingState::due`] 检查，
+/// 使推进取决于流逝时间而非分支位置（`biased` 轮询会跳过后面的定时器分支）。
+///
 /// One housekeeping round. Returns `true` when the connection must be closed.
 ///
-/// This deliberately does **not** live in one `select!` branch. The send loop
-/// polls with `biased` ordering, which commits to the first *ready* branch and
-/// never polls the rest, so a timer branch placed after two command channels
-/// stops running entirely for as long as both channels stay backlogged — and a
-/// backlogged control *and* data plane is the normal state while chunks stream.
-///
-/// When that happened, three failures appeared together and none of them looked
-/// related: `SendQueue::ready` stopped being flushed (so chunk payloads were
-/// accepted by the game layer but never left), unacknowledged datagrams were
-/// never retransmitted (so a single loss left a permanent hole that stalled the
-/// peer's reliable reassembly, which is what a "frozen" client actually is), and
-/// the keepalive ping stopped (so the client timed the server out and left while
-/// the congested server never observed the disconnect). Every branch therefore
-/// calls this through [`HousekeepingState::due`], which makes progress a
-/// function of elapsed time instead of branch position.
+/// Callers gate on [`HousekeepingState::due`] after every `select!` branch so
+/// progress depends on elapsed time rather than branch position (`biased`
+/// polling skips the later timer branches).
 fn housekeeping_round(
     send_q: &mut SendQueue,
     keepalive: &KeepaliveChannel,
@@ -369,8 +450,7 @@ fn housekeeping_round(
 ) -> bool {
     state.last_round = Some(now);
 
-    // Keepalive probe, sent ahead of the flush so a congested queue can never
-    // delay it.
+    // Keepalive probe, sent before the flush so a congested queue cannot delay it.
     if state.ping_due(now) {
         let ping_time = current_epoch() as i64;
         match keepalive.send(ConnectedPing { time: ping_time }.into()) {
@@ -390,9 +470,7 @@ fn housekeeping_round(
     // Flush queued frames and retransmit what the peer never acknowledged.
     send_q.update();
 
-    // Age policy: a peer that stopped acknowledging must not keep the reliable
-    // queue (and this process) pinned. This is terminal — the peer's stream
-    // already has a hole.
+    // Unacked-age policy: terminal, the peer's reliable stream already has a hole.
     if send_q.expire_stale() {
         error!(
             "{}",
@@ -407,51 +485,72 @@ fn housekeeping_round(
     false
 }
 
+/// 向发送循环提交一条控制事实的结果。
+///
 /// Outcome of offering one control fact to the send loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ControlOffer {
+    /// 发送循环已接管该控制事实。
+    ///
     /// The send loop owns it now.
     Handed,
+    /// 发送循环积压，未能接收该控制事实。
+    ///
     /// The send loop was too far behind to take it.
     Dropped,
 }
 
+/// 接收路径中记录发送循环未能接受的控制事实的计数。
+///
+/// 由 net_recv 任务独占，因此这些数值不需要同步。
+///
 /// Receive-path counters for control facts the send loop could not accept.
 ///
 /// Owned by the net_recv task, so the numbers need no synchronisation.
 #[derive(Debug, Default)]
 struct ControlHandoff {
+    /// 发送循环未看到的 ACK/NACK 数。
+    ///
+    /// 可恢复：`SendQueue::update` 会重传对端未确认的数据报，对端也会
+    /// 重新确认收到的数据报。
+    ///
     /// ACK/NACK the send loop never saw.
     ///
     /// Recoverable: `SendQueue::update` retransmits whatever the peer has not
     /// acknowledged and the peer re-acknowledges what it receives.
     deferred: u64,
+    /// 完全无法入队的握手响应数。
+    ///
+    /// 握手没有重传路径，因此这些计数会导致连接失败。
+    ///
     /// Handshake responses that could not be queued at all.
     ///
     /// Not recoverable — there is no retransmit for a handshake — so these
     /// fail the connection.
     refused: u64,
+    /// 游戏层没有空间的重组后游戏报文数。
+    ///
     /// Reassembled game packets the game layer had no room for.
     overrun: u64,
 }
 
-/// Offer one control fact to the send loop **without ever blocking**.
+/// 向发送循环提交一条控制事实，绝不阻塞。
 ///
-/// The net_recv task owns `RecvQueue` and is the only reader of the per-session
-/// datagram channel, so waiting here stops the whole inbound direction for this
-/// session: the session channel fills, and the server socket loop then drops
-/// every further inbound datagram (`server::recv_packet` drops on `Full` rather
-/// than blocking). The peer keeps answering keepalives that nobody reads and
-/// then leaves, and the server never observes it. Blocking the receive path on
-/// the send path is therefore never acceptable, no matter how slow the send
-/// loop gets.
+/// `priority` 为目标信道，`command` 是要提交的控制事实，`recoverable` 表示
+/// 该事实是否可由重传恢复，`stats` 记录被丢弃的事实。
 ///
-/// A full channel means the send loop has not drained
-/// [`PRIORITY_CHANNEL_CAPACITY`] control commands. That is already past the
-/// point where protocol facts are produced faster than reliable recovery can
-/// absorb them, so the caller decides what an unaccepted fact means rather than
-/// this function deciding for it: ACK/NACK are counted and left to retransmission,
-/// while a handshake response fails the connection.
+/// 信道满或已关闭时返回 [`ControlOffer::Dropped`]，由调用方决定其后果；
+/// ACK/NACK 记入 `deferred` 交给重传，握手响应记入 `refused` 并导致连接失败。
+///
+/// Offer one control fact to the send loop without ever blocking.
+///
+/// `priority` is the target channel, `command` the control fact, `recoverable`
+/// whether retransmission can recover it, and `stats` records dropped facts.
+///
+/// Returns [`ControlOffer::Dropped`] when the channel is full or closed,
+/// leaving the consequence to the caller: ACK/NACK counts go to `deferred` for
+/// retransmission, handshake responses to `refused`, which fails the
+/// connection.
 fn offer_control(
     priority: &Sender<PriorityCommand>,
     command: PriorityCommand,
@@ -463,8 +562,7 @@ fn offer_control(
         Err(TrySendError::Full(_)) => {
             if recoverable {
                 stats.deferred = stats.deferred.saturating_add(1);
-                // Counted, not logged per event: a NACK storm would otherwise
-                // turn a single congestion episode into a log flood.
+                // Counted, not logged per event, to survive NACK storms.
                 trace!(
                     "control channel full: {} recoverable control fact(s) deferred to retransmission",
                     stats.deferred
@@ -482,21 +580,23 @@ fn offer_control(
     }
 }
 
-/// Hand one reassembled game packet to the game layer **without ever blocking**.
+/// 把一个重组后的游戏报文交给游戏层，绝不阻塞。
 ///
-/// This is the same invariant as [`offer_control`], one hop further along: the
-/// net_recv task is the only reader of the per-session datagram channel, so
-/// waiting for the game layer to catch up stalls the whole inbound direction.
-/// Once that happens the session channel fills, the server socket loop drops
-/// every further inbound datagram, and the peer looks dead to us while its
-/// keepalive answers and its disconnect both go unread — the session then only
-/// ends when the inactivity policy happens to fire.
+/// `sender` 是游戏层信道，`buffer` 是报文字节，`stats` 记录被拒绝的报文。
+/// 信道满或已关闭时返回 `Err(原因)`，调用方据此关闭连接。
 ///
-/// The reassembled message cannot be recovered either: RakNet has already
-/// acknowledged the datagram it came from, so the peer will not resend it.
-/// Silently dropping it would lose gameplay state, so a full game-layer channel
-/// fails the connection instead — the same honest terminal the outbound path
-/// takes when reliable datagrams can no longer be admitted.
+/// 与 [`offer_control`] 相同的约束：本函数不得等待发送路径。RakNet 已确认
+/// 该报文所在数据报，因此无法重传恢复。
+///
+/// Hand one reassembled game packet to the game layer without ever blocking.
+///
+/// `sender` is the game-layer channel, `buffer` the packet bytes, `stats`
+/// records rejected packets. Returns `Err(reason)` when the channel is full or
+/// closed, which the caller turns into a connection close.
+///
+/// Same invariant as [`offer_control`]: this must never wait on the send path.
+/// RakNet already acknowledged the datagram carrying the message, so it cannot
+/// be recovered by retransmission.
 fn hand_to_game_layer(
     sender: &Sender<Vec<u8>>,
     buffer: &[u8],
@@ -512,19 +612,18 @@ fn hand_to_game_layer(
     }
 }
 
-/// Lock-free concurrency model (split by ownership, not locks):
+/// 单个 RakNet 客户端连接：持有地址、会话状态，并启动 net_recv、send_loop
+/// 与 tick 三个任务。
 ///
-/// | State              | Owner          | Sync                    |
-/// |--------------------|----------------|-------------------------|
-/// | `RecvQueue`        | net_recv task  | exclusive `&mut`, no locks |
-/// | `SendQueue`        | send_loop task | exclusive `&mut`, no locks |
-
-/// | Connection state   | shared         | `AtomicConnectionState` |
-/// | Datagram numbers   | shared         | `AtomicU32`             |
-/// | Last receive time  | shared         | `AtomicU64`             |
-/// | Shutdown signal    | shared         | `Notify`                |
-/// | ACK/NACK send      | net_recv       | direct UDP, no locks    |
-/// | Keepalive send     | any task       | direct UDP, no locks    |
+/// 所有权划分：`RecvQueue` 由 net_recv 任务独占，`SendQueue` 由 send_loop
+/// 任务独占；连接状态、数据报序号、最近收包时间与关闭信号为共享原子值。
+///
+/// A single RakNet client connection: holds the address and session state and
+/// spawns the net_recv, send_loop, and tick tasks.
+///
+/// Ownership: `RecvQueue` is exclusive to the net_recv task and `SendQueue` to
+/// the send_loop task; connection state, datagram numbers, last receive time,
+/// and the shutdown signal are shared atomic values.
 #[derive(Component, Clone, Debug)]
 pub struct Connection {
     pub address: SocketAddr,
@@ -532,7 +631,9 @@ pub struct Connection {
     outbound_tx: Sender<QueuedOutboundCommand>,
     outbound_slots: OutboundSlotBudget,
     priority_tx: Sender<PriorityCommand>,
-    /// Dedicated keepalive send path (no queueing, no contention).
+    /// 保活直发路径（不排队、不竞争锁）。
+    ///
+    /// Keepalive direct-send path (no queueing, no lock contention).
     pub(crate) keepalive: KeepaliveChannel,
     pub internal_net_recv: ConnNetChan,
     disconnect: Arc<Notify>,
@@ -542,6 +643,16 @@ pub struct Connection {
 }
 
 impl Connection {
+    /// 创建连接并启动其任务。
+    ///
+    /// `address` 为对端地址，`socket` 为服务端 UDP 套接字，`net` 为会话级
+    /// 入站数据报信道，`notifier` 用于上报关闭的连接，`mtu` 为协商的 MTU。
+    ///
+    /// Creates a connection and spawns its tasks.
+    ///
+    /// `address` is the peer address, `socket` the server UDP socket, `net` the
+    /// per-session inbound datagram channel, `notifier` reports closed
+    /// connections, and `mtu` the negotiated MTU.
     pub async fn new(
         address: SocketAddr,
         socket: &Arc<UdpSocket>,
@@ -549,15 +660,14 @@ impl Connection {
         notifier: Arc<Sender<SocketAddr>>,
         mtu: u16,
     ) -> Self {
-        // net_recv to game-layer channel: reassembled game packets queue
-        // here. Too-small capacity amplifies game-layer pauses into backpressure.
+        // net_recv to game-layer channel: reassembled game packets queue here.
         let (net_sender, net_receiver) = bounded::<Vec<u8>>(256);
         let (outbound_tx, outbound_rx) =
             bounded::<QueuedOutboundCommand>(OUTBOUND_CHANNEL_CAPACITY);
         let outbound_slots = OutboundSlotBudget::new(OUTBOUND_CHANNEL_CAPACITY);
         let (priority_tx, priority_rx) = bounded::<PriorityCommand>(PRIORITY_CHANNEL_CAPACITY);
-        // Datagram numbers share one atomic counter across send paths
-        // (numbers must be globally monotonic unique).
+        // One atomic counter feeds every send path: datagram numbers must be
+        // monotonic and unique per connection.
         let datagram_seq = Arc::new(AtomicU32::new(0));
         let keepalive = KeepaliveChannel {
             socket: socket.clone(),
@@ -582,7 +692,7 @@ impl Connection {
         let mut tasks = tk.lock();
         tasks.push(c.init_tick(notifier));
         tasks.push(c.init_net_recv(net, net_sender, socket.clone()));
-        // send_loop owns SendQueue exclusively: the only outbound owner, no locks.
+        // send_loop owns SendQueue exclusively.
         tasks.push(c.init_send_loop(
             SendQueue::new(mtu, 12000, 5, datagram_seq, socket.clone(), address),
             outbound_rx,
@@ -593,14 +703,20 @@ impl Connection {
         c
     }
 
-    /// Dedicated outbound task with exclusive SendQueue ownership.
+    /// 启动出站任务：独占 `SendQueue`，消费高优先级与普通命令信道，并按
+    /// 周期执行维护轮。
     ///
-    /// - `biased` select polls in fixed order: shutdown, high-priority
-    ///   (control), normal (data), periodic tick, so pong/ACK/NACK never
-    ///   wait behind chunk storms;
-    /// - control handlers are microsecond-scale memory operations;
-    /// - ACK/NACK replies bypass this task: net_recv answers datagrams
-    ///   directly for lower latency.
+    /// `select!` 以 `biased` 顺序轮询：关闭信号、高优先级（控制）、普通
+    /// （数据）、周期定时器。数据报级 ACK/NACK 由 net_recv 直发，不经过
+    /// 本任务。
+    ///
+    /// Spawns the outbound task: it owns `SendQueue` exclusively, drains the
+    /// high-priority and normal command channels, and runs a housekeeping round
+    /// periodically.
+    ///
+    /// The `select!` polls in `biased` order: shutdown, high-priority
+    /// (control), normal (data), periodic tick. Datagram-level ACK/NACK replies
+    /// are sent directly by net_recv and do not pass through this task.
     pub(crate) fn init_send_loop(
         &self,
         mut send_q: SendQueue,
@@ -652,14 +768,10 @@ impl Connection {
                                 send_q.ack(ack);
                             }
                             Ok(PriorityCommand::Nack(nack)) => {
-                                // Re-send the original FramePacket bytes directly.
-                                // This preserves the original sequence number that
-                                // the client referenced in its NACK, so the client
-                                // can reassemble the fragment in place. Re-inserting
-                                // via `insert()` would wrap the datagram in a
-                                // brand-new FramePacket with a new sequence number
-                                // *and* Unreliable reliability, which breaks
-                                // fragment reassembly for split packets.
+                                // Re-send the stored FramePacket bytes unchanged: the client's
+                                // NACK references that datagram's sequence number, and fragment
+                                // reassembly depends on it. Re-inserting through `insert()`
+                                // would assign a new sequence number and Unreliable reliability.
                                 for packet in send_q.nack(nack) {
                                     if let Ok(buffer) = packet.write_to_bytes() {
                                         let _ = send_q.send_stream(buffer.as_slice());
@@ -667,11 +779,9 @@ impl Connection {
                                 }
                             }
                             Ok(PriorityCommand::Close) => break,
-                            Err(_) => break, // 所有 Sender 已 drop
+                            Err(_) => break, // All senders dropped
                         }
-                        // A backlogged control plane must not be able to starve
-                        // the flush/retransmit/keepalive round: see
-                        // `housekeeping_round`.
+                        // Housekeeping must also run while the control plane stays backlogged.
                         let now = Instant::now();
                         if housekeeping.due(now)
                             && housekeeping_round(&mut send_q, &keepalive, address, &mut housekeeping, now)
@@ -687,10 +797,9 @@ impl Connection {
                                     OutboundCommand::Send { bytes, immediate } => {
                                         if let Err(e) = send_q.insert(&bytes, Reliability::ReliableOrd, immediate, Some(0)) {
                                             if e.is_terminal() {
-                                                // Reliable datagrams can no longer be
-                                                // admitted. Closing is the only honest
-                                                // outcome: keeping the connection would
-                                                // silently drop reliable data.
+                                                // Reliable datagrams can no longer be admitted:
+                                                // closing is terminal, keeping the connection
+                                                // would silently drop reliable data.
                                                 error!(
                                                     "{}",
                                                     t_log!(
@@ -713,10 +822,9 @@ impl Connection {
                                 // insertion step; SendQueue owns its recovery copy after this.
                                 drop(_permit);
                             }
-                            Err(_) => break, // 所有 Sender 已 drop
+                            Err(_) => break, // All senders dropped
                         }
-                        // Same invariant as the control-plane branch: streaming
-                        // chunks must not be able to starve housekeeping.
+                        // Housekeeping must also run while the data plane stays backlogged.
                         let now = Instant::now();
                         if housekeeping.due(now)
                             && housekeeping_round(&mut send_q, &keepalive, address, &mut housekeeping, now)
@@ -742,15 +850,18 @@ impl Connection {
         })
     }
 
+    /// 启动 tick 任务：每 50ms 调用 `tick_body` 更新会话状态，
+    /// 连接结束时通过 `notifier` 上报地址。
+    ///
+    /// Spawns the tick task: it calls `tick_body` every 50 ms to update
+    /// the session state and reports the address through `notifier` when the
+    /// connection ends.
     pub(crate) fn init_tick(&self, notifier: Arc<Sender<SocketAddr>>) -> JoinHandle<()> {
         let address = self.address;
         let closer = self.disconnect.clone();
         let last_recv = self.recv_time.clone();
         let state = self.state.clone();
 
-        // initialize the event io
-        // we initialize the ticking function here, it's purpose is to update the state of the current connection
-        // while handling throttle
         tokio::spawn(async move {
             loop {
                 select! {
@@ -787,6 +898,22 @@ impl Connection {
         })
     }
 
+    /// 单次 tick 的健康检查。
+    ///
+    /// `address` 用于日志，`closer` 用于发出关闭信号，`last_recv` 为最近
+    /// 收包时间，`state` 为共享会话状态。
+    ///
+    /// 状态迁移：已 `Disconnected` 或 `recv + 15 <= now` 时关闭；
+    /// `recv + 10 <= now` 且状态可靠时置为 `TimingOut`。
+    ///
+    /// One tick of the health check.
+    ///
+    /// `address` is used for logging, `closer` signals shutdown, `last_recv`
+    /// holds the last receive time, and `state` is the shared session state.
+    ///
+    /// Transitions: closes when already `Disconnected` or when
+    /// `recv + 15 <= now`; marks `TimingOut` when `recv + 10 <= now` and the
+    /// state is still reliable.
     async fn tick_body(
         address: SocketAddr,
         closer: Arc<Notify>,
@@ -832,12 +959,19 @@ impl Connection {
         LoopResult::Continue
     }
 
-    /// This function initializes the raw internal packet handling task!
+    /// 启动入站处理任务：独占 `RecvQueue`（分片重组、ACK 记录、NACK 检测、
+    /// 有序分发），并直接用 ACK/NACK 控制报文应答每个数据报。
     ///
-    /// This task owns `RecvQueue` exclusively (reassembly, ACK records,
-    /// NACK detection, ordered dispatch) and answers every datagram with
-    /// ACK/NACK control packets directly: datagram-level packets need no
-    /// sequence or retransmit, so plain `try_send_to` suffices.
+    /// `net` 是会话级入站数据报信道，`sender` 是游戏层信道，`socket` 用于
+    /// 直发控制报文。
+    ///
+    /// Spawns the inbound task: it owns `RecvQueue` exclusively (fragment
+    /// reassembly, ACK records, NACK detection, ordered dispatch) and answers
+    /// every datagram with ACK/NACK control packets sent directly, since
+    /// datagram-level packets take no sequence number and need no retransmit.
+    ///
+    /// `net` is the per-session datagram channel, `sender` the game-layer
+    /// channel, and `socket` is used to send control packets directly.
     pub(crate) fn init_net_recv(
         &self,
         net: Receiver<Vec<u8>>,
@@ -845,7 +979,7 @@ impl Connection {
         socket: Arc<UdpSocket>,
     ) -> JoinHandle<()> {
         let recv_time = self.recv_time.clone();
-        // RecvQueue is task-exclusive: access via &mut borrow, no locks.
+        // RecvQueue is task-exclusive: accessed through a &mut borrow.
         let mut recv_q = RecvQueue::new();
         let priority = self.priority_tx.clone();
         let keepalive = self.keepalive.clone();
@@ -854,12 +988,11 @@ impl Connection {
         let address = self.address;
 
         tokio::spawn(async move {
-            // Task-exclusive receive-path counters need no sync.
+            // Task-exclusive receive-path counters.
             let mut stats = ControlHandoff::default();
-            // Ordered gaps heal through retransmission within about a second, so
-            // a one-second inspection cadence cannot mistake a normal reorder
-            // for a stall; the health summary below runs an order of magnitude
-            // slower and is purely diagnostic.
+            // Ordered gaps normally heal through retransmission within about a
+            // second, so the inspection runs every second; the diagnostic
+            // health summary runs slower still.
             let mut gap_watch = tokio::time::interval(Duration::from_secs(1));
             gap_watch.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut last_health_log = current_epoch();
@@ -892,14 +1025,12 @@ impl Connection {
                     }
                     _ = gap_watch.tick() => {
                         let now = current_epoch();
-                        // Missing UDP sequences do not gate frame delivery.
-                        // Retry observed gaps even while no datagrams arrive.
+                        // Missing UDP sequences do not gate frame delivery:
+                        // retry observed gaps even while no datagrams arrive.
                         Self::flush_ack_nack(&socket, address, &mut recv_q);
-                        // A gap that outlives retransmission is a hole nothing
-                        // will fill; every later ordered frame is already
-                        // buffered behind it. Close with an explicit reason so
-                        // the peer reconnects instead of both ends freezing
-                        // with zero diagnostics.
+                        // A gap that outlives retransmission leaves every later
+                        // ordered frame buffered behind it; close the session
+                        // with an explicit reason.
                         if let Some((channel, age)) = recv_q.stale_ordered_gap(now) {
                             let health = recv_q.health();
                             error!(
@@ -976,9 +1107,18 @@ impl Connection {
         })
     }
 
-    /// Direct ACK/NACK send: datagram-level packets (0xc0/0xa0) take no
-    /// datagram numbers and need no retransmit. Prompt per-datagram ACK is
-    /// standard RakNet behavior (clients stop retransmitting sooner).
+    /// 直发挂起的 ACK（0xc0）与 NACK（0xa0）数据报。
+    ///
+    /// 数据报级控制报文不占用数据报序号、也不参与重传，因此直接
+    /// `try_send_to` 即可；及时逐报 ACK 是 RakNet 的标准行为，可让对端
+    /// 尽早停止重发。
+    ///
+    /// Sends pending ACK (0xc0) and NACK (0xa0) datagrams directly.
+    ///
+    /// Datagram-level control packets take no datagram sequence number and are
+    /// never retransmitted, so plain `try_send_to` suffices; prompt per-datagram
+    /// ACK is standard RakNet behaviour and makes the peer stop resending
+    /// sooner.
     fn flush_ack_nack(socket: &UdpSocket, address: SocketAddr, recv_q: &mut RecvQueue) {
         let ack_seqs = recv_q.ack_flush();
         if !ack_seqs.is_empty() {
@@ -1009,11 +1149,22 @@ impl Connection {
         }
     }
 
-    /// Deliberately **synchronous**.
+    /// 处理一个入站数据报：更新收包时间、解码帧包、重组并分发报文。
     ///
-    /// This runs on the net_recv task, the only reader of the per-session
-    /// datagram channel, so an `await` here is an await on the outbound path.
-    /// Keeping it sync makes that a compile error rather than a runtime stall.
+    /// 必须保持同步：net_recv 是会话数据报信道的唯一读取者，此处的任何
+    /// `await` 都会阻塞整个入站方向。
+    ///
+    /// 返回 `LoopResult`：`Break` 表示必须关闭连接，`Continue` 表示继续。
+    ///
+    /// Handles one inbound datagram: updates the receive time, decodes the
+    /// frame packet, then reassembles and dispatches its messages.
+    ///
+    /// Must stay synchronous: net_recv is the only reader of the session
+    /// datagram channel, so an `await` here would block the whole inbound
+    /// direction.
+    ///
+    /// Returns `LoopResult::Break` when the connection must be closed,
+    /// otherwise `LoopResult::Continue`.
     fn handle_payload(
         payload: Vec<u8>,
         recv_q: &mut RecvQueue,
@@ -1052,17 +1203,16 @@ impl Connection {
             // This packet will be handled by the recv_queue
             0x80..=0x8d => {
                 if let Ok(pk) = FramePacket::read_from_slice(&payload[..]) {
-                    // RecvQueue is task-exclusive (&mut), no lock contention:
-                    // insert the datagram, reassemble fragments, drain ready
-                    // buffers, then ACK/NACK immediately.
+                    // Insert the datagram, reassemble fragments, then ACK/NACK
+                    // immediately.
                     if let Err(e) = recv_q.insert(pk) {
                         if matches!(
                             e,
                             RecvQueueError::OrderChannelExhausted { .. }
                                 | RecvQueueError::ReliableWindowExhausted { .. }
                         ) {
-                            // Capacity exhaustion cannot be ACKed as successful
-                            // reliable delivery. End this session immediately.
+                            // Capacity exhaustion must not be ACKed as successful
+                            // reliable delivery: end this session immediately.
                             error!("{}", t_log!("console.raknet.recv_error", addr = to_address_token(address), reason = format!("{e:?}")));
                             disconnect.notify();
                             return LoopResult::Break;
@@ -1107,33 +1257,25 @@ impl Connection {
                 }
             }
             NACK => {
-                // Validate this is a nack packet
-
                 if let Ok(nack) = Ack::read_from_slice(&payload[..]) {
-                    // The client acknowledges it did not recieve these packets
-                    // Forward to send_loop for lock-free retransmit.
-                    // Never waits (see `offer_control`).
+                    // The peer reports datagrams it did not receive; hand the fact
+                    // to send_loop for retransmission (never waits, `offer_control`).
                     offer_control(priority, PriorityCommand::Nack(nack), true, stats);
                 }
             }
             ACK => {
-                // first lets validate this is an ack packet
                 if let Ok(ack) = Ack::read_from_slice(&payload[..]) {
-                    // The client acknowledges it received these FramePackets.
-                    // Remove them from the send recovery queue so they are no
-                    // longer retransmitted.
+                    // The peer confirms receipt of these server-sent FramePackets;
+                    // send_loop drops them from the recovery queue.
                     //
-                    // NOTE: Do NOT call recv_q.ack() here. The client's ACK
-                    // references *server-sent* sequence numbers (send_seq),
-                    // but the RecvQueue's nack set tracks *client-sent*
-                    // sequence numbers — a completely different sequence space.
-                    // Calling recv_q.ack() with the client's ACK would
-                    // accidentally clear legitimate NACK entries whenever the
-                    // two sequence spaces happen to overlap, causing the server
-                    // to stop requesting missing client packets.
+                    // Do NOT call recv_q.ack() here: this ACK references server-sent
+                    // sequence numbers, while the RecvQueue NACK set tracks
+                    // client-sent ones — separate sequence spaces. Clearing NACK
+                    // entries across them would stop the server requesting missing
+                    // client packets.
                     //
-                    // A deferred ACK keeps its recovery entry a little longer
-                    // and is retransmitted once; see `offer_control`.
+                    // A deferred ACK keeps its recovery entry longer and is
+                    // retransmitted once; see `offer_control`.
                     offer_control(priority, PriorityCommand::Ack(ack), true, stats);
                 }
             }
@@ -1147,9 +1289,31 @@ impl Connection {
         LoopResult::Continue
     }
 
-    /// Deliberately **synchronous**, for the same reason as
-    /// [`Self::handle_payload`]: no step of inbound processing may wait on the
-    /// outbound path.
+    /// 分发一个重组后的 RakNet 报文：处理在线协议报文，其余转交游戏层。
+    ///
+    /// `buffer` 为重组后的报文字节，`address` 为对端地址，`sender` 为游戏层
+    /// 信道，`priority` 为高优先级控制信道，`keepalive` 为保活直发路径，
+    /// `state` 为共享会话状态，`stats` 记录交接失败的计数。
+    ///
+    /// 返回 `Ok(true)` 表示应当断开，`Ok(false)` 表示继续，`Err(())` 表示
+    /// 处理失败需要关闭连接。
+    ///
+    /// 与 [`Self::handle_payload`] 一样必须保持同步：入站处理不得等待出站
+    /// 路径。
+    ///
+    /// Dispatches one reassembled RakNet message: online packets are handled
+    /// here, everything else is forwarded to the game layer.
+    ///
+    /// `buffer` holds the reassembled message, `address` the peer, `sender` the
+    /// game-layer channel, `priority` the control channel, `keepalive` the
+    /// keepalive path, `state` the shared session state, and `stats` counts
+    /// failed handoffs.
+    ///
+    /// Returns `Ok(true)` to disconnect, `Ok(false)` to continue, and
+    /// `Err(())` when the connection must be closed.
+    ///
+    /// Like [`Self::handle_payload`], this must never wait on the outbound
+    /// path.
     fn process_packet(
         buffer: &[u8],
         address: &SocketAddr,
@@ -1179,8 +1343,8 @@ impl Connection {
                         pong_time: current_epoch() as i64,
                     };
                     let pong_time = response.pong_time;
-                    // Pong uses the keepalive direct path (unreliable + immediate
-                    // UDP send): zero latency even in game packet storms.
+                    // Pong goes through the keepalive direct path: unreliable and
+                    // sent immediately, never queued behind game packets.
                     match keepalive.send(response.into()) {
                         Ok(()) => {
                             debug!(
@@ -1201,7 +1365,6 @@ impl Connection {
                     }
                 }
                 OnlinePacket::ConnectedPong(_pk) => {
-                    // do nothing rn
                     // TODO: add ping calculation
                     debug!(
                         "[{}] Received ConnectedPong (ping_time={}, pong_time={})",
@@ -1227,8 +1390,7 @@ impl Connection {
                         timestamp: current_epoch() as i64,
                     };
                     state.store(ConnectionState::Connecting);
-                    // Route through the high-priority channel to send_loop so login
-                    // handshakes never compete with game-layer sends. Never waits.
+                    // High-priority channel, never waits (see `offer_control`).
                     match offer_control(
                         priority,
                         PriorityCommand::RakPacket {
@@ -1251,12 +1413,10 @@ impl Connection {
                 }
                 OnlinePacket::Disconnect(_) => {
                     // Disconnect the client immediately.
-                    // connection.disconnect("Client disconnected.", false);
                     Ok(true)
                 }
                 OnlinePacket::LostConnection(_) => {
                     // Disconnect the client immediately.
-                    // connection.disconnect("Client disconnected.", false);
                     trace!(
                         "[{}] Client has lost connection, disconnecting client!",
                         to_address_token(*address)
@@ -1309,6 +1469,10 @@ impl Connection {
         Ok(false)
     }
 
+    /// 接收游戏层的下一个入站报文字节；连接关闭时返回 [`RecvError::Closed`]。
+    ///
+    /// Receives the next inbound game-layer packet; returns [`RecvError::Closed`]
+    /// once the connection is closed.
     pub async fn recv(&self) -> Result<Vec<u8>, RecvError> {
         self.internal_net_recv
             .recv()
@@ -1316,38 +1480,63 @@ impl Connection {
             .map_err(|_| RecvError::closed("Connection is closed"))
     }
 
+    /// 连接是否已关闭（会话状态不再可接收）。
+    ///
+    /// Whether the connection is closed (the session state no longer accepts
+    /// packets).
     pub async fn is_closed(&self) -> bool {
         !self.state.load().is_available()
     }
 
-    /// Reserve one count slot before packet hooks/encoding. The reservation is
-    /// held until the send loop has transferred the command into SendQueue.
+    /// 在报文钩子与编码之前预留一个计数槽位。
+    ///
+    /// 预留持续到发送循环把命令转入 `SendQueue` 为止。
+    ///
+    /// Reserves one count slot before packet hooks and encoding.
+    ///
+    /// The reservation is held until the send loop has transferred the command
+    /// into `SendQueue`.
     pub async fn reserve_outbound_slot(&self) -> Result<OutboundSlotPermit, SendQueueError> {
         self.outbound_slots.acquire().await
     }
 
-    /// Nonblocking admission used by retryable chunk delivery.
+    /// 非阻塞预留一个出站槽位，供可重试的分块投递使用。
+    ///
+    /// Reserves an outbound slot without blocking; used by retryable chunk
+    /// delivery.
     pub fn try_reserve_outbound_slot(&self) -> Result<OutboundSlotPermit, OutboundAdmissionError> {
         self.outbound_slots.try_acquire()
     }
 
+    /// 复制 `buffer` 并排队发送；`immediate` 表示立即冲刷。
+    ///
+    /// Copies `buffer` and queues it for sending; `immediate` flushes at once.
     pub async fn send(&self, buffer: &[u8], immediate: bool) -> Result<(), SendQueueError> {
         let permit = self.reserve_outbound_slot().await?;
         self.send_owned_with_permit(buffer.to_vec(), immediate, permit)
             .await
     }
 
-    /// Queue an owned wire buffer without duplicating it.
+    /// 排队发送自有的线字节缓冲区，避免额外复制。
     ///
-    /// The encoded network path already owns its final Vec. Transferring that
-    /// allocation into the bounded outbound channel avoids a full packet copy
-    /// per send; callers with borrowed buffers retain [`Self::send`].
+    /// `bytes` 是调用方自有的完整报文，`immediate` 表示立即冲刷。
+    ///
+    /// Queues an owned wire buffer without duplicating it.
+    ///
+    /// `bytes` is the caller-owned packet, `immediate` flushes at once.
     pub async fn send_owned(&self, bytes: Vec<u8>, immediate: bool) -> Result<(), SendQueueError> {
         let permit = self.reserve_outbound_slot().await?;
         self.send_owned_with_permit(bytes, immediate, permit).await
     }
 
-    /// Transfer an owned wire buffer using a slot reserved before encoding.
+    /// 使用编码前预留的槽位转移一个自有线字节缓冲区。
+    ///
+    /// `bytes` 为报文字节，`immediate` 表示立即冲刷，`permit` 为已预留的槽位。
+    ///
+    /// Transfers an owned wire buffer using a slot reserved before encoding.
+    ///
+    /// `bytes` is the packet, `immediate` flushes at once, and `permit` is the
+    /// reserved slot.
     pub async fn send_owned_with_permit(
         &self,
         bytes: Vec<u8>,
@@ -1357,9 +1546,27 @@ impl Connection {
         self.try_send_owned_with_permit(bytes, immediate, permit)
     }
 
-    /// A reserved slot covers every queued command and in-progress insertion.
-    /// Queue admission is synchronous so callers can publish an ordered receipt
+    /// 同步入队版本的 [`Self::send_owned_with_permit`]。
+    ///
+    /// `bytes` 为报文字节，`immediate` 表示立即冲刷，`permit` 必须是本连接
+    /// 预留的槽位。
+    ///
+    /// 一个预留槽位覆盖所有已排队命令与正在进行的插入；入队为同步操作，
+    /// 调用方可在加密与入队之间无需 `await` 地发布有序回执。
+    ///
+    /// 槽位不属于本连接或信道已满/关闭时返回 `SendError`。
+    ///
+    /// Synchronous variant of [`Self::send_owned_with_permit`].
+    ///
+    /// `bytes` is the packet, `immediate` flushes at once, and `permit` must be
+    /// a slot reserved on this connection.
+    ///
+    /// A reserved slot covers every queued command and in-progress insertion;
+    /// admission is synchronous so callers can publish an ordered receipt
     /// without an await between encryption and enqueue.
+    ///
+    /// Returns `SendError` when the permit belongs to another connection or the
+    /// channel is full or closed.
     pub fn try_send_owned_with_permit(
         &self,
         bytes: Vec<u8>,
@@ -1378,14 +1585,23 @@ impl Connection {
             .map_err(|_| SendQueueError::send_error("Send error"))
     }
 
+    /// 关闭连接：把状态置为 `Disconnected`，向高优先级信道排队 Disconnect
+    /// 与 `Close`，通知监听侧，并终止本连接的所有任务。
+    ///
+    /// 只使用 `try_send`：发送循环已死亡时阻塞发送会永久挂起本函数。
+    ///
+    /// Closes the connection: marks the state `Disconnected`, queues Disconnect
+    /// and `Close` on the high-priority channel, reports the address to the
+    /// listener, and aborts every task of this connection.
+    ///
+    /// Only `try_send` is used; a blocking send would hang here forever once
+    /// the send loop is dead.
     pub async fn close(&self) {
         trace!("[{}] Dropping connection!", to_address_token(self.address));
         self.state.store(ConnectionState::Disconnected);
 
-        // Send the Disconnect packet first through the high-priority channel,
-        // then the Close command: channel FIFO guarantees Disconnect goes out
-        // before the loop exits. Use try_send, never blocking send (a dead
-        // send_loop would hang close() forever).
+        // Disconnect first, then Close: channel FIFO flushes the Disconnect
+        // datagram before the loop exits.
         let disconnect_packet = OnlinePacket::Disconnect(Disconnect {});
         let _ = self.priority_tx.try_send(PriorityCommand::RakPacket {
             packet: disconnect_packet.into(),
@@ -1396,18 +1612,13 @@ impl Connection {
 
         self.disconnect.notify();
 
-        // `close()` aborts the tick task before it can report its address.
-        // Notify the listener explicitly so its session map cannot retain a
-        // dead sender until the process shuts down.
+        // Report the address explicitly: the tick task is aborted before it can.
         let _ = self.close_notifier.try_send(self.address);
 
-        // Give send_loop a scheduling window to flush the Disconnect datagram
-        // (microsecond-scale handling; clients time out after 15s on loss).
+        // Leave send_loop a scheduling window to flush the Disconnect datagram.
         tokio::time::sleep(Duration::from_millis(5)).await;
 
-        // The net_recv task owns recv_queue: it frees with the aborted future,
-        // so no explicit cleanup happens (or can happen) here.
-
+        // recv_queue is freed together with the aborted net_recv future.
         let tasks = self.tasks.clone();
 
         for task in tasks.lock().drain(..) {
@@ -1416,15 +1627,17 @@ impl Connection {
     }
 }
 
-/// Safety net: if `close()` was never called (e.g. due to a panic or logic
-/// error that skips `PlayerConnection::disconnect()`), the RakNet tick and
-/// net_recv tasks would survive forever, continuously holding memory and
-/// CPU. This Drop implementation aborts any remaining tasks when the last
-/// `Connection` clone is dropped.
+/// 最后一个 `Connection` 克隆被丢弃时终止仍在运行的任务。
 ///
-/// The `Arc::strong_count` check ensures we only abort when this is truly the
-/// last reference — temporary clones (e.g. from `get_component`) must not
-/// prematurely kill tasks that the original still needs.
+/// `Arc::strong_count(&tasks) == 1` 保证只在真正的最后一个引用上终止：
+/// 临时克隆（例如取自 `get_component`）不得提前杀掉原连接仍在使用的任务。
+///
+/// Aborts the remaining tasks when the last `Connection` clone is dropped, so a
+/// connection that never called `close()` does not leave its tick and net_recv
+/// tasks running.
+///
+/// The `Arc::strong_count(&tasks) == 1` check keeps temporary clones (e.g. from
+/// `get_component`) from killing tasks the original still uses.
 impl Drop for Connection {
     fn drop(&mut self) {
         if Arc::strong_count(&self.tasks) == 1 {
@@ -1441,7 +1654,9 @@ mod receive_path_tests {
     use super::*;
     use async_channel::bounded as async_bounded;
 
-    /// An ACK datagram exactly as `flush_ack_nack` puts it on the wire.
+    /// 按 `flush_ack_nack` 的线上格式编码一个 ACK 数据报。
+    ///
+    /// Encodes an ACK datagram in the wire form `flush_ack_nack` produces.
     fn ack_datagram(sequences: Vec<u32>) -> Vec<u8> {
         Ack::from_records(sequences, false)
             .write_to_bytes()
@@ -1557,11 +1772,12 @@ mod receive_path_tests {
         );
     }
 
-    /// The regression this guards: with a full control channel, inbound
-    /// processing must return immediately. Blocking there stops the only reader
-    /// of the session's datagram channel, after which the server socket loop
-    /// drops every further inbound datagram — the peer then looks dead to the
-    /// server while its keepalive answers and its disconnect go unread.
+    /// 控制信道满时入站处理必须立即返回：在此等待会停住会话数据报信道的
+    /// 唯一读取者，之后服务端会丢弃所有后续入站数据报。
+    ///
+    /// With a full control channel, inbound processing must return immediately:
+    /// blocking there stops the only reader of the session datagram channel, and
+    /// the server socket loop then drops every further inbound datagram.
     #[tokio::test]
     async fn a_wedged_send_loop_cannot_stall_inbound_processing() {
         let socket = Arc::new(
@@ -1622,7 +1838,9 @@ mod housekeeping_tests {
     use super::*;
     use async_channel::bounded as async_bounded;
 
-    /// Bind a real peer socket so keepalive probes can be observed arriving.
+    /// 绑定一个真实对端套接字，以便观察到达的保活探测。
+    ///
+    /// Binds a real peer socket so keepalive probes can be observed arriving.
     async fn test_peer() -> (Arc<UdpSocket>, SocketAddr) {
         let peer = Arc::new(
             UdpSocket::bind("127.0.0.1:0")
@@ -1641,7 +1859,9 @@ mod housekeeping_tests {
         SendQueue::new(1492, 12000, 5, datagram_seq, socket, address)
     }
 
-    /// Count keepalive probes a peer received, ignoring other datagrams.
+    /// 统计对端收到的保活探测数量，忽略其他数据报。
+    ///
+    /// Counts the keepalive probes a peer received, ignoring other datagrams.
     async fn received_pings(peer: &UdpSocket) -> usize {
         let mut buf = [0u8; 2048];
         let mut pings = 0;
@@ -1705,11 +1925,8 @@ mod housekeeping_tests {
         };
         let mut send_q = test_send_queue(socket, datagram_seq, address);
 
-        // A small non-immediate payload waits in `ready`, and only `update()`
-        // writes it to the wire. Nothing in the game layer uses `immediate =
-        // false`, so this queue is normally empty; it is used here purely to
-        // observe that `update()` — which also drives retransmission and the
-        // unacked-age policy — is reached at all.
+        // A small non-immediate payload stays in `ready` until `update()` writes
+        // it to the wire, so the queue length shows whether the round ran.
         send_q
             .insert(&[0xABu8; 64], Reliability::ReliableOrd, false, Some(0))
             .expect("queue a non-immediate payload");
@@ -1718,9 +1935,8 @@ mod housekeeping_tests {
             "payload must be waiting for the flush"
         );
 
-        // The control channel is permanently backlogged and the timer branch is
-        // polled last, which is what `biased` ordering actually does: the first
-        // ready branch wins and the remaining ones are never polled.
+        // `biased` polls the first ready branch only, so with both planes
+        // backlogged the timer branch is never selected.
         let (priority_tx, priority_rx) =
             async_bounded::<PriorityCommand>(PRIORITY_CHANNEL_CAPACITY);
         let (outbound_tx, outbound_rx) = async_bounded::<QueuedOutboundCommand>(1);
@@ -1806,9 +2022,8 @@ mod housekeeping_tests {
             "flushed datagrams must be tracked so a loss can be retransmitted"
         );
 
-        // The reported symptom: the server stops probing, so the client leaves.
-        // Drain whatever the loop already sent, re-arm the probe deadline, and
-        // prove a round still emits the probe without any timer branch.
+        // Drain probes already sent, re-arm both deadlines, and check that a round
+        // still emits one probe without any timer branch.
         let _ = received_pings(&peer).await;
         housekeeping.last_ping = Some(Instant::now() - KEEPALIVE_INTERVAL);
         housekeeping.last_round = Some(Instant::now() - HOUSEKEEPING_INTERVAL);

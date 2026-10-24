@@ -1,37 +1,55 @@
+//! 方块静态组件：ECS Component 结构体（遵循 `item::component`）。
+//!
 //! Block static components: ECS Component structs (follows `item::component`).
+//!
+//! 组件名在有原版对应时使用原版 `minecraft:*` 名；服务端专有概念保留
+//! `sc:` 命名空间：
 //!
 //! Component names use vanilla `minecraft:*` names where they exist; server-only
 //! concepts keep the `sc:` namespace:
 //!
-//! | This component | Vanilla counterpart | Notes |
+//! | 本组件 | 原版对应 | 说明 |
 //! |---|---|---|
-//! | `CollisionBoxes` | `minecraft:collision_box` | Single box `{origin, size}` (16ths) or box array; no collision = `enabled: false` |
-//! | `LightEmission` | `minecraft:light_emission` | Integer 0..15 |
-//! | `LightDampening` | `minecraft:light_dampening` | Integer 0..15 |
-//! | `DestructibleByMining` | `minecraft:destructible_by_mining` | `{"value": seconds}`; for indestructible see `sc:unbreakable` |
-//! | `Replaceable` | `sc:replaceable` | Server-only flag: replaceable boolean |
-//! | `Liquid` | `sc:liquid` | Server-only flag: liquid kind for non-customizable liquid blocks |
-//! | `RandomTick` | `sc:random_tick` | Server-only flag: random-tick candidate filtering |
-//! | `NeedsSupport` | `sc:needs_support` | Server-only flag: data reference for support conditions |
-//! | `CanContainLiquid` | `sc:can_contain_liquid` | Server-only flag: whether a liquid layer is allowed |
-//! | `Unbreakable` | `sc:unbreakable` | Server-only flag: mutually exclusive with mining |
-//! | `Mining` | `sc:mining` | Mining speed/harvest/efficiency adjustment (`formula_version=1` exact formula) |
+//! | `CollisionBoxes` | `minecraft:collision_box` | 单 box `{origin, size}`（1/16 单位）或 box 数组；无碰撞 = `enabled: false` |
+//! | `LightEmission` | `minecraft:light_emission` | 整数 0..15 |
+//! | `LightDampening` | `minecraft:light_dampening` | 整数 0..15 |
+//! | `DestructibleByMining` | `minecraft:destructible_by_mining` | `{"value": 秒}`；不可破坏见 `sc:unbreakable` |
+//! | `Replaceable` | `sc:replaceable` | 服务端标志：可替换布尔 |
+//! | `Liquid` | `sc:liquid` | 服务端标志：不可自定义液体方块的液体种类 |
+//! | `RandomTick` | `sc:random_tick` | 服务端标志：随机刻候选过滤 |
+//! | `NeedsSupport` | `sc:needs_support` | 服务端标志：支撑条件数据引用 |
+//! | `CanContainLiquid` | `sc:can_contain_liquid` | 服务端标志：是否允许液体层 |
+//! | `Unbreakable` | `sc:unbreakable` | 服务端标志：与 mining 互斥 |
+//! | `Mining` | `sc:mining` | 挖掘速度/收获/效率调整（`formula_version=1` 精确公式） |
 //!
-//! Loot-related components (`minecraft:loot` path reference, `sc:drops` direct
-//! drops and their fortune/count satellites, plus the parsed `sc:loot_tables`)
-//! live in the separate [`crate::loot_tables`] domain; they are registered in
+//! Loot-related components (`minecraft:loot` path reference with its parsed
+//! table content carried on the bundle, see [`crate::loot_tables`]) live in
+//! the separate [`crate::loot_tables`] domain; they are registered in
 //! the [`crate::block::BlockComponents`] `components_export!` list like every
 //! other component.
+//!
+//! 战利品相关组件（`minecraft:loot` 路径引用及其解析后的表内容随 bundle
+//! 携带，见 [`crate::loot_tables`]）位于独立的 [`crate::loot_tables`] 域；
+//! 它们与其他组件一样注册在 [`crate::block::BlockComponents`] 的
+//! `components_export!` 列表中。
 //!
 //! Client-side entries (`display_name`, `geometry`, `material_instances`, ...)
 //! are not registered: at parse time they are recognized and dropped per
 //! [`IGNORED_COMPONENTS`], never entering snapshots.
+//!
+//! 客户端侧条目（`display_name`、`geometry`、`material_instances` 等）
+//! 不注册：解析时按 [`IGNORED_COMPONENTS`] 识别并丢弃，绝不进入快照。
 //!
 //! Each component is a standalone struct deriving [`sc_ecs::component::Component`]
 //! + `Deserialize`; there is no load-time range/shape validation — malformed
 //! values surface where they are consumed (compile or gameplay), keeping the
 //! load path a direct load. Registered keys and typed reads come from the
 //! `components_export!` enum ([`crate::block::BlockComponents`]).
+//!
+//! 每个组件都是独立结构体，derive [`sc_ecs::component::Component`] +
+//! `Deserialize`；加载期不做范围/形状校验——非法值在消费处
+//! （编译或游玩）暴露，保持加载路径为直接加载。注册键与类型化读取
+//! 来自 `components_export!` 枚举（[`crate::block::BlockComponents`]）。
 
 use sc_ecs::component::Component;
 use serde::Deserialize;
@@ -39,21 +57,40 @@ use serde_json::Value;
 
 
 
+/// 碰撞箱（origin + size，1/16 单位；`enabled: false` = 无碰撞）。
+///
 /// Collision box (16ths origin + size; `enabled: false` = no collision).
 #[derive(Clone, Component, Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct CollisionBox {
+    /// 是否启用碰撞。
+    ///
+    /// Whether collision is enabled.
     #[serde(default = "default_collision_enabled")]
     pub enabled: bool,
+    /// 碰撞箱原点（1/16 单位）。
+    ///
+    /// Box origin (in 16ths).
     pub origin: [f32; 3],
+    /// 碰撞箱尺寸（1/16 单位）。
+    ///
+    /// Box size (in 16ths).
     pub size: [f32; 3],
 }
 
+/// 碰撞启用缺省值。
+///
+/// Default value for collision enabled.
 fn default_collision_enabled() -> bool {
     true
 }
 
+/// 两种原版 `minecraft:collision_box` 写法：单 box 对象或 box 数组。
+///
 /// The two vanilla `minecraft:collision_box` spellings: single box object, or box array.
+///
+/// 组件身份（`Component` + 注册条目）即本枚举；
+/// [`collision_boxes_of`] 把两种写法展开为 box 列表。
 ///
 /// Component identity (`Component` + registry entry) is this enum;
 /// [`collision_boxes_of`] unwraps both spellings into a box list.
@@ -64,7 +101,14 @@ pub enum CollisionBoxes {
     Many(Vec<CollisionBox>),
 }
 
+/// 两种原版写法 → box 列表（每盒保留 `enabled`）。
+///
 /// Both vanilla spellings to box list (`enabled` kept per box).
+///
+/// - `value`: 原始 JSON 值
+///
+/// # Errors
+/// 形状非法时返回描述错误串。
 pub fn collision_boxes_of(value: &Value) -> Result<Vec<CollisionBox>, String> {
     serde_json::from_value::<CollisionBoxes>(value.clone())
         .map(|b| match b {
@@ -74,54 +118,85 @@ pub fn collision_boxes_of(value: &Value) -> Result<Vec<CollisionBox>, String> {
         .map_err(|e| format!("collision_box 形状非法：{e}"))
 }
 
+/// 发光等级（0..15）。
+///
 /// Light emission (0..15).
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct LightEmission(pub u8);
 
+/// 遮光等级（0..15）。
+///
 /// Light dampening (0..15).
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct LightDampening(pub u8);
 
+/// 可挖掘秒数（用于破坏进度；不可破坏见 `sc:unbreakable`）。
+///
 /// Mineable seconds (for break progress; indestructible see `sc:unbreakable`).
 #[derive(Clone, Component, Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct DestructibleByMining {
+    /// 破坏耗时秒数。
+    ///
+    /// Seconds to break.
     pub value: f32,
 }
 
+/// 可替换标志（服务端专有概念）。
+///
 /// Replaceable boolean (server-only concept).
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct Replaceable(pub bool);
 
+/// 液体种类（原版液体方块不可自定义）。
+///
 /// Liquid kind (vanilla liquid blocks are not customizable).
 #[derive(Clone, Component, Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct Liquid {
+    /// 液体种类标识。
+    ///
+    /// Liquid kind identifier.
     pub kind: String,
 }
 
+/// 是否参与随机刻候选过滤（服务端专有概念）。
+///
 /// Whether it participates in random-tick candidate filtering (server-only concept).
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct RandomTick(pub bool);
 
+/// 支撑条件的数据引用（服务端专有概念）。
+///
 /// Data reference for support conditions (server-only concept).
 #[derive(Clone, Component, Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct NeedsSupport {
+    /// 支撑条件表达式。
+    ///
+    /// Support condition expression.
     pub condition: String,
 }
 
+/// 是否允许液体层（服务端专有概念）。
+///
 /// Whether a liquid layer is allowed (server-only concept).
 #[derive(Clone, Component, Deserialize, Debug)]
 pub struct CanContainLiquid(pub bool);
 
+/// 不可破坏（无原版自定义方块对应；与 mining 互斥，
+/// 由 `sc_block` 在合并状态上检查）。
+///
 /// Unbreakable (no vanilla custom-block equivalent; mutually exclusive with mining,
 /// checked by `sc_block` on the merged state).
 #[derive(Clone, Component, Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct Unbreakable {}
 
-/// Workstation slot role (server container addressing). `Extra` is
+/// 工作台/熔炉槽位角色（服务端容器寻址）。`Extra` 预留给
+/// 4 槽以上的处理（营火）；目前无声明使用它。
+///
+/// Workstation/furnace slot role (server container addressing). `Extra` is
 /// reserved for 4+-slot processes (campfire); no shipped decl uses it yet.
 #[derive(Clone, Deserialize, Debug, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
@@ -132,57 +207,223 @@ pub enum WorkstationSlotRole {
     Extra,
 }
 
+/// 一个工作台槽位：游玩角色 + Bedrock 容器枚举字节
+/// （客户端在 Take/Place 中使用的取值，如熔炉 25/24/26）。
+///
 /// One workstation slot: gameplay role plus Bedrock container enum byte
 /// (the values the client uses in Take/Place, e.g. furnace 25/24/26).
 #[derive(Clone, Component, Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct WorkstationSlot {
+    /// 槽位角色。
+    ///
+    /// Slot role.
     pub role: WorkstationSlotRole,
+    /// 容器枚举字节。
+    ///
+    /// Container enum byte.
     pub container: u8,
 }
 
-/// Workstation window declaration: which recipe station a block serves,
-/// which container window opens, and how slots address on the wire.
-/// `grid` is the NxN crafting grid size when present (workbench 3).
-/// `window` marks the five player-openable stations (table, cutter, three
-/// furnaces); brewing/smithing/campfire decls exist for addressing but do
-/// not open (the open gate reads this bit, never a station enum).
+/// 箱子容器组件（`sc:chest`）。
+///
+/// Chest container component (`sc:chest`).
 #[derive(Clone, Component, Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
-pub struct Workstation {
-    pub station: String,
-    pub container: i8,
+pub struct Chest {
+    /// 槽位数。
+    ///
+    /// Slot count.
+    #[serde(default = "default_chest_slots")]
+    pub slots: u16,
+    /// 容器类型枚举值。
+    ///
+    /// Container type enum value.
+    #[serde(default = "default_chest_container_type")]
+    pub container_type: i8,
+    /// 是否可配对（大箱）。
+    ///
+    /// Whether pairable (double chest).
+    #[serde(default = "default_true")]
+    pub pairable: bool,
+    /// 是否检查遮挡。
+    ///
+    /// Whether obstruction is checked.
+    #[serde(default = "default_true")]
+    pub check_obstruction: bool,
+    /// 打开音效。
+    ///
+    /// Open sound.
+    #[serde(default = "default_chest_open_sound")]
+    pub open_sound: String,
+    /// 关闭音效。
+    ///
+    /// Close sound.
+    #[serde(default = "default_chest_close_sound")]
+    pub close_sound: String,
+}
+
+/// 箱子槽位数缺省值。
+///
+/// Default chest slot count.
+fn default_chest_slots() -> u16 {
+    27
+}
+
+/// 箱子容器类型缺省值。
+///
+/// Default chest container type.
+fn default_chest_container_type() -> i8 {
+    0
+}
+
+/// 布尔真缺省值。
+///
+/// Default boolean true.
+fn default_true() -> bool {
+    true
+}
+
+/// 箱子打开音效缺省值。
+///
+/// Default chest open sound.
+fn default_chest_open_sound() -> String {
+    "random.chestopen".to_string()
+}
+
+/// 箱子关闭音效缺省值。
+///
+/// Default chest close sound.
+fn default_chest_close_sound() -> String {
+    "random.chestclosed".to_string()
+}
+
+/// 熔炉处理组件（`sc:furnace`）。
+///
+/// Furnace processing component (`sc:furnace`).
+#[derive(Clone, Component, Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct Furnace {
+    /// 熔炉种类（furnace/blast_furnace/smoker）。
+    ///
+    /// Furnace kind (furnace/blast_furnace/smoker).
+    #[serde(default = "default_furnace_kind")]
+    pub kind: String,
+    /// 烹饪耗时（刻）。
+    ///
+    /// Cook time (ticks).
+    #[serde(default = "default_furnace_cook_ticks")]
+    pub cook_ticks: u16,
+    /// 是否为燃料处理方块。
+    ///
+    /// Whether this is a fuel-processing block.
+    #[serde(default = "default_true")]
+    pub fuel: bool,
+    /// 是否点燃状态。
+    ///
+    /// Whether lit.
     #[serde(default)]
-    pub window: bool,
+    pub lit: bool,
+    /// 点燃变体标识。
+    ///
+    /// Lit variant identifier.
     #[serde(default)]
-    pub grid: Option<u8>,
-    #[serde(default)]
+    pub lit_variant: Option<String>,
+    /// 容器类型枚举值。
+    ///
+    /// Container type enum value.
+    #[serde(default = "default_furnace_container_type")]
+    pub container_type: i8,
+    /// 槽位列表。
+    ///
+    /// Slot list.
+    #[serde(default = "default_furnace_slots")]
     pub slots: Vec<WorkstationSlot>,
 }
 
-/// Duration-process kind (furnace family shares one kind with params).
-#[derive(Clone, Deserialize, Debug, PartialEq, Eq)]
-pub enum ProcessKind {
-    #[serde(rename = "burn_cook")]
-    BurnCook,
+/// 熔炉种类缺省值。
+///
+/// Default furnace kind.
+fn default_furnace_kind() -> String {
+    "furnace".to_string()
 }
 
-/// Duration-process declaration: burn/cook process attached to a block.
-/// `lit_variant` names the swap target block (facing preserved); absent
-/// means no lit swap. `lit` marks the lit member of a lit pair, so the
-/// tick only swaps toward the burn state (unlit+burning→lit,
-/// lit+!burning→unlit) instead of following pointers blindly.
+/// 熔炉烹饪耗时缺省值。
+///
+/// Default furnace cook ticks.
+fn default_furnace_cook_ticks() -> u16 {
+    200
+}
+
+/// 熔炉容器类型缺省值。
+///
+/// Default furnace container type.
+fn default_furnace_container_type() -> i8 {
+    2
+}
+
+/// 熔炉缺省槽位表（输入 25 / 燃料 24 / 产出 26）。
+///
+/// Default furnace slot table (input 25 / fuel 24 / result 26).
+fn default_furnace_slots() -> Vec<WorkstationSlot> {
+    vec![
+        WorkstationSlot {
+            role: WorkstationSlotRole::Input,
+            container: 25,
+        },
+        WorkstationSlot {
+            role: WorkstationSlotRole::Fuel,
+            container: 24,
+        },
+        WorkstationSlot {
+            role: WorkstationSlotRole::Result,
+            container: 26,
+        },
+    ]
+}
+
+/// 工作台组件（`sc:crafting_table`）。
+///
+/// Crafting table component (`sc:crafting_table`).
 #[derive(Clone, Component, Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
-pub struct Process {
-    pub kind: ProcessKind,
-    pub cook_ticks: u16,
-    #[serde(default)]
-    pub fuel: bool,
-    #[serde(default)]
-    pub lit: bool,
-    #[serde(default)]
-    pub lit_variant: Option<String>,
+pub struct CraftingTable {
+    /// 网格边长（2/3）。
+    ///
+    /// Grid side length (2/3).
+    #[serde(default = "default_crafting_table_grid")]
+    pub grid: u8,
+    /// 工作站标识。
+    ///
+    /// Station identifier.
+    #[serde(default = "default_crafting_table_station")]
+    pub station: String,
+    /// 容器类型枚举值。
+    ///
+    /// Container type enum value.
+    #[serde(default = "default_crafting_table_container_type")]
+    pub container_type: i8,
+}
+
+/// 工作台网格边长缺省值。
+///
+/// Default crafting table grid side.
+fn default_crafting_table_grid() -> u8 {
+    3
+}
+
+/// 工作站标识缺省值。
+///
+/// Default station identifier.
+fn default_crafting_table_station() -> String {
+    "crafting_table".to_string()
+}
+
+/// 工作台容器类型缺省值。
+///
+/// Default crafting table container type.
+fn default_crafting_table_container_type() -> i8 {
+    1
 }
 
 // ---------------------------------------------------------------------------
@@ -199,12 +440,11 @@ pub const DEFAULT_HARVEST_PENALTY: f64 = 5.0;
 /// Harvested-branch time factor (`hardness*1.5`; pairs with the penalty term).
 pub const HARVESTED_BRANCH_FACTOR: f64 = 1.5;
 
-/// One rule for `sc:mining.default` / `tools[]` (no inheritance; every rule is complete).
+/// sc:mining.default 或 tools 数组中的一条完整挖掘规则。
 ///
-/// - `can_mine=false`: survival cannot break (creative bypasses); `speed_multiplier` is the
-///   `1.0` placeholder and `harvest` must be `false` (no break means no harvest);
-/// - `harvest=false`: slow break is allowed, but time is scaled by the harvest penalty and drops
-///   fall back to the default empty drop (unharvested branch: `hardness*5` time + empty drops).
+/// 规则描述是否可挖掘、是否需要采集工具以及速度倍率。
+///
+/// A complete mining rule for sc:mining.default or an entry of tools, describing whether mining is allowed, whether harvesting is required, and the speed multiplier.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MiningRule {
@@ -213,7 +453,9 @@ pub struct MiningRule {
     pub speed_multiplier: f64,
 }
 
-/// One entry of `sc:mining.tools[]` (item list + rule).
+/// sc:mining.tools 数组的一项：适用物品列表与对应挖掘规则。
+///
+/// One entry of sc:mining.tools: the applicable item list and its mining rule.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MiningToolEntry {
@@ -223,21 +465,18 @@ pub struct MiningToolEntry {
     pub speed_multiplier: f64,
 }
 
-/// `sc:mining.enchantments["minecraft:efficiency"]`.
+/// sc:mining.enchantments 中效率附魔的等级上限配置。
 ///
-/// Bonus formula is the exact break-time formula (`speed += level^2 + 1`);
-/// data only declares the `max_level` clamp.
+/// Efficiency enchantment level cap configuration within sc:mining.enchantments.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EfficiencyRule {
     pub max_level: u32,
 }
 
-/// `sc:mining` (`formula_version=1`: exact break-time formula).
+/// sc:mining 组件的挖掘参数：默认规则、工具条目与效率配置。
 ///
-/// Time formula: `time = base * branch / (tool_speed + efficiency_bonus)`, where
-/// `base` is the raw hardness value, `branch` is `1.5` when harvested and
-/// `harvest_penalty_multiplier` when not (defaults to `5.0`).
+/// Mining parameters of the sc:mining component: default rule, tool entries, and efficiency configuration.
 #[derive(Clone, Component, Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct Mining {
@@ -279,7 +518,6 @@ mod tests {
     use super::*;
     use crate::macros::ComponentKey;
     use crate::block::BlockComponents;
-    use crate::loot_tables::{Drops, LootTables};
     use serde_json::json;
 
     #[test]
@@ -295,16 +533,15 @@ mod tests {
                 "minecraft:light_emission",
                 "minecraft:loot",
                 "sc:can_contain_liquid",
-                "sc:drops",
+                "sc:chest",
+                "sc:crafting_table",
+                "sc:furnace",
                 "sc:liquid",
-                "sc:loot_tables",
                 "sc:mining",
                 "sc:needs_support",
-                "sc:process",
                 "sc:random_tick",
                 "sc:replaceable",
                 "sc:unbreakable",
-                "sc:workstation",
             ]
         );
         for name in BlockComponents::NAMES {
@@ -316,8 +553,9 @@ mod tests {
         assert!(!is_ignored_component("minecraft:collision_box"));
         // Listed component types carry their registered key as an inherent const.
         assert_eq!(LightEmission::NAME, "minecraft:light_emission");
-        assert_eq!(Drops::NAME, "sc:drops");
-        assert_eq!(LootTables::NAME, "sc:loot_tables");
+        assert_eq!(Chest::NAME, "sc:chest");
+        assert_eq!(Furnace::NAME, "sc:furnace");
+        assert_eq!(CraftingTable::NAME, "sc:crafting_table");
     }
 
     #[test]
@@ -345,37 +583,50 @@ mod tests {
     }
 
     #[test]
-    fn workstation_and_process_shapes() {
+    fn domain_components_shapes() {
         let mut map = std::collections::BTreeMap::new();
         map.insert(
-            Workstation::NAME.to_string(),
+            Chest::NAME.to_string(),
             json!({
-                "station": "furnace",
-                "container": 2,
-                "window": true,
-                "slots": [
-                    {"role": "input", "container": 25},
-                    {"role": "fuel", "container": 24},
-                    {"role": "result", "container": 26}
-                ]
+                "slots": 27,
+                "pairable": true,
+                "check_obstruction": true,
             }),
         );
         map.insert(
-            Process::NAME.to_string(),
+            Furnace::NAME.to_string(),
             json!({
-                "kind": "burn_cook",
-                "cook_ticks": 200,
+                "kind": "blast_furnace",
+                "cook_ticks": 100,
                 "fuel": true,
-                "lit_variant": "minecraft:lit_furnace"
+                "lit_variant": "minecraft:lit_blast_furnace"
             }),
         );
-        let decl: Workstation = BlockComponents::get_from(&map).expect("应读出");
-        assert_eq!(decl.station, "furnace");
-        assert!(decl.window);
-        assert_eq!(decl.slots.len(), 3);
+        map.insert(
+            CraftingTable::NAME.to_string(),
+            json!({
+                "grid": 3,
+                "station": "crafting_table"
+            }),
+        );
 
-        let decl: Process = BlockComponents::get_from(&map).expect("应读出");
-        assert!(!decl.lit, "lit 缺省为未点燃");
-        assert_eq!(decl.lit_variant.as_deref(), Some("minecraft:lit_furnace"));
+        let chest: Chest = BlockComponents::get_from(&map).expect("Chest 应读出");
+        assert_eq!(chest.slots, 27);
+        assert_eq!(chest.container_type, 0);
+        assert!(chest.pairable);
+        assert!(chest.check_obstruction);
+        assert_eq!(chest.open_sound, "random.chestopen");
+
+        let furnace: Furnace = BlockComponents::get_from(&map).expect("Furnace 应读出");
+        assert_eq!(furnace.kind, "blast_furnace");
+        assert_eq!(furnace.cook_ticks, 100);
+        assert!(furnace.fuel);
+        assert_eq!(furnace.lit_variant.as_deref(), Some("minecraft:lit_blast_furnace"));
+        assert_eq!(furnace.slots.len(), 3);
+
+        let table: CraftingTable = BlockComponents::get_from(&map).expect("CraftingTable 应读出");
+        assert_eq!(table.grid, 3);
+        assert_eq!(table.station, "crafting_table");
+        assert_eq!(table.container_type, 1);
     }
 }

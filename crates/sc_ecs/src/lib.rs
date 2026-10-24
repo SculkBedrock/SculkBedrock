@@ -1,11 +1,13 @@
-//! sc_ecs: async ECS framework (Bevy-inspired).
+//! sc_ecs：异步 ECS 框架。
+//!
+//! 核心概念：`World`（实体/组件/资源/事件）、`App`（插件组装 + 调度循环）、
+//! `Schedule`（按标签排序的系统表，20 TPS 主循环）、`SystemParam`（依赖注入）。
+//!
+//! sc_ecs: an async ECS framework.
 //!
 //! Core concepts: `World` (entities/components/resources/events), `App`
 //! (plugin assembly + schedule loop), `Schedule` (label-ordered system table,
 //! 20 TPS main loop), `SystemParam` (dependency injection).
-//! Concurrency rules live in `world.rs` and docs/ecs_concurrency.md: all
-//! mutable component/resource state goes through interior locks
-//! (`Arc<RwLock<..>>`), and `get_component -> Arc<C>` may be held across await.
 pub mod app;
 pub mod app_manager;
 pub mod async_manager;

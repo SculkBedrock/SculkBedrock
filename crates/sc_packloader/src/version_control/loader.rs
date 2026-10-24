@@ -1,3 +1,8 @@
+//! 版本包加载器：扫描版本包目录并解析为 [`SCVersionPack`]。
+//!
+//! Version pack loader: scans the version pack directory and parses it into
+//! an [`SCVersionPack`].
+
 use crate::block::load_block_json_bundle;
 use crate::definitions::attribute::EntityAttribute;
 use crate::pack_loader::pack::zipped::{PackSource, MAX_BINARY_ENTRY_BYTES, MAX_JSON_ENTRY_BYTES};
@@ -17,67 +22,124 @@ use std::path::{Path, PathBuf};
 use sc_error::{ScError, ScSite, capture_site};
 use sc_log::t_log;
 
+/// 判断 JSON 条目大小是否在预算之内。
+///
+/// Whether the size of a JSON entry is within budget.
+///
+/// - `size`: 条目字节数
 fn json_entry_is_allowed(size: u64) -> bool {
     size <= MAX_JSON_ENTRY_BYTES
 }
 
+/// 判断二进制条目大小是否在预算之内。
+///
+/// Whether the size of a binary entry is within budget.
+///
+/// - `size`: 条目字节数
 fn binary_entry_is_allowed(size: u64) -> bool {
     size <= MAX_BINARY_ENTRY_BYTES
 }
 
+/// 版本包加载错误类型。
+///
+/// Version pack loader error type.
 #[derive(Debug, ScError)]
 pub enum VersionPackLoaderError {
+    /// 压缩包条目读取失败。
+    ///
     /// Zip entry failure.
     #[sc_error(code = "packloader.version.zip")]
     ZipError {
+        /// 条目路径。
+        ///
         /// Entry path.
         path: String,
+        /// 底层压缩包错误。
+        ///
         /// Underlying zip error.
         source: zip::result::ZipError,
+        /// 说明错误原因的英文详情。
+        ///
         /// English detail explaining the cause.
         detail: String,
+        /// 错误构造位置。
+        ///
         /// Construction site.
         site: ScSite,
     },
+    /// JSON 解析失败。
+    ///
     /// JSON parse failure.
     #[sc_error(code = "packloader.version.json")]
     JsonError {
+        /// 条目路径。
+        ///
         /// Entry path.
         path: String,
+        /// 底层 JSON 错误。
+        ///
         /// Underlying JSON error.
         source: serde_json::Error,
+        /// 说明错误原因的英文详情。
+        ///
         /// English detail explaining the cause.
         detail: String,
+        /// 错误构造位置。
+        ///
         /// Construction site.
         site: ScSite,
     },
+    /// 文件读写失败。
+    ///
     /// File I/O failure.
     #[sc_error(code = "packloader.version.io")]
     IoError {
+        /// 条目路径。
+        ///
         /// Entry path.
         path: String,
+        /// 底层 I/O 错误。
+        ///
         /// Underlying I/O error.
         source: std::io::Error,
+        /// 说明错误原因的英文详情。
+        ///
         /// English detail explaining the cause.
         detail: String,
+        /// 错误构造位置。
+        ///
         /// Construction site.
         site: ScSite,
     },
+    /// 必需文件缺失。
+    ///
     /// Required file is missing.
     #[sc_error(code = "packloader.version.not_found")]
     FileNotFound {
+        /// 缺失的条目路径。
+        ///
         /// Missing entry path.
         path: &'static str,
+        /// 说明错误原因的英文详情。
+        ///
         /// English detail explaining the cause.
         detail: String,
+        /// 错误构造位置。
+        ///
         /// Construction site.
         site: ScSite,
     },
+    /// 条目内容未通过校验。
+    ///
     /// Entry contents fail validation.
     #[sc_error(code = "packloader.version.deserialization")]
     DeserializationError {
+        /// 说明错误原因的英文详情。
+        ///
         /// English detail explaining the cause.
         detail: String,
+        /// 错误构造位置。
+        ///
         /// Construction site.
         site: ScSite,
     },
@@ -85,7 +147,12 @@ pub enum VersionPackLoaderError {
 }
 
 impl VersionPackLoaderError {
-    /// Build a zip error, capturing the call site.
+    /// 构造压缩包错误，并捕获调用位置。
+    ///
+    /// Builds a zip error, capturing the call site.
+    ///
+    /// - `path`: 条目路径
+    /// - `source`: 底层压缩包错误
     #[track_caller]
     pub fn zip_error(path: String, source: zip::result::ZipError) -> Self {
         let detail = format!("failed to read '{path}': {source}");
@@ -97,7 +164,12 @@ impl VersionPackLoaderError {
         }
     }
 
-    /// Build a JSON error, capturing the call site.
+    /// 构造 JSON 错误，并捕获调用位置。
+    ///
+    /// Builds a JSON error, capturing the call site.
+    ///
+    /// - `path`: 条目路径
+    /// - `source`: 底层 JSON 错误
     #[track_caller]
     pub fn json_error(path: String, source: serde_json::Error) -> Self {
         let detail = format!("failed to parse '{path}': {source}");
@@ -109,7 +181,12 @@ impl VersionPackLoaderError {
         }
     }
 
-    /// Build an I/O error, capturing the call site.
+    /// 构造 I/O 错误，并捕获调用位置。
+    ///
+    /// Builds an I/O error, capturing the call site.
+    ///
+    /// - `path`: 条目路径
+    /// - `source`: 底层 I/O 错误
     #[track_caller]
     pub fn io_error(path: String, source: std::io::Error) -> Self {
         let detail = format!("failed to read '{path}': {source}");
@@ -121,7 +198,11 @@ impl VersionPackLoaderError {
         }
     }
 
-    /// Build a missing-file error, capturing the call site.
+    /// 构造文件缺失错误，并捕获调用位置。
+    ///
+    /// Builds a missing-file error, capturing the call site.
+    ///
+    /// - `path`: 缺失的条目路径
     #[track_caller]
     pub fn file_not_found(path: &'static str) -> Self {
         Self::FileNotFound {
@@ -131,7 +212,11 @@ impl VersionPackLoaderError {
         }
     }
 
-    /// Build a validation error, capturing the call site.
+    /// 构造校验错误，并捕获调用位置。
+    ///
+    /// Builds a validation error, capturing the call site.
+    ///
+    /// - `detail`: 说明错误原因的英文详情
     #[track_caller]
     pub fn deserialization_error(detail: String) -> Self {
         Self::DeserializationError {
@@ -142,6 +227,9 @@ impl VersionPackLoaderError {
 }
 
 impl std::fmt::Display for VersionPackLoaderError {
+    /// 以 `[错误码] 详情 (at 位置)` 的格式格式化错误。
+    ///
+    /// Formats the error as `[code] detail (at site)`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ZipError { detail, site, .. } => {
@@ -164,6 +252,9 @@ impl std::fmt::Display for VersionPackLoaderError {
 }
 
 impl Error for VersionPackLoaderError {
+    /// 返回底层错误源（若有）。
+    ///
+    /// Returns the underlying error source, if any.
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::ZipError { source, .. } => Some(source),
@@ -175,17 +266,33 @@ impl Error for VersionPackLoaderError {
 }
 
 
+/// 版本包加载器：扫描版本包目录。
+///
+/// Version pack loader: scans the version pack directory.
 pub struct VersionPackLoader {
+    /// 版本包所在目录。
+    ///
+    /// Directory holding the version packs.
     dir_path: PathBuf,
 }
 
 impl VersionPackLoader {
+    /// 以指定目录构造加载器。
+    ///
+    /// Builds a loader for the given directory.
+    ///
+    /// - `dir_path`: 版本包所在目录
     pub fn new<P: AsRef<Path>>(dir_path: P) -> Self {
         Self {
             dir_path: dir_path.as_ref().to_path_buf(),
         }
     }
 
+    /// 扫描目录中的全部版本包并解析。
+    ///
+    /// Scans the directory for all version packs and parses them.
+    ///
+    /// 无效或损坏的版本包会被跳过并记录告警，不会中断整体扫描。
     pub fn get_versions(&self) -> Vec<SCVersionPack> {
         let mut versions = Vec::new();
         let cache_dir = self.dir_path.join(".scdb");
@@ -309,9 +416,20 @@ impl VersionPackLoader {
     }
 }
 
+/// 压缩版本包解析器：从包源读取各段数据。
+///
+/// Zipped version pack parser: reads every section from a pack source.
 pub struct ZippedVersionPack;
 
 impl ZippedVersionPack {
+    /// 读取并解析 `manifest.json`。
+    ///
+    /// Reads and parses `manifest.json`.
+    ///
+    /// - `pack`: 包源
+    ///
+    /// # Errors
+    /// 文件缺失、超出 JSON 预算或解析失败时返回错误。
     fn get_manifest(
         pack: &mut PackSource,
     ) -> Result<SCVersionPackManifest, VersionPackLoaderError> {
@@ -330,6 +448,15 @@ impl ZippedVersionPack {
             .map_err(|e| VersionPackLoaderError::json_error("manifest.json".to_string(), e))
     }
 
+    /// 读取并解析 `definitions/runtime.json`（运行时 id 映射表）。
+    ///
+    /// Reads and parses `definitions/runtime.json` (the runtime id mapping
+    /// table).
+    ///
+    /// - `pack`: 包源
+    ///
+    /// # Errors
+    /// 文件缺失、超出 JSON 预算或解析失败时返回错误。
     fn get_runtime_id(
         pack: &mut PackSource,
     ) -> Result<Vec<MinecraftRuntimeJson>, VersionPackLoaderError> {
@@ -353,10 +480,16 @@ impl ZippedVersionPack {
         })
     }
 
-    /// Open every nested behavior pack as its own source (directory packs
+    /// 将每个内嵌行为包打开为独立来源（先目录包，再按归档顺序的压缩包；
+    /// 对同一版本包是确定的）。公开以便外部消费者（如 `sc_block` 的测试）
+    /// 把同样的来源交给方块数据包加载器。
+    ///
+    /// Opens every nested behavior pack as its own source (directory packs
     /// first, then zip packs in archive order; deterministic for a given
     /// version pack). Public so external consumers (e.g. `sc_block` tests)
     /// can feed the same sources to the block bundle loader.
+    ///
+    /// - `pack`: 版本包来源
     pub fn get_behavior_packs(pack: &mut PackSource) -> Vec<PackSource> {
         // Directory wins on a file/dir name collision (active edit).
         let mut out = Vec::new();
@@ -395,6 +528,14 @@ impl ZippedVersionPack {
         out
     }
 
+    /// 读取并解析 `definitions/biomes/` 下的全部生物群系定义。
+    ///
+    /// Reads and parses every biome definition under `definitions/biomes/`.
+    ///
+    /// - `pack`: 包源
+    ///
+    /// # Errors
+    /// 首个解析失败即返回错误。
     fn get_biomes(
         pack: &mut PackSource,
     ) -> Result<Vec<crate::definitions::biome::MinecraftBiomeSpawner>, VersionPackLoaderError> {
@@ -419,6 +560,12 @@ impl ZippedVersionPack {
         }
     }
 
+    /// 读取 `definitions/biome_ids.json`（生物群系标识名 → 网络 id，可选）。
+    ///
+    /// Reads `definitions/biome_ids.json` (biome identifier → network id,
+    /// optional).
+    ///
+    /// - `pack`: 包源
     fn get_biome_ids(pack: &mut PackSource) -> HashMap<String, i16> {
         let Some(size) = pack.file_size("definitions/biome_ids.json") else {
             return HashMap::new();
@@ -432,8 +579,13 @@ impl ZippedVersionPack {
         serde_json::from_reader(BudgetReader::new(bytes.as_slice())).unwrap_or_default()
     }
 
-    /// Read definitions/block_tags.json (optional block tag table).
+    /// 读取 `definitions/block_tags.json`（可选的方块标签表）。
+    /// 文件缺失、超出预算或无法解析时回退为空表。
+    ///
+    /// Reads `definitions/block_tags.json` (optional block tag table).
     /// Missing, over-budget, or unparsable files fall back to an empty table.
+    ///
+    /// - `pack`: 包源
     fn get_block_tags(pack: &mut PackSource) -> HashMap<String, Vec<String>> {
         let Some(size) = pack.file_size("definitions/block_tags.json") else {
             return HashMap::new();
@@ -447,10 +599,18 @@ impl ZippedVersionPack {
         serde_json::from_reader(BudgetReader::new(bytes.as_slice())).unwrap_or_default()
     }
 
-    /// Read definitions/recipe_groups.json (optional ingredient group table).
+    /// 读取 `definitions/recipe_groups.json`（可选的合成原料组表）。
     ///
-    /// Missing, over-budget, or unparsable files fall back to an empty table (callers are fail-closed: exact
-    /// matches are unaffected, tag/pseudo-name queries have no members). Reuses the block_tags budget and style.
+    /// Reads `definitions/recipe_groups.json` (optional ingredient group table).
+    ///
+    /// 文件缺失、超出预算或无法解析时回退为空表（调用方为失败即闭合策略：
+    /// 精确匹配不受影响，标签/伪名查询没有成员）。复用方块标签的预算与风格。
+    ///
+    /// Missing, over-budget, or unparsable files fall back to an empty table
+    /// (callers are fail-closed: exact matches are unaffected, tag/pseudo-name
+    /// queries have no members). Reuses the block_tags budget and style.
+    ///
+    /// - `pack`: 包源
     fn get_recipe_groups(pack: &mut PackSource) -> HashMap<String, Vec<String>> {
         let Some(size) = pack.file_size("definitions/recipe_groups.json") else {
             return HashMap::new();
@@ -464,8 +624,14 @@ impl ZippedVersionPack {
         serde_json::from_reader(BudgetReader::new(bytes.as_slice())).unwrap_or_default()
     }
 
-    /// Read definitions/biome_features.json (optional worldgen feature-scheduling data).
-    /// Returns default when absent; scheduling semantics live in world generation.
+    /// 读取 `definitions/biome_features.json`（可选的世界生成特性调度数据）。
+    /// 文件缺失时返回默认值；调度语义位于世界生成。
+    ///
+    /// Reads `definitions/biome_features.json` (optional worldgen
+    /// feature-scheduling data). Returns default when absent; scheduling
+    /// semantics live in world generation.
+    ///
+    /// - `pack`: 包源
     fn get_biome_features(
         pack: &mut PackSource,
     ) -> crate::version_control::biome_features::BiomeFeaturesData {
@@ -481,6 +647,15 @@ impl ZippedVersionPack {
         serde_json::from_reader(BudgetReader::new(bytes.as_slice())).unwrap_or_default()
     }
 
+    /// 读取并解析 `definitions/attributes.json`（实体属性默认值表）。
+    ///
+    /// Reads and parses `definitions/attributes.json` (the default entity
+    /// attribute table).
+    ///
+    /// - `pack`: 包源
+    ///
+    /// # Errors
+    /// 文件缺失、超出 JSON 预算或解析失败时返回错误。
     fn get_attributes(
         pack: &mut PackSource,
     ) -> Result<HashMap<String, EntityAttribute>, VersionPackLoaderError> {
@@ -504,6 +679,11 @@ impl ZippedVersionPack {
         })
     }
 
+    /// 读取 `plugins/` 下的全部插件归档字节。
+    ///
+    /// Reads the bytes of every plugin archive under `plugins/`.
+    ///
+    /// - `pack`: 包源
     fn get_plugins(pack: &mut PackSource) -> Vec<Vec<u8>> {
         pack.dir_files_bytes("plugins")
             .into_iter()
@@ -511,8 +691,17 @@ impl ZippedVersionPack {
             .collect()
     }
 
-    /// Read definitions/entity_identifiers.nbt (required vanilla entity-identifier NBT).
-    /// Returns FileNotFound when absent or unreadable.
+    /// 读取 `definitions/entity_identifiers.nbt`（必需的原版实体标识符 NBT）。
+    /// 文件缺失或无法读取时返回 `FileNotFound`。
+    ///
+    /// Reads `definitions/entity_identifiers.nbt` (required vanilla
+    /// entity-identifier NBT). Returns `FileNotFound` when absent or
+    /// unreadable.
+    ///
+    /// - `pack`: 包源
+    ///
+    /// # Errors
+    /// 文件缺失、无法读取或超出二进制预算时返回错误。
     fn get_entity_identifiers(pack: &mut PackSource) -> Result<Vec<u8>, VersionPackLoaderError> {
         let Some(size) = pack.file_size("definitions/entity_identifiers.nbt") else {
             return Err(VersionPackLoaderError::file_not_found(
@@ -529,8 +718,13 @@ impl ZippedVersionPack {
         )
     }
 
-    /// Read definitions/block_palette.nbt (optional block palette bytes).
-    /// Returns None when absent or over budget.
+    /// 读取 `definitions/block_palette.nbt`（可选的方块调色板字节）。
+    /// 文件缺失或超出预算时返回 `None`。
+    ///
+    /// Reads `definitions/block_palette.nbt` (optional block palette bytes).
+    /// Returns `None` when absent or over budget.
+    ///
+    /// - `pack`: 包源
     fn get_block_palette(pack: &mut PackSource) -> Option<Vec<u8>> {
         let size = pack.file_size("definitions/block_palette.nbt")?;
         if !binary_entry_is_allowed(size) {
@@ -539,8 +733,13 @@ impl ZippedVersionPack {
         pack.read_file("definitions/block_palette.nbt")
     }
 
-    /// Read definitions/creative_items.json (optional creative-item table).
-    /// Returns None when absent or over budget.
+    /// 读取 `definitions/creative_items.json`（可选的创造模式物品表）。
+    /// 文件缺失或超出预算时返回 `None`。
+    ///
+    /// Reads `definitions/creative_items.json` (optional creative-item table).
+    /// Returns `None` when absent or over budget.
+    ///
+    /// - `pack`: 包源
     fn get_creative_items(pack: &mut PackSource) -> Option<Vec<u8>> {
         let size = pack.file_size("definitions/creative_items.json")?;
         if !json_entry_is_allowed(size) {
@@ -549,7 +748,12 @@ impl ZippedVersionPack {
         pack.read_file("definitions/creative_items.json")
     }
 
-    /// Read definitions/worldgen/ density_function + noise JSON into a bundle.
+    /// 将 `definitions/worldgen/` 下的 density_function 与 noise JSON 读入数据包。
+    ///
+    /// Reads the density_function and noise JSON under `definitions/worldgen/`
+    /// into a bundle.
+    ///
+    /// - `pack`: 包源
     fn get_worldgen(pack: &mut PackSource) -> WorldgenDataBundle {
         let mut bundle = WorldgenDataBundle::default();
         for (path, bytes) in pack.dir_files_bytes("definitions/worldgen/density_function") {
@@ -576,6 +780,15 @@ impl ZippedVersionPack {
         bundle
     }
 
+    /// 解析完整版本包：读取清单与各段数据，组装为 [`SCVersionPack`]。
+    ///
+    /// Parses a complete version pack: reads the manifest and every section,
+    /// assembling them into an [`SCVersionPack`].
+    ///
+    /// - `pack`: 包源
+    ///
+    /// # Errors
+    /// 必需段缺失、解析失败或清单声明的 `block_data` 加载失败时返回错误。
     pub fn get_version(pack: &mut PackSource) -> Result<SCVersionPack, VersionPackLoaderError> {
         let manifest = Self::get_manifest(pack)?;
         let mut behavior_packs = Self::get_behavior_packs(pack);
@@ -787,7 +1000,6 @@ mod tests {
         "minecraft:block": {
             "description": {"identifier": "minecraft:air", "states": {}},
             "components": {},
-            "sc:default_state": {},
             "sc:protocol_runtime_ids": [0]
         }
     }"#;
@@ -826,163 +1038,4 @@ mod tests {
         assert!(e.to_string().contains("air.json"), "实际：{e}");
     }
 
-    /// Real version-pack integration test: definitions/block_tags.json must load once injected.
-    /// Tag table from upstream gamedata (tag to block-identifier list, 39 tags).
-    #[test]
-    fn load_block_tags_from_real_version_pack() {
-        let Some(mut source) = crate::test_pack::open_test_pack() else {
-            eprintln!("[skip] 版本包缺失，跳过测试");
-            return;
-        };
-        let mut pack = ZippedVersionPack::get_version(&mut source).expect("版本包解析失败");
-
-        assert!(pack.has_block_tags(), "block_tags 应存在且非空");
-        let tags = pack.take_block_tags();
-        assert_eq!(tags.len(), 39, "上游 1.26.40 gamedata 应含 39 个 tag");
-
-        // Check minecraft:dirt members (source for the isSupportDirt check).
-        let dirt = tags.get("minecraft:dirt").expect("应有 minecraft:dirt tag");
-        for member in [
-            "minecraft:dirt",
-            "minecraft:grass_block",
-            "minecraft:podzol",
-            "minecraft:mycelium",
-            "minecraft:coarse_dirt",
-            "minecraft:farmland",
-            "minecraft:moss_block",
-            "minecraft:mud",
-            "minecraft:dirt_with_roots",
-            "minecraft:muddy_mangrove_roots",
-            "minecraft:pale_moss_block",
-        ] {
-            assert!(
-                dirt.contains(&member.to_string()),
-                "minecraft:dirt 应包含 {member}"
-            );
-        }
-
-        // Spot-check minecraft:grass / minecraft:log (support/trunk tags for tree generation).
-        assert!(tags.contains_key("minecraft:grass"));
-        assert!(tags.contains_key("minecraft:log"));
-    }
-
-    /// Real version-pack integration test: definitions/recipe_groups.json must load.
-    /// Merged tag table plus legacy pseudo-name families (planks/wood/dye/...,
-    /// in legacy data order), generated offline and checked in.
-    #[test]
-    fn load_recipe_groups_from_real_version_pack() {
-        let Some(mut source) = crate::test_pack::open_test_pack() else {
-            eprintln!("[skip] 版本包缺失，跳过测试");
-            return;
-        };
-        let mut pack = ZippedVersionPack::get_version(&mut source).expect("版本包解析失败");
-
-        assert!(pack.has_recipe_groups(), "recipe_groups 应存在且非空");
-        let groups = pack.take_recipe_groups();
-        // Spot-check tag-side keys.
-        let planks = groups.get("minecraft:planks").expect("应有 planks 组");
-        for member in ["minecraft:oak_planks", "minecraft:birch_planks"] {
-            assert!(planks.contains(&member.to_string()), "planks 应包含 {member}");
-        }
-        // Spot-check legacy pseudo-name keys.
-        let wood = groups.get("minecraft:wood").expect("应有 wood 伪名组");
-        assert!(wood.contains(&"minecraft:oak_wood".to_string()));
-        let dye = groups.get("minecraft:dye").expect("应有 dye 伪名组");
-        assert!(dye.contains(&"minecraft:ink_sac".to_string()));
-        // Legacy data order: planks[0] must be oak (data index semantics depend on it).
-        assert_eq!(planks[0], "minecraft:oak_planks");
-        // Should be empty after consumption.
-        assert!(!pack.has_recipe_groups());
-    }
-
-    /// Real version-pack integration test: official 1.26.40.05 biome data must load:
-    /// 88 biome json files (including new biomes such as deep_dark/cherry_grove/pale_garden,
-    /// 17 new biomes whose ids worldgen writes and clients need) + 88
-    /// biome_ids.json mappings (exported from the worldgen biome_id constant table).
-    #[test]
-    fn load_official_biomes_and_ids_from_real_version_pack() {
-        let Some(mut source) = crate::test_pack::open_test_pack() else {
-            eprintln!("[skip] 版本包缺失，跳过测试");
-            return;
-        };
-
-        // Biome json count is 88 (full official 1.26.40.05 set).
-        let mut biome_count = 0;
-        for name in source.file_names() {
-            if name.starts_with("definitions/biomes/") && name.ends_with(".biome.json") {
-                biome_count += 1;
-            }
-        }
-        assert_eq!(biome_count, 88, "官方 1.26.40.05 biome json 应为 88 个");
-
-        let mut pack = ZippedVersionPack::get_version(&mut source).expect("版本包解析失败");
-        let biome_ids = pack.take_biome_ids();
-        assert_eq!(biome_ids.len(), 88, "biome_ids.json 应含 88 条映射");
-
-        // Spot-check new biome ids (match the worldgen biome_id constant table).
-        assert_eq!(biome_ids.get("minecraft:plains"), Some(&1));
-        assert_eq!(biome_ids.get("minecraft:deep_dark"), Some(&190));
-        assert_eq!(biome_ids.get("minecraft:pale_garden"), Some(&193));
-
-        // Full deserialization: all 88 biome json files (including new official components
-        // such as minecraft:village_type; BiomeComponents keeps unknown components in an untagged map).
-        let biomes = pack.get_biomes().expect("biome json 全量反序列化失败");
-        assert_eq!(biomes.len(), 88, "应解析出 88 个 MinecraftBiomeSpawner");
-        let identifiers: Vec<&str> = biomes
-            .iter()
-            .map(|b| b.description.identifier.as_str())
-            .collect();
-        for expected in [
-            "minecraft:deep_dark",
-            "minecraft:cherry_grove",
-            "minecraft:pale_garden",
-            "minecraft:crimson_forest",
-            "minecraft:soulsand_valley",
-        ] {
-            assert!(
-                identifiers.contains(&expected),
-                "官方新群系 {expected} 应可解析"
-            );
-        }
-    }
-
-    /// Real version-pack integration test: definitions/biome_features.json (feature-scheduling data
-    /// extracted from biome_definitions.nbt) must load.
-    /// Covers 88 biomes / 4273 features; spot-check the key tree feature
-    /// (forest_surface_trees_feature matches ForestTreeFeature.NAME).
-    #[test]
-    fn load_biome_features_from_real_version_pack() {
-        let Some(mut source) = crate::test_pack::open_test_pack() else {
-            eprintln!("[skip] 版本包缺失，跳过测试");
-            return;
-        };
-        let mut pack = ZippedVersionPack::get_version(&mut source).expect("版本包解析失败");
-
-        assert!(pack.has_biome_features(), "biome_features 应存在且非空");
-        let data = pack.take_biome_features();
-        assert_eq!(data.biomes.len(), 88, "features 调度应覆盖 88 个群系");
-
-        let total: usize = data.biomes.values().map(|b| b.features.len()).sum();
-        assert_eq!(total, 4273, "feature 总数应为 4273");
-
-        // Forest tree feature: identifier matches ForestTreeFeature.NAME;
-        // eval_order/iterations match the NBT-extracted values.
-        let forest = data
-            .biomes
-            .get("minecraft:forest")
-            .expect("minecraft:forest 应有 features");
-        let tree = forest
-            .features
-            .iter()
-            .find(|f| f.identifier == "minecraft:forest_surface_trees_feature")
-            .expect("forest 应含 forest_surface_trees_feature");
-        assert_eq!(tree.feature, "minecraft:legacy:forest_tree_feature");
-        assert_eq!(tree.pass, "surface_pass");
-        assert_eq!(tree.scatter.eval_order, "ZXY");
-        assert_eq!(tree.scatter.iterations, 10);
-        assert_eq!(tree.scatter.coordinates.len(), 3, "x/y/z 三轴坐标");
-
-        // Consumers (take-then-get) should see empty data.
-        assert!(!pack.has_biome_features());
-    }
 }

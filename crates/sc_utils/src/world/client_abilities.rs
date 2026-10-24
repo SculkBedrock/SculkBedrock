@@ -2,6 +2,9 @@ use crate::nbt::deserialize_nbt_bool;
 use serde::Deserialize;
 use serde_inline_default::serde_inline_default;
 
+/// 对应 world.dat NBT 中的 "abilities" compound。
+/// 保存玩家权限能力标志与移动速度。
+///
 /// Represents the "abilities" compound in world.dat NBT.
 /// Stores player permission ability flags and movement speeds.
 #[serde_inline_default]

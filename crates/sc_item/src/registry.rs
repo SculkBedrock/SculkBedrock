@@ -1,3 +1,5 @@
+//! 物品注册表：版本包通过它把物品关联到默认方块状态。
+//!
 //! Item registry: version packs link items to default block states through it.
 
 use parking_lot::RwLock;
@@ -5,6 +7,8 @@ use sc_ecs::resource::Resource;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// 物品注册表条目。版本包通过它把物品关联到默认方块状态。
+///
 /// Item registry entry. Version packs link items to default block states through it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemDefinition {
@@ -35,11 +39,17 @@ impl ItemDefinition {
     }
 }
 
+/// 可由版本包动态填充的物品注册表。
+///
+/// 主表是按网络 runtime id 索引的稠密表（runtime id 连续 0..N，同时作为网络 id
+/// 和数组下标）；`by_name` 把标识符解析为 runtime id，供方块掉落与工具判定
+/// （`sc:mining.tools[].items` / 掉落表条目）使用。
+///
 /// Item registry fillable dynamically by version packs.
 ///
 /// Dense primary table indexed by network runtime id (runtime ids are contiguous 0..N, serving as both
-/// network ids and array indices) for O(1) lookup; `by_name` resolves identifier to runtime for block
-/// drops/tools (`sc:mining.tools[].items` / `sc:drops.entries[].item`).
+/// network ids and array indices); `by_name` resolves identifier to runtime for block
+/// drops/tools (`sc:mining.tools[].items` / loot-table drop entries).
 #[derive(Resource, Clone, Debug, Default)]
 pub struct ItemRegistry {
     /// Dense primary table: runtime_id is the Vec index (slot 0 = air, not registered).
@@ -86,6 +96,8 @@ impl ItemRegistry {
         entries[id] = Some(definition);
     }
 
+    /// 登记名称到 runtime 的反向查找；改名保留较小的 runtime id。
+    ///
     /// Registers the name-to-runtime reverse lookup; renames keep the smaller runtime id.
     fn link_name(by_name: &Arc<RwLock<HashMap<Box<str>, u16>>>, definition: &ItemDefinition) {
         let mut by_name = by_name.write();
@@ -99,22 +111,30 @@ impl ItemRegistry {
         }
     }
 
-    /// Item identifier to runtime id (for `sc:mining`/`sc:drops` resolution).
+    /// 物品标识符到 runtime id（供 `sc:mining` 与掉落表解析）。
+    ///
+    /// Item identifier to runtime id (for `sc:mining` and loot-table drops resolution).
     pub fn runtime_id_by_name(&self, name: &str) -> Option<u16> {
         self.by_name.read().get(name).copied()
     }
 
+    /// 该物品标识符是否已注册。
+    ///
     /// Whether this item identifier is registered.
     pub fn contains_name(&self, name: &str) -> bool {
         self.by_name.read().contains_key(name)
     }
 
+    /// 全部已注册标识符（用于构建配方伪名家族表的启动快照）。
+    ///
     /// All registered identifiers (one startup snapshot for building recipe pseudo-name family tables).
     pub fn names(&self) -> Vec<String> {
         self.by_name.read().keys().map(|key| key.to_string()).collect()
     }
 
-    /// O(1): runtime_id indexes directly, no hashing.
+    /// 按 runtime_id 直接索引主表（不做哈希查找）。
+    ///
+    /// Looks up by direct `runtime_id` indexing of the dense table (no hashing).
     pub fn get(&self, runtime_id: u16) -> Option<ItemDefinition> {
         self.entries
             .read()
@@ -127,12 +147,22 @@ impl ItemRegistry {
         self.get(runtime_id)?.default_block_runtime_id
     }
 
+    /// 为某物品创建标准堆叠，若其代表方块则自动填入默认方块 runtime id。
+    ///
+    /// Create a standard stack for an item, automatically populating its default block runtime id if it represents a block.
+    pub fn create_stack(&self, runtime_id: u16, count: u16) -> crate::stack::ItemStack {
+        let block_runtime_id = self.block_runtime_id(runtime_id).unwrap_or(0);
+        crate::stack::ItemStack::with_block(runtime_id, block_runtime_id, count)
+    }
+
     pub fn max_stack_size(&self, runtime_id: u16) -> u16 {
         self.get(runtime_id)
             .map(|entry| entry.max_stack_size)
             .unwrap_or(64)
     }
 
+    /// 已注册物品数量（跳过空洞索引）。
+    ///
     /// Registered item count (skipping hollow indices).
     pub fn len(&self) -> usize {
         self.entries
@@ -145,6 +175,8 @@ impl ItemRegistry {
         self.len() == 0
     }
 
+    /// 全部"方块物品"定义（带 default_block_runtime_id 的物品），按 runtime_id 升序。
+    ///
     /// All "block item" definitions (items with a default_block_runtime_id), in ascending runtime_id.
     /// Used to build listings that enumerate placeable items, such as the creative inventory (CreativeContent).
     pub fn block_items(&self) -> Vec<ItemDefinition> {

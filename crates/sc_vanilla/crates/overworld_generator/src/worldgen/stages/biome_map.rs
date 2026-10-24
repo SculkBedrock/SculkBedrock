@@ -1,15 +1,6 @@
-//! Biome-map stage: picks a biome per column and writes per-section biome ids.
+//! 生物群系映射阶段：为每列选择生物群系并写入各分段的生物群系 ID。
 //!
-//! Notes:
-//! - The picker is built fresh per `apply` from the holder plus a precomputed
-//!   chunk heightmap callback. The picker itself carries no per-chunk state;
-//!   only the heightmap lookup is per-chunk.
-//! - Only the overworld picker path is used here.
-//! - The per-chunk evaluation cache is a local value (single-threaded
-//!   generation needs no pooling).
-//! - The chunk is edited directly through `&mut WorldgenChunk`.
-//! - The heightmap is precomputed into `[i32; 256]` because it does not change
-//!   while this stage runs (the terrain stage wrote it in the previous stage).
+//! Biome-map stage: picks a biome per column and writes biome IDs into each section.
 
 use crate::worldgen::biome::overworld::{OverworldBiomePicker, OverworldBiomeResult};
 use crate::worldgen::biome::BiomeResult;
@@ -25,6 +16,12 @@ use std::rc::Rc;
 // BiomeMapStage: per-column biome pick + per-section biome write
 // ---------------------------------------------------------------------------
 
+/// 生物群系映射阶段。
+///
+/// 按 16x16 列在海平面用 `OverworldBiomePicker::pick` 选择生物群系，然后自上而下遍历每列，应用洞穴生物群系的深度修正、写入 section 生物群系 id 并重置结果。
+///
+/// 阶段本身为零大小类型；picker 在 `apply` 内由 holder 与区块高度图构建。
+///
 /// Biome-map stage.
 ///
 /// Picks a biome per 16x16 column with `OverworldBiomePicker::pick` at sea level,
@@ -200,7 +197,7 @@ mod tests {
     }
 
     #[test]
-    fn biome_map_name() {
+    fn biome_map_stage_reports_its_name() {
         assert_eq!(BiomeMapStage::new().name(), "biome");
     }
 

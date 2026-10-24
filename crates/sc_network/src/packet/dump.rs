@@ -20,7 +20,12 @@ static STATE: OnceLock<Mutex<Option<DumpState>>> = OnceLock::new();
 static ENABLED: OnceLock<bool> = OnceLock::new();
 static HEX_ENABLED: OnceLock<bool> = OnceLock::new();
 
+/// 数据包抓取开关。每进程只读取一次并缓存。
+///
 /// Packet capture switch. Read once per process and cached.
+///
+/// 该开关会馈送给每条出站数据包路径，而环境变量在进程启动前就已固定，
+/// 因此缓存是安全的。
 ///
 /// The switch feeds every outbound packet path, and environment variables
 /// are fixed before process start, so caching is safe.
@@ -255,6 +260,10 @@ pub fn record_wire(
     record_bytes(direction, stage, entity, None, packet_name, bytes, details);
 }
 
+/// 诊断用的枚举项名称：编译期常量字符串，零分配。若在此格式化整个负载，
+/// 发送路径上每个数据包会序列化数十 KB，因此名称直接取自 derive 生成的
+/// `packet_name()`。
+///
 /// Variant name for diagnostics: compile-time constant string, zero
 /// allocation. Debug-formatting whole payloads here would serialize tens
 /// of kilobytes per packet on the send path, so the name comes directly
@@ -269,6 +278,9 @@ mod tests {
     use crate::protocol::server::chunk::LevelChunk;
     use crate::protocol::MinecraftPackets;
 
+    /// `packet_name()` 必须与 derive 生成的 Debug 实现给出的枚举项名称一致：
+    /// 日志检索与 blocked_packets 诊断都依赖它。
+    ///
     /// `packet_name()` must match the variant name the derived Debug
     /// implementation produced: log search and blocked_packets diagnostics
     /// depend on it.
@@ -295,6 +307,9 @@ mod tests {
         }
     }
 
+    /// 大负载 LevelChunk：`packet_name()` 不得分配内存
+    /// （由 `const fn` + `&'static str` 保证）。
+    ///
     /// Large-payload LevelChunk: `packet_name()` must not allocate
     /// (guaranteed by `const fn` + `&'static str`).
     #[test]

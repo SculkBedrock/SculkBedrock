@@ -1,3 +1,7 @@
+//! Minecraft Bedrock 资源包加载器（版本包、资源包、行为包）。
+//!
+//! Minecraft Bedrock resource pack loader (version packs, resource packs, behavior packs).
+
 use crate::definitions::biome::manager::MinecraftBiomeManager;
 use crate::definitions::biome::MinecraftBiomeSpawner;
 use crate::entity::MinecraftEntitySpawner;
@@ -34,9 +38,6 @@ pub mod macros;
 pub mod pack;
 pub mod pack_loader;
 pub mod recipe_source;
-#[cfg(test)]
-mod test;
-pub mod test_pack;
 pub mod types;
 pub mod version_control;
 
@@ -48,22 +49,37 @@ types_export![
     MinecraftBiomeSpawner = "minecraft:biome",
 ];
 
+/// 资源包加载器错误类型。
+///
+/// Error type for the pack loader.
 #[derive(Debug, ScError)]
 pub enum PackLoaderError {
-    /// Required version pack is missing.
+    /// 所需的版本包缺失。
+    ///
+    /// The required version pack is missing.
     #[sc_error(code = "packloader.version_pack_not_found")]
     VersionPackNotFound {
-        /// Missing pack name.
+        /// 缺失的包名。
+        ///
+        /// Name of the missing pack.
         name: Cow<'static, str>,
+        /// 说明错误原因的英文详情。
+        ///
         /// English detail explaining the cause.
         detail: String,
+        /// 错误构造位置。
+        ///
         /// Construction site.
         site: ScSite,
     },
 }
 
 impl PackLoaderError {
-    /// Build a missing-pack error, capturing the call site.
+    /// 构造“版本包缺失”错误，并捕获调用位置。
+    ///
+    /// Builds a missing-version-pack error, capturing the call site.
+    ///
+    /// - `name`: 缺失的版本包名称
     #[track_caller]
     pub fn version_pack_not_found(name: Cow<'static, str>) -> Self {
         let detail = format!("version pack '{name}' not found");
@@ -76,6 +92,9 @@ impl PackLoaderError {
 }
 
 impl Display for PackLoaderError {
+    /// 以 `[错误码] 详情 (at 位置)` 的格式格式化错误。
+    ///
+    /// Formats the error as `[code] detail (at site)`.
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::VersionPackNotFound { detail, site, .. } => {
@@ -87,15 +106,25 @@ impl Display for PackLoaderError {
 
 impl Error for PackLoaderError {}
 
-
+/// 资源包加载器插件：在预加载阶段注册版本包与资源包加载系统。
+///
+/// Pack loader plugin: registers version-pack and resource-pack loading
+/// systems at the pre-load stage.
 pub struct SCPackLoaderPlugin;
 
 impl Plugin for SCPackLoaderPlugin {
+    /// 向应用注册加载系统（运行于预加载调度点）。
+    ///
+    /// Registers the loading systems on the app (at the pre-load schedule).
     fn build(&self, app: &App) {
         app.add_systems(SCPreLoad, (load_version, load_pack));
     }
 }
 
+/// 加载版本包：读取目录、选择协议版本最高的包，并装载生物群系、属性、行为包等数据。
+///
+/// Loads version packs: scans the directory, picks the pack with the highest
+/// protocol version, and loads biomes, attributes, behavior packs, and more.
 fn load_version(world: World) {
     let start = Local::now().timestamp_millis();
     let Ok(mut current_dir) = env::current_dir() else {
@@ -243,6 +272,13 @@ fn load_version(world: World) {
     }
 }
 
+/// 从指定目录加载一类资源包（`{name}s/` 目录）并合并进管理器。
+///
+/// Loads one category of packs (the `{name}s/` directory) and merges them
+/// into the manager.
+///
+/// - `manager`: 资源包管理器，加载结果追加其中
+/// - `name`: 包类别名（如 `resource_pack`/`behavior_pack`）
 fn load_pack0(manager: &mut ResourcePackManager, name: &str) {
     let start = Local::now().timestamp_millis();
     let Ok(mut current_dir) = env::current_dir() else {
@@ -262,6 +298,10 @@ fn load_pack0(manager: &mut ResourcePackManager, name: &str) {
     );
 }
 
+/// 加载全部资源包与行为包，生成方块调色板并将管理器注册为世界资源。
+///
+/// Loads all resource and behavior packs, generates the block palette, and
+/// registers the manager as a world resource.
 fn load_pack(world: World, mut runtime_manager: ResMut<MinecraftRuntimeManager>) {
     let mut manager = ResourcePackManager::new();
     load_pack0(&mut manager, "resource_pack"); //resource packs

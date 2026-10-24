@@ -1,14 +1,22 @@
+//! 存储子系统：区块列缓存/脏位管理、存储后端 trait 与实现、
+//! spillover（越界生成写）路由、以及键/错误类型。
+//!
+//! Storage subsystem: chunk-column caching/dirty tracking, the storage
+//! backend trait and implementations, spillover (out-of-bounds generation
+//! writes) routing, and the key/error types.
+
 pub mod column;
 pub mod error;
 pub mod key;
 pub mod provider;
 pub mod spillover;
 
-pub use column::ChunkColumn;
+pub use column::{ChunkColumn, ReadyColumnReceipt};
 pub use error::{DirtyFlushReport, WorldStorageError};
 pub use key::{ChunkKey, SpilloverOperationId};
 pub use provider::{
-    EmptyWorldStorage, InMemoryWorldStorage, WorldChunkProvider, WorldGenerator, WorldStorage,
+    EmptyWorldStorage, InMemoryWorldStorage, NoSaveWorldStorage, WorldChunkProvider,
+    WorldGenerator, WorldStorage,
 };
 pub use spillover::{
     BlockSpilloverWrite, ChunkGenerationRequest, GeneratedChunk, GeneratedChunkCommit,
@@ -22,29 +30,69 @@ pub(crate) use spillover::{
     SpilloverGenerationPermit, merge_spillover_entries, report_spillover_arbitration,
 };
 
+/// spillover 锁条带数（按键散列分锁，降低争用）。
+///
+/// Number of spillover lock stripes (keys hash into stripes to reduce
+/// contention).
 const SPILLOVER_LOCK_STRIPES: usize = 64;
+/// 待处理 spillover 写上限（条数）。
+///
+/// Maximum number of pending spillover writes.
 const MAX_PENDING_SPILLOVER_WRITES: usize = 65_536;
+/// 一次定长写、Vec 增长、每键元数据/时间戳及其 map 份额的保守队列
+/// 记账额度。它是准入估计，不是 RSS。
+///
 /// Conservative queue-accounting allowance for one fixed-size write, Vec
 /// growth, per-key metadata/timestamp, and its map share. It is an admission
 /// estimate, not RSS.
 const SPILLOVER_ESTIMATED_BYTES_PER_WRITE: usize = 256;
+/// 待处理 spillover 字节上限（4 MiB）。
+///
+/// Maximum pending spillover bytes (4 MiB).
 const MAX_PENDING_SPILLOVER_BYTES: usize = 4 * 1024 * 1024;
+/// 已存储 spillover 写上限（条数）。
+///
+/// Maximum number of stored spillover writes.
 pub(crate) const MAX_STORED_SPILLOVER_WRITES: usize = 262_144;
+/// 单次生成结果允许的最大 spillover 写数（由字节预算推导）。
+///
+/// Maximum spillover writes allowed in one generation result (derived from
+/// the byte budget).
 pub const MAX_GENERATED_SPILLOVER_WRITES: usize =
     MAX_PENDING_SPILLOVER_BYTES / SPILLOVER_ESTIMATED_BYTES_PER_WRITE;
-const MAX_IN_FLIGHT_SPILLOVER_BYTES: usize = 8 * 1024 * 1024;
+/// 退役列句柄上限（脏列被挤出缓存后仍被 provider 持有）。
+///
+/// Maximum retired column handles (dirty columns evicted from the cache stay
+/// provider-owned).
 const MAX_RETIRED_COLUMN_HANDLES: usize = 128;
+/// 同步 flush 单批最多处理的脏列数。
+///
+/// Maximum dirty columns handled in one synchronous flush batch.
 const MAX_SYNC_FLUSH_BATCH_COLUMNS: usize = 32;
+/// 同步 flush 单批快照字节上限（64 MiB）。
+///
+/// Per-batch snapshot byte cap for synchronous flush (64 MiB).
 const MAX_SYNC_FLUSH_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
-/// Estimated dirty bytes above which new generation is throttled (§3.2).
+/// 超过该估计脏字节数后限制新生成的高水位。
+///
+/// Estimated dirty bytes above which new generation is throttled.
+///
+/// 未确认的脏数据是唯一无法从种子重建的世界状态，因此它有专门预算：
+/// 越高水位后 provider 拒绝*新生成*（可恢复的工作）而不是继续接受，
+/// 游戏内编辑沿用既有准入路径。
 ///
 /// Unacknowledged dirty data is the only world state that cannot be recreated
 /// from a seed, so it gets a dedicated budget: past the high-water mark the
 /// provider refuses *new generation* (recoverable work) instead of accepting
 /// more, while gameplay edits keep their existing admission path.
 const DIRTY_HIGH_WATER_BYTES: usize = 192 * 1024 * 1024;
+/// 超过该脏字节数后只允许加载已驻留的列。
+///
 /// Dirty budget after which only already-resident columns may be loaded.
 const DIRTY_CRITICAL_BYTES: usize = 320 * 1024 * 1024;
+/// flush 报告中失败键采样上限。
+///
+/// Maximum failed-key samples kept in a flush report.
 const MAX_DIRTY_FLUSH_KEY_SAMPLES: usize = 128;
 
 #[cfg(test)]
@@ -62,7 +110,7 @@ mod tests {
     #[test]
     fn flush_dirty_writes_back_and_clears_dirty_flag() {
         let storage = Arc::new(InMemoryWorldStorage::default());
-        let provider = WorldChunkProvider::new(storage.clone());
+        let provider = WorldChunkProvider::new_testing(storage.clone());
         let key = ChunkKey::new(0, ChunkPosition::new(1, 1));
         // ensure creates an all-air chunk and caches it.
         let column = provider.ensure_chunk(key, -64, 319).expect("ensure");
@@ -86,7 +134,7 @@ mod tests {
     #[test]
     fn flush_dirty_skips_clean_columns() {
         let storage = Arc::new(InMemoryWorldStorage::default());
-        let provider = WorldChunkProvider::new(storage.clone());
+        let provider = WorldChunkProvider::new_testing(storage.clone());
         let key_a = ChunkKey::new(0, ChunkPosition::new(0, 0));
         let key_b = ChunkKey::new(0, ChunkPosition::new(2, 3));
         let col_a = provider.ensure_chunk(key_a, -64, 319).expect("ensure a");
@@ -97,9 +145,70 @@ mod tests {
         assert!(storage.load_chunk(key_a).expect("load a").is_some());
     }
 
+
+
+    /// 没有生成器且未显式允许空回退时，缺失区块被直接拒绝；
+    /// 显式回退模式为测试/工具保留权威空列行为。
+    ///
+    /// Without a generator and without the explicit empty fallback,
+    /// missing chunks are refused; the explicit fallback mode keeps
+    /// the authoritative-empty behavior for tests/tools.
+    #[test]
+    fn generation_without_a_generator_is_refused_unless_empty_fallback_is_explicit() {
+        let key = ChunkKey::new(0, ChunkPosition::new(3, 4));
+        // Default provider: refusal, no column materialized.
+        let provider = WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default()));
+        let error = match provider.ensure_chunk(key, -64, 319) {
+            Err(error) => error,
+            Ok(_) => panic!("generator-less generation must be refused"),
+        };
+        assert!(
+            error.to_string().contains("no world generator installed"),
+            "unexpected error detail: {error}"
+        );
+        assert!(provider.cached_chunk(key).is_none(), "refusal must not publish a column");
+
+        // Explicit fallback (tests/tools only): authoritative empty column.
+        let provider = WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default()));
+        let column = provider.ensure_chunk(key, -64, 319).expect("fallback ensure");
+        assert!(provider.cached_chunk(key).is_some());
+        drop(column);
+    }
+
+    #[test]
+    fn provider_generator_descriptor_admission_and_mismatch_refusal() {
+        use crate::generation::GeneratorDescriptor;
+        let storage = Arc::new(InMemoryWorldStorage::default());
+        let desc = GeneratorDescriptor::builtin_overworld(42, 0x1111, 0x2222);
+        let generator = Arc::new(FixedSpilloverGenerator(Vec::new()));
+
+        // 1. First installation on fresh storage succeeds and records the descriptor
+        let _provider = WorldChunkProvider::new(storage.clone())
+            .with_generator_and_descriptor(generator.clone(), desc.clone(), 0)
+            .expect("descriptor admission on fresh storage");
+        assert!(storage.load_generator_descriptor(0).unwrap().is_some());
+
+        // 2. Re-installing matching descriptor succeeds
+        let _provider2 = WorldChunkProvider::new(storage.clone())
+            .with_generator_and_descriptor(generator.clone(), desc.clone(), 0)
+            .expect("matching descriptor admitted");
+
+        // 3. Installing mismatched descriptor refuses with unsupported error
+        let mut bad_desc = desc.clone();
+        bad_desc.seed = 999;
+        let err = match WorldChunkProvider::new(storage.clone())
+            .with_generator_and_descriptor(generator, bad_desc, 0)
+        {
+            Ok(_) => panic!("mismatched descriptor must be refused"),
+            Err(e) => e,
+        };
+        assert!(matches!(err, WorldStorageError::Unsupported { .. }));
+        assert!(err.to_string().contains("different generator or seed"));
+    }
+
     #[test]
     fn mutation_generation_is_published_before_write_guard_release() {
-        let provider = WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default()));
+        let provider = WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default()));
         let key = ChunkKey::new(0, ChunkPosition::new(19, -6));
         let column = provider.ensure_chunk(key, -64, 319).expect("ensure column");
         let initial_generation = column.generation();
@@ -136,7 +245,7 @@ mod tests {
     #[test]
     fn flush_dirty_recovers_live_dirty_column_evicted_from_cache() {
         let storage = Arc::new(InMemoryWorldStorage::default());
-        let provider = WorldChunkProvider::new(storage.clone()).with_cache_limit(1);
+        let provider = WorldChunkProvider::new_testing(storage.clone()).with_cache_limit(1);
         let evicted_key = ChunkKey::new(0, ChunkPosition::new(12, 4));
         let resident_key = ChunkKey::new(0, ChunkPosition::new(13, 4));
         let evicted = provider
@@ -164,7 +273,7 @@ mod tests {
     #[test]
     fn dirty_retired_column_survives_after_external_arc_is_dropped() {
         let storage = Arc::new(InMemoryWorldStorage::default());
-        let provider = WorldChunkProvider::new(storage.clone()).with_cache_limit(1);
+        let provider = WorldChunkProvider::new_testing(storage.clone()).with_cache_limit(1);
         let retired_key = ChunkKey::new(0, ChunkPosition::new(14, 4));
         let resident_key = ChunkKey::new(0, ChunkPosition::new(15, 4));
         let retired = provider
@@ -205,7 +314,7 @@ mod tests {
     #[test]
     fn spillover_targets_retired_canonical_column_instead_of_creating_pending_copy() {
         let provider =
-            WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default())).with_cache_limit(1);
+            WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default())).with_cache_limit(1);
         let target_key = ChunkKey::new(0, ChunkPosition::new(22, 7));
         let resident_key = ChunkKey::new(0, ChunkPosition::new(23, 7));
         let target = provider
@@ -230,7 +339,7 @@ mod tests {
 
     #[test]
     fn dirty_column_window_rotates_after_cursor_with_bounded_result_size() {
-        let provider = WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default()));
+        let provider = WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default()));
         let keys = [1, 3, 5, 7].map(|x| ChunkKey::new(0, ChunkPosition::new(x, 0)));
         for key in keys {
             provider
@@ -252,7 +361,7 @@ mod tests {
 
     #[test]
     fn dirty_index_tracks_ack_clear_and_redirty() {
-        let provider = WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default()));
+        let provider = WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default()));
         let key = ChunkKey::new(0, ChunkPosition::new(12, -3));
         let column = provider.ensure_chunk(key, -64, 319).expect("ensure column");
 
@@ -287,7 +396,7 @@ mod tests {
 
     #[test]
     fn block_entity_only_dirty_state_is_indexed_and_acknowledged() {
-        let provider = WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default()));
+        let provider = WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default()));
         let key = ChunkKey::new(0, ChunkPosition::new(18, 5));
         let column = provider.ensure_chunk(key, -64, 319).expect("ensure column");
         column.mark_block_entities_dirty();
@@ -342,7 +451,7 @@ mod tests {
 
     #[test]
     fn generated_block_entity_metadata_starts_dirty_for_persistence() {
-        let provider = WorldChunkProvider::new(Arc::new(EmptyWorldStorage))
+        let provider = WorldChunkProvider::new_testing(Arc::new(EmptyWorldStorage))
             .with_generator(Arc::new(GeneratedBlockEntity));
         let key = ChunkKey::new(0, ChunkPosition::new(25, -8));
         let column = provider
@@ -362,7 +471,7 @@ mod tests {
 
     #[test]
     fn biome_only_dirty_state_is_indexed_and_acknowledged() {
-        let provider = WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default()));
+        let provider = WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default()));
         let key = ChunkKey::new(0, ChunkPosition::new(27, -4));
         let column = provider.ensure_chunk(key, -64, 319).expect("ensure column");
         column.mark_biomes_dirty();
@@ -385,7 +494,7 @@ mod tests {
 
     #[test]
     fn dirty_index_remains_consistent_under_concurrent_mark_and_ack() {
-        let provider = WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default()));
+        let provider = WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default()));
         let key = ChunkKey::new(0, ChunkPosition::new(-9, 14));
         let column = provider.ensure_chunk(key, -64, 319).expect("ensure column");
         let writer_column = Arc::clone(&column);
@@ -417,7 +526,7 @@ mod tests {
     #[test]
     fn retired_clean_handle_budget_is_bounded_and_reclaims_released_columns() {
         let provider =
-            WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default())).with_cache_limit(1);
+            WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default())).with_cache_limit(1);
         let mut held = Vec::new();
         for index in 0..=MAX_RETIRED_COLUMN_HANDLES as i32 {
             let key = ChunkKey::new(0, ChunkPosition::new(index, 0));
@@ -468,7 +577,7 @@ mod tests {
 
     #[test]
     fn flush_dirty_keeps_markers_when_storage_rejects_snapshot() {
-        let provider = WorldChunkProvider::new(Arc::new(EmptyWorldStorage));
+        let provider = WorldChunkProvider::new_testing(Arc::new(EmptyWorldStorage));
         let key = ChunkKey::new(0, ChunkPosition::new(4, 5));
         let column = provider.ensure_chunk(key, -64, 319).expect("ensure chunk");
         column.mark_dirty(-4);
@@ -487,7 +596,7 @@ mod tests {
     #[test]
     fn shutdown_fallback_rejects_oversized_snapshot_without_clearing_dirty() {
         let storage = Arc::new(InMemoryWorldStorage::default());
-        let provider = WorldChunkProvider::new(storage.clone());
+        let provider = WorldChunkProvider::new_testing(storage.clone());
         let key = ChunkKey::new(0, ChunkPosition::new(31, -8));
         let column = provider.ensure_chunk(key, -64, 319).expect("ensure column");
         let base_bytes = column.writeback_snapshot_estimated_bytes();
@@ -518,7 +627,7 @@ mod tests {
 
     #[test]
     fn shutdown_flush_pages_dirty_columns_and_caps_failure_key_samples() {
-        let provider = WorldChunkProvider::new(Arc::new(EmptyWorldStorage));
+        let provider = WorldChunkProvider::new_testing(Arc::new(EmptyWorldStorage));
         let total_dirty = MAX_DIRTY_FLUSH_KEY_SAMPLES + 17;
         for index in 0..total_dirty as i32 {
             let key = ChunkKey::new(0, ChunkPosition::new(index, -2));
@@ -577,7 +686,7 @@ mod tests {
             provider: Mutex::new(None),
             inserted: AtomicBool::new(false),
         });
-        let provider = Arc::new(WorldChunkProvider::new(storage.clone()));
+        let provider = Arc::new(WorldChunkProvider::new_testing(storage.clone()));
         *storage
             .provider
             .lock()
@@ -636,7 +745,7 @@ mod tests {
             release_save: Mutex::new(release_save_rx),
             saved: Mutex::new(Vec::new()),
         });
-        let provider = WorldChunkProvider::new(storage.clone());
+        let provider = WorldChunkProvider::new_testing(storage.clone());
         let key = ChunkKey::new(0, ChunkPosition::new(8, 9));
         let column = provider.ensure_chunk(key, -64, 319).expect("ensure chunk");
 
@@ -703,7 +812,7 @@ mod tests {
     #[test]
     fn pending_spillover_is_applied_after_chunk_cache_insertion() {
         let storage = Arc::new(InMemoryWorldStorage::default());
-        let provider = WorldChunkProvider::new(storage);
+        let provider = WorldChunkProvider::new_testing(storage);
         let key = ChunkKey::new(0, ChunkPosition::new(3, -2));
         let block = BlockRuntimeId(1);
 
@@ -730,7 +839,7 @@ mod tests {
 
     #[test]
     fn pending_spillover_oldest_age_survives_append_and_clears_on_drain() {
-        let provider = WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default()));
+        let provider = WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default()));
         let oldest_key = ChunkKey::new(0, ChunkPosition::new(3, -2));
         let later_key = ChunkKey::new(0, ChunkPosition::new(4, -2));
 
@@ -767,7 +876,7 @@ mod tests {
 
     #[test]
     fn dirty_high_water_suspends_new_generation_but_not_cached_reads() {
-        let provider = WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default()));
+        let provider = WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default()));
         assert_eq!(provider.dirty_bytes(), 0);
         assert!(provider.generation_admission().is_ok());
 
@@ -788,7 +897,7 @@ mod tests {
 
     #[test]
     fn critical_dirty_backlog_suspends_generation_outright() {
-        let provider = WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default()));
+        let provider = WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default()));
         provider.note_dirty_bytes(DIRTY_CRITICAL_BYTES);
         let refused = provider
             .generation_admission()
@@ -801,7 +910,7 @@ mod tests {
 
     #[test]
     fn releasing_more_than_charged_never_underflows() {
-        let provider = WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default()));
+        let provider = WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default()));
         provider.note_dirty_bytes(64);
         provider.release_dirty_bytes(128);
         assert_eq!(provider.dirty_bytes(), 0);
@@ -811,7 +920,7 @@ mod tests {
     fn an_overflow_position_is_requeued_and_applied_when_the_column_rematerializes() {
         let target_key = ChunkKey::new(0, ChunkPosition::new(4, 4));
         let source_key = ChunkKey::new(0, ChunkPosition::new(3, 4));
-        let provider = WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default()));
+        let provider = WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default()));
 
         // Fill the target's bounded arbitration window with distinct positions.
         let target = provider
@@ -967,7 +1076,7 @@ mod tests {
             barrier: std::sync::Barrier::new(2),
             spillover: spillover_write(target_key, 4),
         });
-        let provider = WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default()))
+        let provider = WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default()))
             .with_generator(generator);
         let first_provider = provider.clone();
         let second_provider = provider.clone();
@@ -1002,9 +1111,12 @@ mod tests {
         assert_eq!(provider.pending_spillover_estimated_bytes(), 0);
     }
 
+    /// 两个生成源瞄准同一方块位置。无论两条路由以何种顺序到达列，
+    /// 发布结果必须是较高的 `SpilloverOperationId`。
+    ///
     /// Two generation sources target the same block position. The published
     /// result must be the higher `SpilloverOperationId` regardless of the order
-    /// in which the two routes reach the column (T24).
+    /// in which the two routes reach the column.
     #[test]
     fn spillover_conflicts_resolve_by_operation_id_not_arrival_order() {
         let target_key = ChunkKey::new(0, ChunkPosition::new(16, 15));
@@ -1183,34 +1295,34 @@ mod tests {
 
     #[test]
     fn spillover_generation_permits_bound_and_release_result_working_bytes() {
-        let provider = WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default()));
+        let provider = WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default()));
         let first = provider
             .reserve_spillover_generation()
             .expect("reserve first result buffer");
         let second = provider
             .reserve_spillover_generation()
             .expect("reserve second result buffer");
+        let third = provider
+            .reserve_spillover_generation()
+            .expect("reserve third result buffer without in-flight limit");
         assert_eq!(
             provider.spillover_generation_reserved_bytes(),
-            MAX_IN_FLIGHT_SPILLOVER_BYTES
+            MAX_PENDING_SPILLOVER_BYTES * 3
         );
-        assert!(matches!(
-            provider.reserve_spillover_generation(),
-            Err(WorldStorageError::Capacity { .. })
-        ));
 
         drop(first);
         assert_eq!(
             provider.spillover_generation_reserved_bytes(),
-            MAX_PENDING_SPILLOVER_BYTES
+            MAX_PENDING_SPILLOVER_BYTES * 2
         );
         drop(second);
+        drop(third);
         assert_eq!(provider.spillover_generation_reserved_bytes(), 0);
     }
 
     #[test]
     fn spillover_byte_budget_rejects_the_whole_batch_without_partial_mutation() {
-        let provider = WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default()));
+        let provider = WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default()));
         let queued_key = ChunkKey::new(0, ChunkPosition::new(10, 10));
         let pending_at_byte_limit =
             MAX_PENDING_SPILLOVER_BYTES / SPILLOVER_ESTIMATED_BYTES_PER_WRITE;
@@ -1255,7 +1367,7 @@ mod tests {
 
     #[test]
     fn spillover_bytes_reject_before_count_limit_and_without_queue_mutation() {
-        let provider = WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default()));
+        let provider = WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default()));
         let key = ChunkKey::new(0, ChunkPosition::new(13, 10));
         let count = MAX_PENDING_SPILLOVER_BYTES / SPILLOVER_ESTIMATED_BYTES_PER_WRITE + 1;
         assert!(count < MAX_PENDING_SPILLOVER_WRITES);
@@ -1273,7 +1385,7 @@ mod tests {
         let source_key = ChunkKey::new(0, ChunkPosition::new(20, 20));
         let mut invalid = spillover_write(ChunkKey::new(0, ChunkPosition::new(21, 20)), 9);
         invalid.x += 16; // World coordinates no longer belong to the declared target key.
-        let provider = WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default()))
+        let provider = WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default()))
             .with_generator(Arc::new(FixedSpilloverGenerator(vec![invalid])));
 
         let result = provider.load_chunk(source_key, -64, 319);
@@ -1292,7 +1404,7 @@ mod tests {
                 .map(|_| spillover_write(target_key, 9))
                 .collect(),
         ));
-        let provider = WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default()))
+        let provider = WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default()))
             .with_generator(generator);
 
         let result = provider.load_chunk(source_key, -64, 319);
@@ -1308,7 +1420,7 @@ mod tests {
         let source_key = ChunkKey::new(0, ChunkPosition::new(25, 16));
         let target_key = ChunkKey::new(0, ChunkPosition::new(26, 16));
         let provider =
-            WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default())).with_cache_limit(1);
+            WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default())).with_cache_limit(1);
         let existing = provider
             .ensure_chunk(existing_key, -64, 319)
             .expect("admit existing column");
@@ -1332,7 +1444,7 @@ mod tests {
     fn generated_source_stays_hidden_until_cached_spillover_target_is_updated() {
         let source_key = ChunkKey::new(0, ChunkPosition::new(40, 40));
         let target_key = ChunkKey::new(0, ChunkPosition::new(41, 40));
-        let provider = WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default()));
+        let provider = WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default()));
         let target = provider
             .insert_empty_chunk(target_key, -64, 319)
             .expect("admit empty chunk");
@@ -1378,7 +1490,7 @@ mod tests {
     fn generated_source_applies_incoming_spillover_before_cache_publication() {
         let source_key = ChunkKey::new(0, ChunkPosition::new(30, 30));
         let neighbor_key = ChunkKey::new(0, ChunkPosition::new(31, 30));
-        let provider = WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default()));
+        let provider = WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default()));
         provider
             .route_spillover(vec![spillover_write(source_key, 1)])
             .expect("queue incoming write");
@@ -1405,7 +1517,7 @@ mod tests {
     #[test]
     fn cache_capacity_rejection_preserves_dirty_column_and_can_retry_after_save() {
         let storage = Arc::new(InMemoryWorldStorage::default());
-        let provider = WorldChunkProvider::new(storage.clone()).with_cache_limit(1);
+        let provider = WorldChunkProvider::new_testing(storage.clone()).with_cache_limit(1);
         let dirty_key = ChunkKey::new(0, ChunkPosition::new(50, 3));
         let requested_key = ChunkKey::new(0, ChunkPosition::new(51, 3));
         let dirty = provider
@@ -1434,7 +1546,7 @@ mod tests {
 
     #[test]
     fn cache_byte_capacity_rejects_an_oversize_column_without_accounting_leak() {
-        let provider = WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default()))
+        let provider = WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default()))
             .with_cache_memory_limit(1);
         let key = ChunkKey::new(0, ChunkPosition::new(52, 3));
         assert!(matches!(
@@ -1451,7 +1563,7 @@ mod tests {
         let sample = ChunkColumn::new(Chunk::empty(ChunkPosition::new(0, 0), 0, -64, 319));
         let one_column_bytes = sample.estimated_memory_bytes();
         drop(sample);
-        let provider = WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default()))
+        let provider = WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default()))
             .with_cache_memory_limit(one_column_bytes.saturating_mul(2));
 
         let first = provider
@@ -1469,7 +1581,7 @@ mod tests {
     #[test]
     fn pending_cache_slot_reservations_prevent_overbooking() {
         let provider =
-            WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default())).with_cache_limit(1);
+            WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default())).with_cache_limit(1);
         let make_candidate = |x| {
             Arc::new(ChunkColumn::new_with_counter(
                 Chunk::empty(ChunkPosition::new(x, 0), 0, -64, 319),
@@ -1499,7 +1611,7 @@ mod tests {
     #[test]
     fn dirty_retired_handles_remain_canonical_outside_the_resident_limit() {
         let storage = Arc::new(InMemoryWorldStorage::default());
-        let provider = WorldChunkProvider::new(storage).with_cache_limit(1);
+        let provider = WorldChunkProvider::new_testing(storage).with_cache_limit(1);
         let first = ChunkKey::new(0, ChunkPosition::new(0, 0));
         let second = ChunkKey::new(0, ChunkPosition::new(1, 0));
         let first_column = provider.ensure_chunk(first, -64, 319).expect("first");

@@ -1,12 +1,6 @@
-//! Normal terrain stage: cell sampling, flood fill, aquifer fill, bedrock, heightmap.
+//! Normal 地形阶段：单元格采样、密度求值、含水层与基岩填充、高度图更新。
 //!
-//! Notes:
-//! - Per-apply local RNG (single-threaded generation, reseeded per chunk).
-//! - The chunk is edited directly through `&mut WorldgenChunk`.
-//! - Fluid-update scheduling belongs to the runtime layer and is skipped here.
-//! - The per-chunk evaluation cache is a local value.
-//! - The work queue uses `std::collections::VecDeque<usize>`.
-//! - Stone identity is compared via injected `BlockRuntimeId`s.
+//! Normal terrain stage: cell sampling, density evaluation, aquifer and bedrock filling, and heightmap updates.
 
 use crate::worldgen::context::ChunkGenerateContext;
 use crate::worldgen::densityfunction::common::CellFunctionContext;
@@ -45,6 +39,12 @@ const CORNER_FLOOD_SEED_MAX_Y: i32 = 192;
 // NormalTerrainStage: base terrain fill for the overworld
 // ---------------------------------------------------------------------------
 
+/// 基地形生成阶段。
+///
+/// 以 4x4x8 单元格采样，跟踪强制性地表，从强制实心单元格开始泛洪填充，经多材质/含水层填充材质，然后放置基岩、执行深板岩替换并更新高度图。
+///
+/// 构造时注入石头/深板岩/基岩/空气的 `BlockRuntimeId`。
+///
 /// Base terrain generation stage.
 ///
 /// Samples 4x4x8 cells, tracks the mandatory top surface, flood-fills from solid

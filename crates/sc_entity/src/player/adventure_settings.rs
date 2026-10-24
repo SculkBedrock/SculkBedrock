@@ -194,6 +194,8 @@ impl AdventureSettings {
         Some(self)
     }
 
+    /// `AdventureSettings.Type` 默认值（NBT 键缺失时的回退）：
+    ///
     /// `AdventureSettings.Type` defaults (fallback when NBT keys are missing):
     /// MINE / DOORS_AND_SWITCHES / OPEN_CONTAINERS / ATTACK_PLAYERS /
     /// ATTACK_MOBS / BUILD default to true, the rest to false. Without these,

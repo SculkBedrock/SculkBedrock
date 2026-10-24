@@ -44,12 +44,12 @@ fn global_runtime() -> &'static Runtime {
     })
 }
 
+/// 把捕获到的 panic 载荷格式化为简短消息。
+///
 /// Format a caught panic payload as a short message.
 ///
-/// Shared by the bounded worker pools (chunk load/generate in
-/// `sc_world::chunk_executor`, dirty-column writeback in
-/// `sc_world::writeback`): both isolate a plugin/storage panic to one job so
-/// its waiters receive a terminal error instead of stranding them.
+/// Extracts `&str` and `String` payloads; any other payload yields a fixed
+/// placeholder message.
 pub fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     payload
         .downcast_ref::<&str>()

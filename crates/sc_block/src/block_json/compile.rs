@@ -1,7 +1,10 @@
+//! 解析后的方块 bundle 到快照的语义编译。
+//!
 //! Semantic compilation of parsed block bundles into snapshots.
 //!
-//! Moved verbatim from `block_json.rs` (P4 split); re-exported from [`super`]
-//! so existing paths keep compiling.
+//! 由 [`super`] 再导出，既有引用路径保持不变。
+//!
+//! Re-exported from [`super`] so existing paths keep compiling.
 
 use super::*;
 use std::collections::{BTreeMap, HashMap};
@@ -11,18 +14,33 @@ use sc_packloader::block::{
 };
 use sc_packloader::block::BlockComponents;
 use sc_packloader::macros::ComponentKey;
-use sc_packloader::loot_tables::{Drops, Loot};
-use crate::mining_drops::{compile_drops, compile_mining};
-use crate::workstation::{compile_process, compile_workstation};
+use sc_packloader::loot_tables::Loot;
+use crate::mining_drops::{compile_drops_from_loot, compile_mining};
+use crate::workstation::{compile_chest, compile_crafting_table, compile_furnace};
 
+/// 把合并后的组件映射编译为固定列（逐状态）。
+///
 /// Compiles the merged component map into fixed columns (per state).
+///
+/// 输入在 packloader 解析期已逐项校验；本步骤检查合并后语义
+/// （互斥、继承、存在性）并稠密编译，失败即拒绝整个包
+/// （无部分快照、无回退）。
 ///
 /// Inputs were validated per item at packloader parse time; this step checks post-merge semantics
 /// (exclusion, inheritance, existence) and compiles densely, rejecting the whole pack on failure
 /// (no partial snapshot, no fallback).
+///
+/// - `snapshot`: 目标快照（列追加写入）
+/// - `merged`: 合并后的组件映射
+/// - `loot_tables`: 包内战利品表
+/// - `pack_id` / `file` / `key`: 定位用的包 id、文件名与状态键
+/// - `budgets`: bundle 预算
+/// - `item_exists`: 物品存在性判定
+/// - `warnings`: 告警收集器
 fn compile_state_columns(
     snapshot: &mut BlockJsonSnapshot,
     merged: &BTreeMap<String, serde_json::Value>,
+    loot_tables: &BTreeMap<String, serde_json::Value>,
     pack_id: &str,
     file: &str,
     key: &str,
@@ -153,24 +171,6 @@ fn compile_state_columns(
             format!("状态 {key:?} 同时存在 sc:unbreakable 与 sc:mining（互斥）"),
         ));
     }
-    // loot + enabled drops.
-    if let Some(loot_raw) = merged.get(Loot::NAME) {
-        if let Some(drops_raw) = merged.get(Drops::NAME) {
-            let drops_parsed: Drops = serde_json::from_value(drops_raw.clone())
-                .map_err(|e| bad(Drops::NAME, format!("内部不一致：{e}")))?;
-            if drops_parsed.enabled {
-                let _ = loot_raw;
-                return Err(BlockJsonError::new(
-                    pack_id,
-                    file,
-                    field("sc:drops"),
-                    format!(
-                        "状态 {key:?} 同时存在 minecraft:loot 与启用的 sc:drops（掉落来源不明）"
-                    ),
-                ));
-            }
-        }
-    }
     // mining / drops compile (inheritance, existence, budgets; warnings collected).
     let mining = compile_mining(
         merged,
@@ -182,9 +182,18 @@ fn compile_state_columns(
         item_exists,
         warnings,
     )?;
-    let drops = compile_drops(merged, pack_id, file, key, budgets, item_exists)?;
-    let workstation = compile_workstation(merged, pack_id, file, key, budgets)?;
-    let process = compile_process(merged, workstation.as_ref(), pack_id, file, key)?;
+    let drops = compile_drops_from_loot(
+        loot.as_deref(),
+        loot_tables,
+        pack_id,
+        file,
+        key,
+        budgets,
+        item_exists,
+    )?;
+    let chest = compile_chest(merged, pack_id, file, key, budgets)?;
+    let furnace = compile_furnace(merged, pack_id, file, key, budgets)?;
+    let crafting_table = compile_crafting_table(merged, pack_id, file, key)?;
 
     let mut plugin = Vec::new();
     for (name, value) in merged.iter() {
@@ -205,20 +214,35 @@ fn compile_state_columns(
     snapshot.can_contain_liquid.push(can_contain_liquid);
     snapshot.mining.push(mining);
     snapshot.drops.push(drops);
-    snapshot.workstation.push(workstation);
-    snapshot.process.push(process);
+    snapshot.chests.push(chest);
+    snapshot.furnaces.push(furnace);
+    snapshot.crafting_tables.push(crafting_table);
     snapshot.plugin_components.push(plugin);
     Ok(())
 }
 
+/// 编译整个 bundle。`preexisting` 是既有状态查询（生产传全局字典探测，
+/// 测试传隔离表）：`hash -> (标识符, 类型化键)`；规范状态不同即使整包失败。
+/// `item_exists` 是工具/掉落物品存在性查询（生产传版本包物品注册表探测，
+/// 测试传隔离表；未知即拒绝整个包，无 `default` 回退）。
+///
 /// Compiles the whole bundle. `preexisting` is the existing-state lookup (production passes the global
 /// dictionary probe, tests pass an isolated table): `hash -> (identifier, typed key)`; a differing canonical
 /// state fails the whole pack.
 /// `item_exists` is the tool/drop item existence lookup (production passes the version-pack item registry
 /// probe, tests pass an isolated table; unknown rejects the whole pack, no `default` fallback).
 ///
+/// 成功时返回完整校验的快照加告警（如值冲突；告警不拒绝）；
+/// 失败时不产出部分结果（调用方不得发布）。
+///
 /// On success returns the fully validated snapshot plus warnings (e.g. conflicting values; warnings do not reject);
 /// on failure produces no partial output (callers must not publish).
+///
+/// - `bundle`: 解析后的方块 bundle
+/// - `pack_id`: 包标识（错误定位用）
+/// - `budgets`: bundle 预算
+/// - `preexisting`: 既有状态查询
+/// - `item_exists`: 物品存在性判定
 pub fn compile_bundle(
     bundle: &BlockJsonBundle,
     pack_id: &str,
@@ -254,6 +278,10 @@ pub fn compile_bundle(
     }
 
     // ---- Enumerates canonical states per file (schema canonical order, same rule as parse time) ----
+    /// 富状态中间表示（规范键、类型化键、哈希、network id 与属性）。
+    ///
+    /// Rich-state intermediate representation (canonical key, typed key, hash,
+    /// network id and props).
     struct RichState {
         key: String,
         typed_key: Box<str>,
@@ -488,8 +516,9 @@ pub fn compile_bundle(
         can_contain_liquid: Vec::with_capacity(total_states),
         mining: Vec::with_capacity(total_states),
         drops: Vec::with_capacity(total_states),
-        workstation: Vec::with_capacity(total_states),
-        process: Vec::with_capacity(total_states),
+        chests: Vec::with_capacity(total_states),
+        furnaces: Vec::with_capacity(total_states),
+        crafting_tables: Vec::with_capacity(total_states),
         plugin_components: Vec::with_capacity(total_states),
     };
 
@@ -505,6 +534,7 @@ pub fn compile_bundle(
         compile_state_columns(
             &mut snapshot,
             &merged,
+            &bundle.loot_tables,
             pack_id,
             &file.zip_path,
             &st.key,
@@ -534,7 +564,7 @@ pub fn compile_bundle(
             .map(|si| index_of[&(*fi, si)])
             .collect();
         state_ids.sort_unstable();
-        // Default-state index comes from the `sc:default_state` declaration (domain-checked at parse time).
+        // Default-state index = canonical index 0 (first declared value of every property).
         let default_state = index_of[&(*fi, file.default_index)];
         for sid in state_ids.iter() {
             snapshot.states[*sid as usize].type_id = type_id as u32;

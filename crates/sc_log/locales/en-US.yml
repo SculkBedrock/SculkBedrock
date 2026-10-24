@@ -96,6 +96,8 @@ console.chunk.encode_fail: "§eChunk >> §aencode worker failed for (%{x},%{y}):
 console.chunk.spawn_threshold: "§eChunk >> §afirst-spawn threshold reached: chunks_sent=%{sent} (spawn_threshold=%{threshold})§r"
 console.chunk.spawn_incomplete: "§eChunk >> §afirst-spawn phase was not completed: %{error}§r"
 console.chunk.spawn_unreachable: "§eChunk >> §aPLAYER_SPAWN threshold %{threshold} is unreachable for player %{entity} at radius %{requested} (%{available} desired chunks); keeping the configured threshold, so client init may wait indefinitely§r"
+console.chunk.cps: "§eChunk >> §acurrent CPS: §b%{cps} §a(past %{secs}s sent: §b%{count}§a, in-flight: §b%{in_flight}§a, queued: §b%{queued}§a, workers: §b%{workers}§a, total: §b%{total}§a)§r"
+console.chunk.cps_idle: "§eChunk >> §aview distance chunks fully loaded, current CPS: 0.0 (total sent: %{total})§r"
 console.fault.isolated: "§eConnection faults >> §aisolated %{count} connection(s)§r"
 console.fault.isolated_tick: "§eConnection faults >> §aisolated %{count} connection(s) this tick, pending=%{pending}§r"
 console.login.keypair_fail: "§eLogin failed [%{addr}] >> §aunable to generate encryption key pair§r"

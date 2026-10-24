@@ -1,3 +1,12 @@
+//! 首次启动的欢迎页：左上角 logo + 流动背景 + “按任意键”提示。
+//!
+//! - Logo 字形采用 cfonts tiny 字体（尺寸来自 `cfonts "SCULK BEDROCK" -f tiny`，
+//!   每个字符 3 列 x 2 行），左下 `#87A5F8` 到右上 `#FDFBFE` 对角渐变并带外发光环；
+//! - 背景以双正弦流动混合 `#13348A` 与 `#0A1026`（连续 RGB，truecolor 输出）；
+//! - 提示居中偏下，在每 1800ms 周期中从左到右闪光 600ms 后消失。
+//!
+//! 调用方传入 `age_ms`（显式时钟）；驱动只等待按键。不依赖任何游戏 crate。
+//!
 //! First-boot welcome screen: top-left logo plus flowing background plus a "press any key" prompt.
 //!
 //! - Logo glyphs follow the cfonts tiny font (measured via `cfonts "SCULK BEDROCK" -f tiny`, 3 cols x 2 rows per char),
@@ -5,7 +14,7 @@
 //! - Background blends `#13348A` and `#0A1026` with dual-sine flow (continuous RGB, truecolor output);
 //! - The prompt sits centered-low and shines left-to-right for 600ms of each 1800ms cycle before leaving.
 //!
-//! Pure rendering plus an explicit clock (caller passes `age_ms`), unit-testable; the driver only waits for a key.
+//! The caller passes `age_ms` (an explicit clock); the driver only waits for a key.
 //! Depends on no game crate.
 
 use unicode_width::UnicodeWidthChar;
@@ -117,6 +126,8 @@ pub(crate) const WELCOME_FADE_MS: u64 = 600;
 /// Blob bright core (brightened `#13348A` family) and blur base (always `#0A1026`).
 pub(crate) const BLOB_CORE: Rgb = Rgb(48, 130, 255); // Brightened #13348A family
 
+/// 确定性伪随机数生成器（用于光斑布局；无第三方依赖）。
+///
 /// Deterministic PRNG (for blob layout; no third-party dependency).
 struct BlobRng(u64);
 
@@ -136,6 +147,8 @@ impl BlobRng {
     }
 }
 
+/// 光斑快照（方形单位，已解析聚集/漂移；`sigma` 是高斯半径，`k` 是峰值强度）。
+///
 /// Blob snapshot (square units with gather/drift resolved; `sigma` is the Gaussian radius, `k` the peak intensity).
 #[derive(Debug, PartialEq)]
 pub(crate) struct BlobSpot {
@@ -312,6 +325,8 @@ pub(crate) fn shift_at(age_ms: u64, select_enter_ms: Option<u64>) -> f32 {
 pub(crate) const WELCOME_HOLD_MS: u64 = 800;
 pub(crate) const WELCOME_AUTO_DISMISS_MS: u64 = BLOB_GATHER_MS + WELCOME_FADE_MS + WELCOME_HOLD_MS;
 
+/// 欢迎页阶段（决定提示/选择器/自动渲染；状态迁移由驱动持有）。
+///
 /// Welcome stage (drives prompt/selector/auto rendering; the driver owns transitions).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WelcomeStage {
@@ -323,6 +338,8 @@ pub(crate) enum WelcomeStage {
     Auto,
 }
 
+/// [`render_welcome_rows_view`] 的每帧视图参数。
+///
 /// Per-frame view params for [`render_welcome_rows_view`].
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct WelcomeView {
@@ -374,6 +391,9 @@ impl WelcomeView {
     }
 }
 
+/// 选择器面板几何（视口左侧选项列表；有单元测试，供渲染共用；
+/// 仅键盘操作，无需命中测试）。
+///
 /// Selector panel geometry (viewport-left option list; unit-tested, shared by
 /// rendering; keyboard-only, no hit-testing needed).
 #[derive(Debug)]
@@ -443,6 +463,10 @@ pub(crate) fn select_panel(w: usize, h: usize, options: &[String]) -> SelectPane
     }
 }
 
+/// 每日引言框几何（选择器面板在视口右侧的对应部分）。
+///
+/// 仅在选中中文选项时显示；`←→` 在左侧语言列表与该框之间移动焦点。
+///
 /// Daily-quote box geometry (viewport-right companion of the selector panel).
 ///
 /// Shown only while a Chinese option is highlighted; the `←→` keys move focus
@@ -570,6 +594,8 @@ fn quantize(c: Rgb) -> Rgb {
     )
 }
 
+/// 选择器面板的一行文本（绝对行号 + 精确到显示列的单元格）。
+///
 /// One selector panel text row (absolute row plus display-col-precise cells).
 struct PanelTextRow {
     y: usize,
@@ -577,6 +603,8 @@ struct PanelTextRow {
     selected: bool,
 }
 
+/// 每日引言复选框行状态（`None` 表示该行隐藏，即未选中中文选项）。
+///
 /// Daily-quote checkbox row state (`None` = row hidden, Chinese not highlighted).
 pub(crate) struct QuoteRow {
     pub focused: bool,

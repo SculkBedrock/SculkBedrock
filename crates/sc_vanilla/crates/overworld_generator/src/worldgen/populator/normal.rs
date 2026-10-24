@@ -27,7 +27,9 @@ use crate::worldgen::stages::terrain::SEA_LEVEL;
 // DesertWellPopulator: desert-well structure populator
 // ---------------------------------------------------------------------------
 
-/// Desert-well structure populator.
+/// 沙漠水井结构填充器。
+///
+/// Desert well structure populator.
 pub struct DesertWellPopulator {
     table: Arc<StructureBlockTable>,
 }
@@ -77,7 +79,9 @@ impl Populator for DesertWellPopulator {
 // SwampHutPopulator: swamp-hut structure populator
 // ---------------------------------------------------------------------------
 
-/// Swamp-hut structure populator.
+/// 沼泽小屋结构填充器。
+///
+/// Swamp hut structure populator.
 pub struct SwampHutPopulator {
     table: Arc<StructureBlockTable>,
     /// Placement grid for swamp huts.

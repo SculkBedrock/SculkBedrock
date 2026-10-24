@@ -78,6 +78,8 @@ pub enum SCPluginDependenciesError {
 }
 
 impl SCPluginDependenciesError {
+    /// 构造版本不匹配错误并捕获调用位置。
+    ///
     /// Build a version mismatch error, capturing the call site.
     #[track_caller]
     pub fn version_not_match(
@@ -98,6 +100,8 @@ impl SCPluginDependenciesError {
         }
     }
 
+    /// 构造缺失依赖错误并捕获调用位置。
+    ///
     /// Build a missing dependency error, capturing the call site.
     #[track_caller]
     pub fn missing_dependency(
@@ -116,6 +120,8 @@ impl SCPluginDependenciesError {
         }
     }
 
+    /// 构造循环依赖错误并捕获调用位置。
+    ///
     /// Build a circular dependency error, capturing the call site.
     #[track_caller]
     pub fn circular_dependency(
@@ -136,6 +142,8 @@ impl SCPluginDependenciesError {
         }
     }
 
+    /// 构造依赖失败错误并捕获调用位置。
+    ///
     /// Build a failed dependency error, capturing the call site.
     #[track_caller]
     pub fn dependency_failed(
@@ -154,6 +162,8 @@ impl SCPluginDependenciesError {
         }
     }
 
+    /// 构造加载器错误并捕获调用位置。
+    ///
     /// Build a loader error, capturing the call site.
     #[track_caller]
     pub fn loader_error(plugin: String, source: SCPluginLoaderError) -> Self {

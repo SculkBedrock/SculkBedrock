@@ -11,6 +11,10 @@
 // RandomSourceProvider (random-source interface)
 // ---------------------------------------------------------------------------
 
+/// 带种子的随机源接口。
+///
+/// 说明：`nextInt()` / `nextInt(max)` / `nextInt(min, max)` 三个重载分别对应 [`Self::next_int`] / [`Self::next_int_max`] / [`Self::next_int_range`]，因为 Rust 不支持重载。
+///
 /// Seeded random-source interface.
 ///
 /// Note: the overloaded `nextInt()` / `nextInt(max)` / `nextInt(min, max)`
@@ -63,8 +67,9 @@ pub trait RandomSourceProvider {
 // Xoroshiro128
 // ---------------------------------------------------------------------------
 
-/// Xoroshiro128 generator (seedfinding-style xoroshiro128 variant, not the
-/// standard xoroshiro128++ — this implementation is authoritative).
+/// Xoroshiro128 随机数生成器。
+///
+/// Xoroshiro128 random number generator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Xoroshiro128 {
     seed: i64,
@@ -233,11 +238,9 @@ mod commons {
         output
     }
 
-    /// Mersenne-Twister core (not the textbook MT19937 init_by_array —
-    /// state filling is its own variant).
+    /// 梅森旋转随机数生成器核心，包含整数提供者的布尔位缓存与默认方法。
     ///
-    /// Also folds in the parent integer-provider's boolean-source bit cache
-    /// and default methods.
+    /// Mersenne-Twister random core including the integer provider's boolean bit cache and default methods.
     #[derive(Clone, Debug)]
     pub struct MersenneTwister {
         mt: [u32; 624],
@@ -440,11 +443,9 @@ mod commons {
     }
 }
 
-/// Seeded Mersenne-Twister random source.
+/// 带种子的梅森旋转随机源。
 ///
-/// `next_gaussian` uses Box-Muller × 0.33333 clamped to [-1, 1]. That is the
-/// only intentional distribution-level deviation in this file; it only
-/// affects tall-grass decoration, never terrain determinism.
+/// Seeded Mersenne-Twister random source.
 #[derive(Clone, Debug)]
 pub struct MtRandom {
     /// Construction seed.
@@ -577,8 +578,15 @@ mod tests {
             0x9E37_9B97_F4A7_C15u64 as i64,
         ] {
             let mut r = Xoroshiro128::new(seed);
-            let _ = r.next_long();
-            let _ = r.next_long();
+            let draws: Vec<i64> = (0..8).map(|_| r.next_long()).collect();
+            assert!(
+                draws.iter().any(|v| *v != 0),
+                "seed {seed}: the generator must not stay all-zero"
+            );
+            assert!(
+                draws.windows(2).any(|w| w[0] != w[1]),
+                "seed {seed}: consecutive draws must differ"
+            );
         }
     }
 

@@ -1,15 +1,10 @@
-//! Block and biome surface-material mappings needed at generation time
-//! (generation subset of the block-state/biome registries).
+//! 生成阶段使用的方块与生物群系地表材料映射表。
 //!
-//! Layout notes:
-//! - This table is built once at startup from
-//!   `BlockStateDictionary::global().first_hash_of("minecraft:xxx")`;
-//!   unknown blocks fall back to `minecraft:stone` + `warn!`.
-//! - Surface data needs per-biome materials (top/mid/seaFloor/seaFloorDepth
-//!   from the version-pack biome definitions). They land as a **hardcoded
-//!   const table** giving defaults per biome category, convertible to
-//!   data-driven later. Values follow the biome definitions plus the
-//!   community surface-material reference.
+//! 方块 ID 在启动时从核心调色板构建，未知方块回退为石头；地表材料按生物群系给出顶层、中层与海床参数。
+//!
+//! Block and per-biome surface-material tables used by generation.
+//!
+//! Block IDs are built once at startup from the core palette with stone as the fallback; surface materials define top, middle, and sea-floor parameters per biome.
 
 use crate::worldgen::biome::biome_id::*;
 use sc_block::block_json::BlockJsonSnapshot;
@@ -21,10 +16,13 @@ use sc_world::chunk::BlockRuntimeId;
 // WorldgenBlockTable (generation subset of the block-state registry)
 // ---------------------------------------------------------------------------
 
-/// All block runtime ids needed by the generation stages, built once at
-/// startup from the core palette.
+/// 生成阶段所需的全部方块运行时 ID，启动时从核心调色板构建一次。
 ///
-/// Unknown blocks fall back to `stone` + `warn!`.
+/// 未知方块回退为石头并记录警告。
+///
+/// All block runtime IDs required by the generation stages, built once at startup from the core palette.
+///
+/// Unknown blocks fall back to stone with a warning.
 #[derive(Clone, Debug)]
 pub struct WorldgenBlockTable {
     pub air: BlockRuntimeId,
@@ -117,8 +115,9 @@ impl WorldgenBlockTable {
 // OreBlockTable (block ids needed by ore features)
 // ---------------------------------------------------------------------------
 
-/// All block runtime ids needed by ore features (stone variants +
-/// deepslate variants). Unknown blocks fall back to `stone` + `warn!`.
+/// 矿物特征所需的全部方块运行时 ID，包含石头与深板岩变体。
+///
+/// All block runtime IDs required by ore features, including stone and deepslate variants.
 #[derive(Clone, Debug)]
 pub struct OreBlockTable {
     // Base blocks (for replaceability checks)
@@ -261,8 +260,9 @@ pub fn first_hash_of_aliased(dictionary: &BlockStateDictionary, name: &str) -> O
 // BiomeSurfaceMaterial (generation subset of biome surface-material data)
 // ---------------------------------------------------------------------------
 
-/// Per-biome surface material (top/mid/seaFloor/seaFloorDepth), stored as
-/// [`BlockRuntimeId`]s.
+/// 每个生物群系的地表材料：顶层、中层、海床与海床深度，以方块运行时 ID 表示。
+///
+/// Per-biome surface material (top layer, middle layer, sea floor, and sea-floor depth) stored as block runtime IDs.
 #[derive(Clone, Copy, Debug)]
 pub struct BiomeSurfaceMaterial {
     pub top: BlockRuntimeId,
@@ -373,13 +373,15 @@ mod tests {
 
     #[test]
     fn block_table_builds_from_core_palette() {
-        // The core palette may not have a version pack loaded, but
-        // `air_runtime_id` is always available.
         let table = WorldgenBlockTable::from_core_palette();
-        // Not panicking is enough (missing blocks fall back to stone, and
-        // a missing stone falls back to air).
-        let _ = table.deepslate;
-        let _ = table.bedrock;
+        assert_eq!(
+            table.air,
+            BlockRuntimeId(sc_world::block_dictionary::air_runtime_id())
+        );
+        // Every other entry resolves through the stone → air fallback chain
+        // when no block bundle is loaded.
+        assert_eq!(table.stone, table.deepslate);
+        assert_eq!(table.stone, table.bedrock);
     }
 
     /// Snapshot-first: bundle defaults become the worldgen block-table source
@@ -396,7 +398,6 @@ mod tests {
             "minecraft:block": {
                 "description": {"identifier": "minecraft:air", "states": {}},
                 "components": {},
-                "sc:default_state": {},
                 "sc:protocol_runtime_ids": [0]
             }
         }"#;
@@ -405,7 +406,6 @@ mod tests {
             "minecraft:block": {
                 "description": {"identifier": "minecraft:stone", "states": {}},
                 "components": {},
-                "sc:default_state": {},
                 "sc:protocol_runtime_ids": [7]
             }
         }"#;
@@ -430,6 +430,7 @@ mod tests {
             network_id_mode: "hashed".to_string(),
             fingerprint: fingerprint_bundle(&refs, "hashed"),
             files,
+            loot_tables: Default::default(),
         };
         let snapshot =
             compile_bundle(&bundle, "test", &budgets, &|_| None, &|_| true).expect("测试 bundle 应编译").0;

@@ -10,21 +10,33 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-/// Auth type.
+/// 认证类型。
+///
+/// Authentication type.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum AuthType {
+    /// 旧版客户端的默认值。
+    ///
     /// Default for legacy clients.
     Unknown,
+    /// 经由 Mojang 认证服务器直接认证。
+    ///
     /// Authenticated directly via the Mojang auth server.
     Full,
+    /// 分屏玩家，使用主机认证。
+    ///
     /// Split-screen player using host auth.
     Guest,
+    /// 未认证（离线模式/自签名）。
+    ///
     /// Unauthenticated (offline mode/self-signed).
     SelfSigned,
 }
 
 impl AuthType {
-    /// Map the AuthenticationType field from the JWT payload.
+    /// 将 JWT 载荷中的 AuthenticationType 字段映射为认证类型。
+    ///
+    /// Maps the AuthenticationType field from the JWT payload.
     pub fn from_auth_type_ordinal(ordinal: i64) -> Result<Self, io::Error> {
         match ordinal {
             0 => Ok(AuthType::Full),
@@ -42,12 +54,18 @@ impl AuthType {
     }
 }
 
-/// Auth payload type.
+/// 认证载荷类型。
+///
+/// Authentication payload type.
 #[derive(Clone, Debug)]
 pub enum AuthPayload {
-    /// Token Auth mode: contains the JWT token directly.
+    /// 令牌认证模式：直接包含 JWT 令牌。
+    ///
+    /// Token auth mode: contains the JWT token directly.
     Token { token: String, auth_type: AuthType },
-    /// Certificate Chain mode: contains a JWT chain array.
+    /// 证书链模式：包含一个 JWT 链数组。
+    ///
+    /// Certificate chain mode: contains a JWT chain array.
     Certificate {
         chain: Vec<String>,
         auth_type: AuthType,
@@ -63,6 +81,8 @@ impl AuthPayload {
     }
 }
 
+/// 身份校验结果。
+///
 /// Identity verification result.
 #[derive(Clone, Debug)]
 pub struct IdentityData {
@@ -74,7 +94,9 @@ pub struct IdentityData {
     pub minecraft_id: Option<String>,
 }
 
-/// Chain verification result.
+/// 证书链校验结果。
+///
+/// Chain validation result.
 #[derive(Clone, Debug)]
 pub struct ChainValidationResult {
     pub signed: bool,
@@ -117,7 +139,10 @@ struct AuthEnvironment {
 }
 
 impl AuthEnvironment {
-    /// Initialize the auth environment: fetch discovery data, OpenID config, then JWKS.
+    /// 初始化认证环境：拉取 discovery 数据、OpenID 配置，再拉取 JWKS。
+    ///
+    /// Initializes the auth environment: fetch discovery data, OpenID config,
+    /// then JWKS.
     pub async fn init() -> Result<Self, io::Error> {
         debug!("Fetching discovery data from {}", DISCOVERY_ENDPOINT);
 
@@ -191,7 +216,9 @@ impl AuthEnvironment {
         })
     }
 
-    /// Find a public key in JWKS by key ID.
+    /// 按 key ID 在 JWKS 中查找公钥。
+    ///
+    /// Finds a public key in JWKS by key id.
     fn find_key(&self, kid: Option<&str>) -> Option<&JwkKey> {
         if let Some(kid) = kid {
             self.jwks
@@ -204,7 +231,9 @@ impl AuthEnvironment {
     }
 }
 
-/// Initialize the global auth environment (call at server startup).
+/// 初始化全局认证环境（在服务端启动时调用）。
+///
+/// Initializes the global auth environment (call at server startup).
 pub async fn init_auth_environment() -> Result<(), io::Error> {
     let env = AuthEnvironment::init().await?;
     let mut guard = AUTH_ENV.write().await;
@@ -214,7 +243,9 @@ pub async fn init_auth_environment() -> Result<(), io::Error> {
 
 // Token verification.
 
-/// Convert the EC public key (x, y) in a JWK to X.509 SubjectPublicKeyInfo DER.
+/// 将 JWK 中的 (x, y) EC 公钥转换为 X.509 SubjectPublicKeyInfo DER。
+///
+/// Converts the (x, y) EC public key in a JWK to X.509 SubjectPublicKeyInfo DER.
 fn jwk_to_ec_der(jwk: &JwkKey) -> Result<Vec<u8>, io::Error> {
     let x_bytes = BASE64_URL_SAFE_NO_PAD
         .decode(&jwk.x)
@@ -257,7 +288,9 @@ fn jwk_to_ec_der(jwk: &JwkKey) -> Result<Vec<u8>, io::Error> {
     Ok(der)
 }
 
-/// Verify a Token Auth JWT.
+/// 校验一个令牌认证的 JWT。
+///
+/// Verifies a token-auth JWT.
 pub async fn validate_token(
     auth_type: AuthType,
     token: &str,
@@ -271,7 +304,9 @@ pub async fn validate_token(
     }
 }
 
-/// Online verification: verify the JWT signature with JWKS.
+/// 在线校验：使用 JWKS 验证 JWT 签名。
+///
+/// Online validation: verifies the JWT signature with JWKS.
 async fn validate_token_online(token: &str) -> Result<ChainValidationResult, io::Error> {
     // Load the auth environment.
     let env_guard = AUTH_ENV.read().await;
@@ -320,7 +355,9 @@ async fn validate_token_online(token: &str) -> Result<ChainValidationResult, io:
     })
 }
 
-/// Offline verification: skip signature verification, only parse claims.
+/// 离线校验：跳过签名验证，仅解析声明。
+///
+/// Offline validation: skips signature verification, only parses claims.
 async fn validate_token_offline(token: &str) -> Result<ChainValidationResult, io::Error> {
     // Decode the header for the algorithm.
     let header = decode_header(token)
@@ -344,7 +381,9 @@ async fn validate_token_offline(token: &str) -> Result<ChainValidationResult, io
     })
 }
 
-/// Extract identity data from Token JWT claims.
+/// 从令牌 JWT 声明中提取身份数据。
+///
+/// Extracts identity data from token JWT claims.
 fn extract_identity_from_token_claims(claims: &Value) -> Result<IdentityData, io::Error> {
     let claims = claims
         .as_object()
@@ -387,7 +426,9 @@ fn extract_identity_from_token_claims(claims: &Value) -> Result<IdentityData, io
     })
 }
 
-/// Derive a UUID from an XUID (UUID v3, MD5-based).
+/// 由 XUID 派生 UUID（基于 MD5 的 UUID v3）。
+///
+/// Derives a UUID from an XUID (UUID v3, MD5-based).
 fn uuid_from_xuid(xuid: &str) -> Uuid {
     let data = format!("pocket-auth-1-xuid:{}", xuid);
     Uuid::new_v3(&Uuid::NAMESPACE_OID, data.as_bytes())
@@ -395,7 +436,9 @@ fn uuid_from_xuid(xuid: &str) -> Uuid {
 
 // Chain verification (legacy compatibility).
 
-/// Verify a Certificate Chain.
+/// 校验一个证书链。
+///
+/// Verifies a certificate chain.
 pub fn validate_chain(chain: &[String]) -> Result<ChainValidationResult, io::Error> {
     match chain.len() {
         1 => validate_chain_offline(&chain[0]),
@@ -404,6 +447,8 @@ pub fn validate_chain(chain: &[String]) -> Result<ChainValidationResult, io::Err
     }
 }
 
+/// 单 JWT 链（离线/代理模式）。
+///
 /// Single-JWT chain (offline/proxy mode).
 fn validate_chain_offline(jwt_str: &str) -> Result<ChainValidationResult, io::Error> {
     let payload = decode_jwt_payload(jwt_str, 1)?;
@@ -415,6 +460,8 @@ fn validate_chain_offline(jwt_str: &str) -> Result<ChainValidationResult, io::Er
     })
 }
 
+/// 三 JWT 链（在线模式）。
+///
 /// Three-JWT chain (online mode).
 fn validate_chain_online(chain: &[String]) -> Result<ChainValidationResult, io::Error> {
     use crate::utils::encryption::MinecraftEncryption;
@@ -490,7 +537,9 @@ fn validate_chain_online(chain: &[String]) -> Result<ChainValidationResult, io::
     })
 }
 
-/// Extract identity data from a Chain payload (legacy format).
+/// 从证书链载荷中提取身份数据（旧格式）。
+///
+/// Extracts identity data from a chain payload (legacy format).
 fn extract_identity_from_chain_payload(payload: &Value) -> Result<IdentityData, io::Error> {
     let payload = payload
         .as_object()
@@ -550,7 +599,9 @@ fn extract_identity_from_chain_payload(payload: &Value) -> Result<IdentityData, 
     })
 }
 
-/// Parse the outer auth JSON into an AuthPayload.
+/// 将外层认证 JSON 解析为 AuthPayload。
+///
+/// Parses the outer auth JSON into an [`AuthPayload`].
 pub fn parse_auth_wrapper(json_str: &str) -> Result<AuthPayload, io::Error> {
     let map: Value = serde_json::from_str(json_str)
         .map_err(|e| io::Error::other(format!("Failed to parse auth JSON: {}", e)))?;
@@ -616,7 +667,9 @@ pub fn parse_auth_wrapper(json_str: &str) -> Result<AuthPayload, io::Error> {
     ))
 }
 
-/// Verify an AuthPayload and return identity data.
+/// 校验一个 AuthPayload 并返回身份数据。
+///
+/// Validates an [`AuthPayload`] and returns identity data.
 pub async fn validate_payload(payload: AuthPayload) -> Result<ChainValidationResult, io::Error> {
     match payload {
         AuthPayload::Token { token, auth_type } => validate_token(auth_type, &token).await,
@@ -629,7 +682,9 @@ pub async fn validate_payload(payload: AuthPayload) -> Result<ChainValidationRes
 
 // Helpers.
 
-/// Decode the given part of a JWT (0=header, 1=payload).
+/// 解码 JWT 的指定段（0 为头部，1 为载荷）。
+///
+/// Decodes the given part of a JWT (0=header, 1=payload).
 fn decode_jwt_payload(jwt_str: &str, index: usize) -> Result<Value, io::Error> {
     let parts: Vec<&str> = jwt_str.split('.').collect();
     if parts.len() < 2 {

@@ -227,7 +227,12 @@ fn log_player_auth_input_block_actions(packet: &MinecraftPackets, packet_size: u
     );
 }
 
+/// 编译期常量字符串形式的枚举项名称，零分配。
+///
 /// Variant name as a compile-time constant string, zero allocation.
+///
+/// 每次发送都格式化整个包体会在热路径上序列化超大负载（如 74KB 的
+/// `LevelChunk`），而默认日志级别下 `debug!` 的参数总是会被求值。
 ///
 /// Formatting the whole packet body per send would serialize large payloads
 /// (a 74KB `LevelChunk`) on the hot path, and `debug!` arguments always
@@ -236,6 +241,9 @@ fn packet_variant_name(packet: &MinecraftPackets) -> &'static str {
     packet.packet_name()
 }
 
+/// 实体数据包的调试提示：AddItemEntity/MoveEntityAbsolute/RemoveEntity 追加
+/// 实体运行时 id，其他包不追加任何内容。
+///
 /// Debug hint for entity packets: AddItemEntity/MoveEntityAbsolute/
 /// RemoveEntity append the entity runtime id; others contribute nothing.
 fn packet_entity_hint(packet: &MinecraftPackets) -> String {
@@ -415,10 +423,18 @@ mod tests {
         ));
     }
 
-    /// `BatchPacket::write` byte layout is pinned:
+    /// `BatchPacket::write` 字节布局：`[0xfe]`，随后每个数据包一个
+    /// `varint 长度前缀 + 子帧`。
+    ///
+    /// `BatchPacket::write` byte layout:
     /// `[0xfe]` then one `varint length prefix + sub-frame` per packet.
     ///
+    /// 子帧 = `varint(packet_id | 0<<10 | 0<<12)` + 包体。
+    ///
     /// Sub-frame = `varint(packet_id | 0<<10 | 0<<12)` + body.
+    ///
+    /// 长度前缀由 `ByteWriter::write_slice` 写出（它在前面加 varint 长度，
+    /// 而非纯追加）。长度先计算好再直接写入外层缓冲区，以避免整批拷贝。
     ///
     /// The prefix comes from `ByteWriter::write_slice` (which prepends a
     /// varint length, not a pure append). Lengths are computed up front and
@@ -439,6 +455,9 @@ mod tests {
         );
     }
 
+    /// 每个数据包的长度前缀必须正确且互不干扰。第二个包使用 `VoxelShapes`
+    /// （id 0x151，双字节 varint）以覆盖多字节 id 前缀的计算。
+    ///
     /// Length prefixes must be correct per packet without cross-talk.
     /// The second packet uses `VoxelShapes` (id 0x151, 2-byte varint) to
     /// cover multi-byte id prefix computation.
@@ -465,6 +484,8 @@ mod tests {
         );
     }
 
+    /// 写出的批次必须能原样读回（往返一致）。
+    ///
     /// Written batches must read back unchanged (round-trip).
     #[test]
     fn batch_write_round_trips_through_read() {
@@ -488,7 +509,7 @@ mod tests {
     }
 
     #[test]
-    fn packet_variant_name_is_readable_for_diagnostics() {
+    fn packet_variant_name_matches_the_variant_type() {
         use crate::protocol::server::chunk::LevelChunk;
         let packet = MinecraftPackets::LevelChunk(LevelChunk {
             chunk_x: 0,

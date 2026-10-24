@@ -1,3 +1,11 @@
+//! `log` 适配器：把全局日志同时转发到控制台 TUI 与额外的 sink 回调。
+//!
+//! 仅在 GUI 模式下安装；Plain/Off 模式不会改动宿主日志（例如
+//! `pretty_env_logger`）。
+//!
+//! 背压：向 TUI 推送使用 `try_send`（队列满时丢弃并计数）；
+//! 额外回调（如文件 sink）由宿主提供，同样必须**非阻塞**。
+//!
 //! `log` adapter: forwards global logs to both the console TUI and an extra sink callback.
 //!
 //! Installed in GUI mode only; Plain/Off modes keep the host logger (e.g.
@@ -12,19 +20,15 @@ use std::sync::Arc;
 use crate::driver::ConsoleHandle;
 use crate::model::LogLine;
 
-/// Console level gate (default Debug = today's behavior).
-///
-/// The global-logger race is won at plugin-build time, before the config
-/// loads, so `log::set_max_level` alone cannot carry `[log] log_level` in GUI
-/// mode; the host applies the configured level here at SCStartup instead.
+/// Console level gate (default Debug).
 static CONSOLE_MAX_LEVEL: AtomicU8 = AtomicU8::new(log::LevelFilter::Debug as u8);
 
-/// Pure gate: a record passes when its level is at or below the max.
+/// A record passes when its level is at or below the max.
 fn level_allows(level: log::Level, max: log::LevelFilter) -> bool {
     (level as u8) <= (max as u8)
 }
 
-/// Current console max as a filter (single decode site for the gate).
+/// Current console max as a filter.
 fn console_max_filter() -> log::LevelFilter {
     match CONSOLE_MAX_LEVEL.load(Ordering::Relaxed) {
         0 => log::LevelFilter::Off,
@@ -42,6 +46,8 @@ pub fn set_console_max_level(level: log::LevelFilter) {
     CONSOLE_MAX_LEVEL.store(level as u8, Ordering::Relaxed);
 }
 
+/// 额外 sink 回调：`(level, target, plain_message)`；必须非阻塞。
+///
 /// Extra sink callback: `(level, target, plain_message)`; must be non-blocking.
 pub type ExtraSink = Arc<dyn Fn(log::Level, &str, &str) + Send + Sync>;
 

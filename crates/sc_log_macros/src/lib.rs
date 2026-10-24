@@ -1,8 +1,12 @@
+//! `colorize_literal!`：编译期把段落码转成 ANSI 转义。
+//!
+//! proc-macro 接收一个字符串字面量，输出转换后的字符串字面量（ANSI 转义写作
+//! `\u{1b}`）；转换全部在编译期完成。
+//!
 //! `colorize_literal!`: compile-time section-code to ANSI conversion.
 //!
-//! Zero-dependency proc-macro: takes one string literal, emits the converted
-//! string literal (ANSI escapes as `\u{1b}`). Zero runtime cost;
-//! conversion happens entirely at compile time.
+//! The proc-macro takes one string literal and emits the converted string literal
+//! (ANSI escapes as `\u{1b}`); the conversion happens entirely at compile time.
 //!
 //! ```ignore
 //! use sc_log::colorize_literal;
@@ -12,6 +16,8 @@
 
 use proc_macro::{TokenStream, TokenTree};
 
+/// 把字面量中的段落码编译期转为 ANSI 转义。
+///
 /// Converts section codes in a literal to ANSI escapes (at compile time).
 #[proc_macro]
 pub fn colorize_literal(input: TokenStream) -> TokenStream {
@@ -34,6 +40,8 @@ pub fn colorize_literal(input: TokenStream) -> TokenStream {
 
 // ---- Unit-testable pure functions below (kept in sync with the sc_log::color runtime table) ----
 
+/// 段落码转 ANSI（查找前把码字符转小写；与 sc_log::color::COLOR_TABLE 一致）。
+///
 /// Section code to ANSI (code char lowercased before lookup; matches sc_log::color::COLOR_TABLE).
 #[inline]
 fn ansi_for_code(code: u8) -> Option<&'static str> {
@@ -64,6 +72,8 @@ fn ansi_for_code(code: u8) -> Option<&'static str> {
     })
 }
 
+/// 段落码转 ANSI；未知/孤立码原样保留。
+///
 /// Converts section codes to ANSI; unknown/lone codes stay verbatim.
 fn convert(input: &str) -> String {
     let mut out = String::with_capacity(input.len() + 16);
@@ -87,6 +97,8 @@ fn convert(input: &str) -> String {
     out
 }
 
+/// 从 Rust 字面量源码还原真实字符串内容（含引号与转义）。
+///
 /// Restores actual string content from Rust literal source (quotes and escapes included).
 fn unescape_string_literal(source: &str) -> Result<String, String> {
     if source.starts_with('r') {
@@ -143,6 +155,8 @@ fn unescape_string_literal(source: &str) -> Result<String, String> {
     Ok(out)
 }
 
+/// 把字符串转义为 Rust 字面量体（ESC 用 `\u{1b}`，控制字符用 `\u{..}`）。
+///
 /// Escapes a string as Rust literal body (ESC as `\u{1b}`, control chars as `\u{..}`).
 fn escape_literal(input: &str) -> String {
     let mut out = String::with_capacity(input.len() + 16);
@@ -168,7 +182,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn convert_basic() {
+    fn convert_replaces_section_codes_with_ansi_escapes() {
         assert_eq!(convert("§aHello"), "\u{1b}[92mHello");
         assert_eq!(convert("§cRed§r"), "\u{1b}[91mRed\u{1b}[0m");
         assert_eq!(convert("plain"), "plain");

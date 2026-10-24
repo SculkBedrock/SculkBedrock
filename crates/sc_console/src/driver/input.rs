@@ -1,4 +1,7 @@
-//! Console driver: key/input handling, popups, selection, and submit (split from `driver.rs`; re-exported at `crate::driver`).
+//! 控制台驱动：按键/输入处理、弹层、选择与提交（由 `driver.rs` 拆出；在 `crate::driver` 重新导出）。
+//!
+//! Console driver: key/input handling, popups, selection and submit
+//! (split out of `driver.rs`; re-exported from `crate::driver`).
 
 use super::*;
 
@@ -24,17 +27,10 @@ pub(super) fn refresh_completion(handle: &ConsoleHandle, editor: &mut EditorStat
     }
 }
 
-/// Empty-line Ctrl+C: restores the pre-TUI SIGINT semantics.
-///
-/// Raw mode disables terminal ISIG, so the tty no longer generates signals for ^C and the host
-/// shutdown path would never fire. Raise it manually here (the handler only does an atomic
-/// store); the main loop then runs the same graceful-exit flow. A `stop` command line is also kept
-/// as an echo plus command-channel fallback.
-///
-/// Raise it manually here (the handler only does an atomic store);
-/// the main loop then runs the same graceful-exit flow.
-/// A `stop` command line is also kept as an echo plus command-channel fallback.
-///
+/// Empty-line Ctrl+C: raises SIGINT manually (raw mode disables the terminal's
+/// ISIG handling). The handler only does an atomic store; the main loop then
+/// runs the graceful-exit flow. A `stop` command line is also kept as an echo
+/// plus command-channel fallback.
 /// Only raises when the GUI actually owns the terminal (`gui_active`); tests and Plain mode are unaffected.
 pub(super) fn signal_host_shutdown(handle: &ConsoleHandle) {
     if handle.inner.gui_active.load(Ordering::Relaxed) {
@@ -371,8 +367,7 @@ pub(super) const EXIT_FADE_IN_MS: u64 = 150;
 pub(super) const EXIT_FADE_OUT_MS: u64 = 400;
 
 /// Exit confirm prompt opacity: fades in to full while armed, fades to 0 after timeout/cancel.
-///
-/// Pure function (explicit clock) for unit tests; 0 returns the line to the normal key hints.
+/// 0 returns the line to the normal key hints.
 pub(super) fn exit_prompt_opacity(
     armed: Option<std::time::Instant>,
     fade_from: Option<std::time::Instant>,
@@ -393,6 +388,8 @@ pub(super) fn exit_prompt_opacity(
     0.0
 }
 
+/// 鼠标左键按下时的起点（决定拖拽/松开的语义）。
+///
 /// What a left mouse press started on (decides the drag/release meaning).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PressKind {
@@ -409,11 +406,10 @@ pub(super) enum PressKind {
 use crate::render::Selection;
 
 /// Completion popup appear age (ms; `None` means steady): replays only on a fresh (closed-to-open) popup;
-/// changing the query while open does not replay, or every keystroke would bounce it;
-/// selection moves never replay, and a closed popup is steady.
+/// query changes and selection moves never replay, and a closed popup is steady.
 ///
-/// Called every frame by the caller; from the frame the animation ends the output matches steady byte for byte.
-/// `now` comes from the caller (explicit clock) for unit tests.
+/// Called every frame by the caller with an explicit `now` clock; once the
+/// animation ends the output equals the steady value.
 pub(super) fn popup_age_for(
     last_key: &mut Option<Vec<String>>,
     t0: &mut Option<std::time::Instant>,

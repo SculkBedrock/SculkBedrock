@@ -1,4 +1,6 @@
-//! Bedrock world effect packets.
+//! 世界特效与音效包定义。
+//!
+//! World effect and sound packet definitions.
 
 use std::io::Error;
 
@@ -6,17 +8,45 @@ use sc_binary::interfaces::{Reader, Writer};
 use sc_binary::{ByteReader, ByteWriter};
 use sc_network_macros::MinecraftPacket;
 
-/// LevelEvent (0x19).
+/// LevelEventPacket (0x19)：世界级特效/事件（如粒子、破坏动画）。
+///
+/// LevelEventPacket (0x19): world-level effects/events (particles, break
+/// animations, etc.).
+///
+/// event_id 为 zigzag varint32 编码，坐标为小端 f32。
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct LevelEvent {
+    /// 事件类型 id（zigzag varint32）。
+    ///
+    /// Event type id (zigzag varint32).
     pub event_id: u32,
+    /// 事件发生处的 X 坐标。
+    ///
+    /// X coordinate of the event position.
     pub x: f32,
+    /// 事件发生处的 Y 坐标。
+    ///
+    /// Y coordinate of the event position.
     pub y: f32,
+    /// 事件发生处的 Z 坐标。
+    ///
+    /// Z coordinate of the event position.
     pub z: f32,
+    /// 事件附加数据（zigzag varint32）。
+    ///
+    /// Extra event data (zigzag varint32).
     pub data: i32,
 }
 
 impl Writer for LevelEvent {
+    /// 写入 LevelEvent 包体。
+    ///
+    /// Writes the LevelEvent packet body.
+    ///
+    /// - `buf`: 输出字节写入器
+    ///
+    /// # Errors
+    /// 写入缓冲区失败时返回 IO 错误。
     fn write(&self, buf: &mut ByteWriter) -> Result<(), Error> {
         // Event id is zigzag varint32.
         buf.write_var_i32(self.event_id as i32)?;
@@ -28,6 +58,12 @@ impl Writer for LevelEvent {
 }
 
 impl Reader<LevelEvent> for LevelEvent {
+    /// 不支持解码：服务端只发送 LevelEvent。
+    ///
+    /// Decoding is unsupported: the server only sends LevelEvent.
+    ///
+    /// # Errors
+    /// 始终返回 [`std::io::ErrorKind::Unsupported`] 错误。
     fn read(_buf: &mut ByteReader) -> Result<Self, Error> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
@@ -36,25 +72,66 @@ impl Reader<LevelEvent> for LevelEvent {
     }
 }
 
-/// LevelSoundEvent (0x7b).
+/// LevelSoundEventPacket (0x7b)：世界音效事件。
+///
+/// LevelSoundEventPacket (0x7b): world sound event.
+///
+/// v2168 起采用 v1001 序列化器：sound 为序列化名称字符串而非数字 id。
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct LevelSoundEvent {
-    /// v2168 uses the v1001 serializer: a sound serialize name, not a numeric id.
+    /// 音效的序列化名称（v1001 序列化器）。
+    ///
+    /// Serialized sound name (v1001 serializer).
     pub sound: String,
+    /// 音效发生处的 X 坐标。
+    ///
+    /// X coordinate of the sound position.
     pub x: f32,
+    /// 音效发生处的 Y 坐标。
+    ///
+    /// Y coordinate of the sound position.
     pub y: f32,
+    /// 音效发生处的 Z 坐标。
+    ///
+    /// Z coordinate of the sound position.
     pub z: f32,
+    /// 音效附加数据。
+    ///
+    /// Extra sound data.
     pub extra_data: i32,
+    /// 发声实体类型名。
+    ///
+    /// Entity type name of the sound source.
     pub entity_type: String,
+    /// 是否为幼年实体音效。
+    ///
+    /// Whether the sound is a baby-mob variant.
     pub is_baby_mob: bool,
+    /// 是否为全局音效（无位置衰减）。
+    ///
+    /// Whether the sound is global (no positional attenuation).
     pub is_global: bool,
-    /// Entity id associated with the sound, or -1 when it is not entity-bound.
+    /// 与音效关联的实体唯一 id；非实体绑定时为 -1。
+    ///
+    /// Entity unique id associated with the sound, or -1 when not
+    /// entity-bound.
     pub entity_unique_id: i64,
-    /// v975+ optional fire-at position. None is encoded as a single false byte.
+    /// v975+ 可选的开火位置；None 编码为单个 false 字节。
+    ///
+    /// Optional fire-at position (v975+); None is encoded as a single false
+    /// byte.
     pub fire_at_position: Option<(f32, f32, f32)>,
 }
 
 impl Writer for LevelSoundEvent {
+    /// 写入 LevelSoundEvent 包体（v1001 序列化器布局）。
+    ///
+    /// Writes the LevelSoundEvent packet body (v1001 serializer layout).
+    ///
+    /// - `buf`: 输出字节写入器
+    ///
+    /// # Errors
+    /// 写入缓冲区失败时返回 IO 错误。
     fn write(&self, buf: &mut ByteWriter) -> Result<(), Error> {
         buf.write_string(&self.sound)?;
         buf.write_f32_le(self.x)?;
@@ -76,6 +153,12 @@ impl Writer for LevelSoundEvent {
 }
 
 impl Reader<LevelSoundEvent> for LevelSoundEvent {
+    /// 不支持解码：服务端只发送 LevelSoundEvent。
+    ///
+    /// Decoding is unsupported: the server only sends LevelSoundEvent.
+    ///
+    /// # Errors
+    /// 始终返回 [`std::io::ErrorKind::Unsupported`] 错误。
     fn read(_buf: &mut ByteReader) -> Result<Self, Error> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,

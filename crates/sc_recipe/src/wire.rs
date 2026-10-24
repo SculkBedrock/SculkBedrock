@@ -1,3 +1,13 @@
+//! 与协议无关的 `CraftingData` 线上视图。
+//!
+//! 实际包字节由网络 crate 负责；本模块只把编译后的配方归入 Bedrock 线上分段，
+//! 使游戏侧不接触包类型：shaped / shapeless(+furnace) / multi / user /
+//! chemistry / smithing transform / smithing trim / brewing / container /
+//! material reducer。
+//!
+//! 只有正确编译且可在线上表达的配方才会列出；其余留在 `disabled` 中并带明确
+//! 原因，不会被发送。
+//!
 //! Protocol-agnostic wire view for `CraftingData`.
 //!
 //! The network crate owns the actual packet bytes; this module only groups
@@ -12,6 +22,8 @@
 use crate::compile::{CompiledRecipe, RecipeBody};
 use crate::kind::{RecipeKind, StationKind};
 
+/// 一条可在线上表达的配方及其已解析的网络 id。
+///
 /// One wire-expressible recipe with its resolved network id.
 #[derive(Clone, Debug)]
 pub struct WireRecipe<'a> {
@@ -19,6 +31,8 @@ pub struct WireRecipe<'a> {
     pub network_id: u32,
 }
 
+/// 按确定性网络顺序分段的线上视图。
+///
 /// Segmented wire view in deterministic network order.
 #[derive(Clone, Debug, Default)]
 pub struct CraftingWireView<'a> {
@@ -36,6 +50,8 @@ pub struct CraftingWireView<'a> {
 }
 
 impl<'a> CraftingWireView<'a> {
+    /// 从网络有序配方切片构建。`network_id_base` 为
+    ///
     /// Build from a network-ordered recipe slice. `network_id_base` is the
     /// first network id; ids increment in order (trim keeps id 1 reserved
     /// for the hardcoded `minecraft:smithing_armor_trim`, so callers
@@ -135,6 +151,8 @@ pub struct WireCounts {
     pub material_reducer: usize,
 }
 
+/// 把配方类型归类到其 2168 段名（诊断用）。
+///
 /// Classify a recipe kind into its 2168 segment name (diagnostics).
 pub fn segment_for(kind: RecipeKind) -> &'static str {
     match kind {

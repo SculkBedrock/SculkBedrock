@@ -17,10 +17,9 @@ use std::collections::{BTreeSet, VecDeque};
 use sc_ecs::resource::Resource;
 use sc_log::t_log;
 
-/// Bounded connection isolation request set (resource).
+/// 有界的连接隔离请求集合，按注册顺序去重。
 ///
-/// Registration order (FIFO) with dedup: repeat requests from one player
-/// collapse into the first registration.
+/// Bounded set of connection isolation requests, deduplicated in registration order.
 #[derive(Resource, Clone, Debug)]
 pub struct PendingConnectionFaults {
     order: VecDeque<ConnectionFault>,
@@ -29,6 +28,8 @@ pub struct PendingConnectionFaults {
     rejected: u64,
 }
 
+/// 单条连接隔离请求。
+///
 /// One connection isolation request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ConnectionFault {

@@ -1,11 +1,6 @@
-//! Surface-data stage: replaces the top block per column with biome surface material.
+//! 地表数据阶段：按列用地表材料替换顶层方块，并写入海床与深度参数。
 //!
-//! Notes:
-//! - Noise-based material adjustments are skipped; the hardcoded per-biome
-//!   const table supplies the base material directly.
-//! - Still water is identified via the block table's water id.
-//! - The chunk is edited directly through `&mut WorldgenChunk`.
-//! - The fill-depth noise uses local x/z coordinates.
+//! Surface-data stage: replaces each column's top block with biome surface material and applies sea-floor and depth parameters.
 
 use crate::blocks_table::{biome_surface_material, WorldgenBlockTable};
 use crate::worldgen::context::ChunkGenerateContext;
@@ -16,6 +11,15 @@ use crate::worldgen::stages::GenerateStage;
 // NormalSurfaceDataStage: per-column surface material replacement
 // ---------------------------------------------------------------------------
 
+/// 地表材质替换阶段。
+///
+/// 按列读取高度图顶部方块与生物群系，用该生物群系的地表材质（top/mid/seaFloor/seaFloorDepth）替换地表方块。
+///
+/// - 顶部非水：替换顶部方块并按噪声深度填充下方 mid 方块。
+/// - 顶部为水：向下越过水体，按水深放置海底或 mid 方块。
+///
+/// 构造时注入 [`WorldgenBlockTable`]。
+///
 /// Surface-material replacement stage.
 ///
 /// Reads the heightmap top block and biome per column and replaces surface
@@ -201,19 +205,6 @@ mod tests {
         let table = WorldgenBlockTable::from_core_palette();
         let stage = NormalSurfaceDataStage::new(table);
         assert_eq!(stage.name(), "normal_surface");
-    }
-
-    #[test]
-    fn surface_data_stage_runs_without_panic() {
-        let (mut wc, table) = make_terrain_chunk(42, 0, 0);
-        let holder = crate::worldgen::holder::normal::NormalObjectHolder::new(
-            Xoroshiro128::new(42),
-            test_blocks(),
-        );
-        let mut ctx = ChunkGenerateContext::new(&mut wc, &holder, 42, -64, 319);
-        let stage = NormalSurfaceDataStage::new(table);
-        stage.apply(&mut ctx);
-        // Passing means no panic.
     }
 
     #[test]

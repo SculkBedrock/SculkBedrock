@@ -1,22 +1,6 @@
-//! Structure subset that code can generate.
+//! 可生成的结构子集：方块表、结构构建器、沙漠水井与沼泽小屋。
 //!
-//! | Rust item | Upstream source |
-//! |---|---|
-//! | [`StructureBlockTable`] | (block default-state constants) |
-//! | [`StructureHelper`] | `object/structures/StructureHelper.java` |
-//! | [`ObjectDesertWell`] | `object/structures/ObjectDesertWell.java` |
-//! | [`ObjectSwampHut`] | `object/structures/ObjectSwampHut.java` |
-//!
-//! Port notes:
-//! - Upstream `BlockState` constants become the runtime-id table
-//!   [`StructureBlockTable`] (`from_core_palette` reads the global
-//!   block dictionary, falling back to air plus warn).
-//! - `StructureHelper extends BlockManager` (origin offset + fill /
-//!   setBlockDownward) becomes composition: [`BlockManager`] plus origin.
-//! - `canBeReplaced()` (the downward-drill check) approximates as
-//!   air/water (swamp piles drill to the lakebed).
-//! - Block-entity post-processing (pot contents, brewing stands, chest loot)
-//!   is skipped (`addHook` is not ported).
+//! Generatable structure subset: block table, structure builder, desert well, and swamp hut.
 
 use std::collections::{HashMap, HashSet};
 
@@ -33,7 +17,9 @@ use crate::worldgen::random::{RandomSourceProvider, Xoroshiro128};
 // StructureBlockTable.
 // ---------------------------------------------------------------------------
 
-/// Block runtime-id table for structure generation.
+/// 结构生成使用的方块运行时 ID 表。
+///
+/// Block runtime ID table used by structure generation.
 pub struct StructureBlockTable {
     pub air: BlockRuntimeId,
     /// `BlockSandstone.PROPERTIES.getDefaultState()`.
@@ -160,11 +146,9 @@ impl StructureBlockTable {
 // StructureHelper.
 // ---------------------------------------------------------------------------
 
-/// Relative-coordinate structure builder rooted at origin.
+/// 以原点为基准、带坐标偏移的结构方块构建器。
 ///
-/// Composition instead of inheritance: holds [`BlockManager`] (buffer plus
-/// chunk read fallback) and the origin offset; all writes apply the offset first.
-/// Composition instead of inheritance: holds [`BlockManager`] (buffer plus
+/// Structure block builder rooted at an origin with coordinate offsetting.
 pub struct StructureHelper<'a> {
     manager: BlockManager<'a>,
     /// Java: `final BlockVector3 origen`.
@@ -266,10 +250,9 @@ impl<'a> StructureHelper<'a> {
 // ObjectDesertWell.
 // ---------------------------------------------------------------------------
 
-/// Desert well generator.
+/// 沙漠水井结构生成器。
 ///
-/// [`generate`] builds a static shape; [`can_generate_at`] checks
-/// biome, rarity, and surface.
+/// Desert well structure generator.
 pub struct ObjectDesertWell;
 
 impl ObjectDesertWell {
@@ -383,10 +366,9 @@ impl ObjectDesertWell {
 // ObjectSwampHut.
 // ---------------------------------------------------------------------------
 
-/// Swamp hut generator.
+/// 沼泽小屋结构生成器。
 ///
-/// 7x9x5 witch hut (relative 0-6 x 0-8 x 0-4); chest loot and pot contents
-/// (`addHook`) are not ported (they need block-entity infrastructure).
+/// Swamp hut structure generator.
 pub struct ObjectSwampHut;
 
 impl ObjectSwampHut {

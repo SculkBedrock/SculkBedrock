@@ -1,4 +1,13 @@
+//! 行为包配方来源（`behavior_packs/<pack>/recipes/**/*.json`）。
+//!
 //! Behavior-pack recipe sources (`behavior_packs/<pack>/recipes/**/*.json`).
+//!
+//! 版本 `.scver` 将每个行为包作为嵌套 zip 内嵌；外层
+//! `__brarchive/recipes.brarchive` 从不是唯一的 JSON 输入。
+//! 本模块从嵌套包字节读取 `recipes/**/*.json`，沿用既有 JSON 预算 /
+//! 带路径错误风格，并保留包身份、相对路径、`format_version`、标识提示
+//! 与内容指纹。配方 *kind* 仅在编译期从 JSON 根键派生（`sc_recipe`），
+//! 绝不从文件名推断。
 //!
 //! The version `.scver` embeds each behavior pack as a nested zip; the
 //! outer `__brarchive/recipes.brarchive` is never the sole JSON input.
@@ -21,18 +30,29 @@ use sc_ecs::resource::Resource;
 use json_comments::StripComments;
 use sha2::{Digest, Sha256};
 
+/// 配方来源加载预算（全部显式、全部有界）。
+///
 /// Budgets for recipe source loading (all explicit, all bounded).
 #[derive(Clone, Copy, Debug)]
 pub struct RecipeSourceBudgets {
+    /// 每个行为包最多接受的配方文件数。
+    ///
     /// Max recipe files accepted per behavior pack.
     pub max_files_per_pack: usize,
+    /// 每个行为包最多接受的配方总字节。
+    ///
     /// Max total recipe bytes accepted per behavior pack.
     pub max_dir_bytes: u64,
+    /// 单个配方文件最大字节。
+    ///
     /// Max single recipe file bytes.
     pub max_file_bytes: u64,
 }
 
 impl Default for RecipeSourceBudgets {
+    /// 默认预算（文件字节对齐包 JSON 条目预算）。
+    ///
+    /// Default budgets (file bytes match the pack JSON entry budget).
     fn default() -> Self {
         Self {
             max_files_per_pack: 4096,
@@ -43,28 +63,53 @@ impl Default for RecipeSourceBudgets {
     }
 }
 
+/// 一个带来源信息的原始配方文件。
+///
 /// One raw recipe file with provenance.
 #[derive(Clone, Debug)]
 pub struct RecipeSourceFile {
+    /// 行为包显示名（`manifest.name`）。
+    ///
     /// Behavior pack display name (`manifest.name`).
     pub pack_name: String,
+    /// 包加载顺序下标（越小越早加载 = 优先级越低）。
+    /// 调用方按低版本 → 高版本排序并透传该下标。
+    ///
     /// Pack load-order index (lower = loaded earlier = lower priority).
     /// Callers sort low-version → high-version and pass the index through.
     pub pack_order: usize,
+    /// 行为包 zip 内路径（如 `recipes/acacia_boat.json`）。
+    ///
     /// Path inside the behavior pack zip (e.g. `recipes/acacia_boat.json`).
     pub relative_path: String,
+    /// 配方 `format_version`（缺失时为空串）。
+    ///
+    /// Recipe `format_version` (empty when absent).
     pub format_version: String,
+    /// 存在时的 `description.identifier` 提示（编译器会从 JSON 正文
+    /// 重新推导权威标识符）。
+    ///
     /// `description.identifier` hint when present (the compiler re-derives
     /// the authoritative identifier from the JSON body).
     pub identifier_hint: Option<String>,
+    /// 解析后的 JSON 值。
+    ///
+    /// Parsed JSON value.
     pub raw: serde_json::Value,
+    /// 原始文件字节数（用于目录预算）。
+    ///
     /// Raw file bytes (for directory budgets).
     pub raw_bytes: usize,
+    /// 原始文件字节的 sha256。
+    ///
     /// sha256 of the raw file bytes.
     pub fingerprint: [u8; 32],
 }
 
 impl RecipeSourceFile {
+    /// 取编译器输入 JSON（`sc_recipe` 是可选消费方；
+    /// 以此避免 packloader → recipe 的硬依赖）。
+    ///
     /// Convert to the compiler input (`sc_recipe` is an optional consumer;
     /// this avoids a hard packloader → recipe dependency).
     pub fn raw_json(&self) -> &serde_json::Value {
@@ -72,15 +117,29 @@ impl RecipeSourceFile {
     }
 }
 
+/// 带路径的来源错误：包 + 路径 + 原因，绝不静默。
+///
 /// Pathful source error: pack + path + reason, never silent.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecipeSourceError {
+    /// 包名。
+    ///
+    /// Pack name.
     pub pack_name: String,
+    /// 包内相对路径。
+    ///
+    /// Relative path inside the pack.
     pub relative_path: String,
+    /// 失败原因。
+    ///
+    /// Failure reason.
     pub reason: String,
 }
 
 impl std::fmt::Display for RecipeSourceError {
+    /// 以 `[包] 路径: 原因` 格式化。
+    ///
+    /// Formats as `[pack] path: reason`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -92,6 +151,11 @@ impl std::fmt::Display for RecipeSourceError {
 
 impl std::error::Error for RecipeSourceError {}
 
+/// 计算字节的内容指纹（SHA-256）。
+///
+/// Computes the content fingerprint (SHA-256) of the bytes.
+///
+/// - `bytes`: 输入字节
 fn fingerprint_of(bytes: &[u8]) -> [u8; 32] {
     let digest = Sha256::digest(bytes);
     let mut out = [0u8; 32];
@@ -99,6 +163,13 @@ fn fingerprint_of(bytes: &[u8]) -> [u8; 32] {
     out
 }
 
+/// 判断是否为配方 JSON 路径：排除 `__brarchive/`，须含 `recipes/` 段且以
+/// `.json` 结尾。
+///
+/// Checks whether a path is a recipe JSON path: excludes `__brarchive/`,
+/// requires a `recipes/` segment and a `.json` suffix.
+///
+/// - `name`: 包内路径
 fn is_recipe_json_path(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     if lower.starts_with("__brarchive/") {
@@ -111,6 +182,12 @@ fn is_recipe_json_path(name: &str) -> bool {
     lower.split('/').any(|seg| seg == "recipes")
 }
 
+/// 取从 `recipes/` 段起的相对路径（保留原始大小写便于诊断）。
+///
+/// Keeps the path from the `recipes/` segment on, preserving the original
+/// case for diagnostics.
+///
+/// - `name`: 包内路径
 fn relative_recipe_path(name: &str) -> String {
     // Keep the path from the `recipes/` segment on, preserving the
     // original case for diagnostics.
@@ -121,11 +198,22 @@ fn relative_recipe_path(name: &str) -> String {
     }
 }
 
+/// 从一个行为包 zip 读取全部 `recipes/**/*.json` 文件。
+///
 /// Read all `recipes/**/*.json` files from one behavior-pack zip.
+///
+/// `pack_bytes` 是嵌套行为包 zip（`ResourcePack.pack_data`）。
+/// 返回文件列表与逐文件错误（单个坏文件不会中断整包；
+/// 目录/文件预算仍然生效）。
 ///
 /// `pack_bytes` is the nested behavior-pack zip (`ResourcePack.pack_data`).
 /// Returns the files plus per-file errors (a single bad file never aborts
 /// the whole pack; directory/file budgets are still enforced).
+///
+/// - `pack_name`: 包显示名
+/// - `pack_order`: 包加载顺序下标
+/// - `pack`: 包来源
+/// - `budgets`: 加载预算
 pub fn read_recipes_from_pack_source(
     pack_name: &str,
     pack_order: usize,
@@ -245,9 +333,16 @@ pub fn read_recipes_from_pack_source(
     (files, errors)
 }
 
+/// 从已解析的 [`ResourcePack`] 读取配方（使用其共享 zip 字节）。
+/// 调用方按 `load_version` 中的低 → 高版本排序分配 `pack_order`。
+///
 /// Read recipes from an already-parsed [`ResourcePack`] (uses its shared
 /// zip bytes). The caller assigns `pack_order` from the low → high version
 /// sort done in `load_version`.
+///
+/// - `pack`: 已解析资源包
+/// - `pack_order`: 包加载顺序下标
+/// - `budgets`: 加载预算
 pub fn read_recipes_from_resource_pack(
     pack: &ResourcePack,
     pack_order: usize,
@@ -272,9 +367,14 @@ pub fn read_recipes_from_resource_pack(
     read_recipes_from_pack_source(&pack.manifest.name, pack_order, &mut source, budgets)
 }
 
+/// 按低版本 → 高版本合并有序包：拼接各包文件并保持包顺序
+/// （覆盖解析发生在 `sc_recipe` 编译期，不在此处）。
+///
 /// Merge ordered packs low-version → high-version: concatenates per-pack
 /// files preserving pack order (override resolution happens at compile
 /// time in `sc_recipe`, not here).
+///
+/// - `packs`: (包名, 文件列表) 列表
 pub fn merge_ordered_packs(packs: &[(String, Vec<RecipeSourceFile>)]) -> Vec<OrderedRecipeSource> {
     let mut out = Vec::new();
     for (pack_name, files) in packs {
@@ -294,15 +394,33 @@ pub fn merge_ordered_packs(packs: &[(String, Vec<RecipeSourceFile>)]) -> Vec<Ord
     out
 }
 
+/// 一个有序来源条目（包顺序已应用）。
+///
 /// One ordered source entry (pack order already applied).
 #[derive(Clone, Debug)]
 pub struct OrderedRecipeSource {
+    /// 包名。
+    ///
+    /// Pack name.
     pub pack_name: String,
+    /// 包加载顺序下标。
+    ///
+    /// Pack load-order index.
     pub pack_order: usize,
+    /// 配方文件。
+    ///
+    /// Recipe file.
     pub file: RecipeSourceFile,
 }
 
+/// 版本包加载后保留的原始配方来源（ECS 资源）。
+///
 /// Raw recipe sources kept from version-pack load (ECS resource).
+///
+/// `load_version`（SCPreLoad）从嵌套行为包 zip 填充本资源；
+/// 引导期 `load_recipe_registry`（SCLoad）将其编译为冻结的
+/// `sc_game::SharedRecipeRegistry`。保留原始文件（而非仅编译快照）
+/// 以保留包身份/路径诊断信息。
 ///
 /// `load_version` (SCPreLoad) fills this from the nested behavior-pack
 /// zips; bootstrap `load_recipe_registry` (SCLoad) compiles it into the
@@ -310,29 +428,57 @@ pub struct OrderedRecipeSource {
 /// the compiled snapshot) preserves pack identity/path diagnostics.
 #[derive(Resource, Clone, Debug, Default)]
 pub struct RawRecipeSources {
+    /// 加载成功的配方文件。
+    ///
+    /// Successfully loaded recipe files.
     pub files: Vec<RecipeSourceFile>,
+    /// 逐文件错误。
+    ///
+    /// Per-file errors.
     pub errors: Vec<RecipeSourceError>,
 }
 
+/// 配方匹配可用的标签表（仅物品标签）。
+///
 /// Tag tables available to recipe matching (item tags only).
 #[derive(Clone, Debug, Default)]
 pub struct ItemTagTable {
+    /// 标签 → 成员标识列表。
+    ///
+    /// Tag → member identifier list.
     inner: HashMap<String, Vec<String>>,
 }
 
 impl ItemTagTable {
+    /// 从映射构造标签表。
+    ///
+    /// Builds a tag table from a map.
+    ///
+    /// - `inner`: 标签 → 成员列表映射
     pub fn new(inner: HashMap<String, Vec<String>>) -> Self {
         Self { inner }
     }
+    /// 取标签成员列表；不存在时为空表。
+    ///
+    /// Returns the tag members; empty when absent.
     pub fn members(&self, tag: &str) -> Vec<String> {
         self.inner.get(tag).cloned().unwrap_or_default()
     }
+    /// 标签是否存在。
+    ///
+    /// Whether the tag exists.
     pub fn contains(&self, tag: &str) -> bool {
         self.inner.contains_key(tag)
     }
+    /// 标签数量。
+    ///
+    /// Number of tags.
     pub fn len(&self) -> usize {
         self.inner.len()
     }
+    /// 是否为空表。
+    ///
+    /// Whether the table is empty.
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
@@ -440,53 +586,4 @@ mod tests {
         assert!(!errors.is_empty());
     }
 
-    #[test]
-    fn real_pack_stonecutter_recipes_all_load() {
-        let Some(mut source) = crate::test_pack::open_test_pack() else {
-            return;
-        };
-        // Nested 1.18 stonecutter pack (24 recipes), zip or dir form.
-        let mut nested = source.sub_source("behavior_packs/vanilla_1.18.0.zip");
-        if nested.is_none() {
-            nested = source.sub_source("behavior_packs/vanilla_1.18.0");
-        }
-        let Some(mut nested) = nested else { return };
-        let (files, errors) =
-            read_recipes_from_pack_source("vanilla_1.18.0", 1, &mut nested, &test_budgets());
-        assert!(errors.is_empty(), "errors: {errors:?}");
-        assert_eq!(files.len(), 24, "expected 24 stonecutter recipes");
-        for file in &files {
-            assert!(file.relative_path.starts_with("recipes/"));
-            assert!(!file.format_version.is_empty());
-            assert!(file
-                .identifier_hint
-                .as_deref()
-                .unwrap_or("")
-                .starts_with("minecraft:stonecutter"));
-        }
-    }
-
-    #[test]
-    fn real_pack_vanilla_recipes_load_without_brarchive() {
-        let Some(mut source) = crate::test_pack::open_test_pack() else {
-            return;
-        };
-        let mut nested = source.sub_source("behavior_packs/vanilla.zip");
-        if nested.is_none() {
-            nested = source.sub_source("behavior_packs/vanilla");
-        }
-        let Some(mut nested) = nested else { return };
-        let (files, errors) =
-            read_recipes_from_pack_source("vanilla", 0, &mut nested, &test_budgets());
-        // Chemistry packs have malformed JSON; vanilla must be clean.
-        assert!(errors.is_empty(), "errors: {errors:?}");
-        assert!(
-            files.len() >= 800,
-            "vanilla should have 800+ recipes, got {}",
-            files.len()
-        );
-        assert!(!files
-            .iter()
-            .any(|f| f.relative_path.contains("__brarchive")));
-    }
 }

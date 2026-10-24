@@ -1,18 +1,6 @@
-//! Feature (object/tree) generation infrastructure: ports of
-//! `feature/ObjectGeneratorFeature.java`, `feature/GriddedFeature.java`,
-//! `object/ObjectGenerator.java`, and `block/Supportable.java`.
+//! 对象与树木特征生成的基础设施：方块表、对象生成器接口与放置特征接口。
 //!
-//! Upstream `Level`/`Registries.BIOME` reads map to this port as:
-//! - `level.getBlock(v)` (world-space read) goes to `ctx.chunk.block_state`
-//!   (inside the generating chunk) or a cross-chunk air fallback;
-//! - `level.getBiomeId(x,y,z)` goes to `ctx.chunk.biome_id`;
-//! - `level.getHeightMap(x,z)` goes to `ctx.chunk.height_map`;
-//! - `level.getMinHeight()` goes to `ctx.min_y`.
-//!
-//! Block properties (canBeReplaced/isFullBlock/isLiquid/hasTag(DIRT)) have no
-//! runtime block system here; [`TreeBlockTable`] id sets approximate them
-//! (matching the official block_tags.json `minecraft:dirt` tag plus the stock
-//! plant/leaf/liquid lists).
+//! Infrastructure for object and tree feature generation: block table, object generator interface, and placement feature interfaces.
 
 use std::collections::HashSet;
 
@@ -28,8 +16,9 @@ use crate::worldgen::random::{RandomSourceProvider, Xoroshiro128};
 use crate::worldgen::stages::chunk_hash;
 use crate::worldgen::stages::terrain::SEA_LEVEL;
 
-/// Wood species (the 9 supported kinds).
-/// Array index matches [`TreeBlockTable::logs`]/[`TreeBlockTable::leaves`].
+/// 木材树种，数组索引对应 TreeBlockTable 的原木与树叶表。
+///
+/// Wood species whose array index matches the log and leaf tables in TreeBlockTable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WoodType {
     Oak,
@@ -91,12 +80,9 @@ impl WoodType {
     }
 }
 
-/// Block table plus predicate sets for tree/feature generation.
+/// 树木与特征生成使用的方块表及判定集合。
 ///
-/// Predicate sets approximate the upstream block property system:
-/// - `dirt_support`: the 11 official `minecraft:dirt` tag members;
-/// - `non_solid`: replaceables plus non-full blocks (air/leaves/plants/vines/snow/liquids);
-/// - `liquids`: liquid check.
+/// Block table and predicate sets used by tree and feature generation.
 pub struct TreeBlockTable {
     pub air: BlockRuntimeId,
     pub dirt: BlockRuntimeId,
@@ -352,7 +338,9 @@ const OVERRIDABLE_BLOCKS: [&str; 32] = [
     "minecraft:closed_eyeblossom",
 ];
 
-/// Coordinate axes (three-axis logs).
+/// 坐标轴方向，用于三轴原木。
+///
+/// Coordinate axis direction used by three-axis logs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Axis {
     X,
@@ -733,10 +721,9 @@ impl TreeBlockTable {
     }
 }
 
-/// Java: `ObjectGenerator`(object/ObjectGenerator.java).
+/// 在给定位置生成一个对象的接口。
 ///
-/// Note `&mut self`: legacy trees write their height/vine fields during
-/// placeObject, expressed as a mutable borrow.
+/// Interface for generating one object at a given position.
 pub trait ObjectGenerator: Send + Sync {
     /// Java: `boolean generate(BlockManager level, RandomSourceProvider rand, Vector3 position)`.
     fn generate(
@@ -756,10 +743,9 @@ pub trait ObjectGenerator: Send + Sync {
     }
 }
 
-/// Java: `ObjectGeneratorFeature extends GenerateFeature implements Supportable`.
+/// 按随机列尝试生成对象的特征接口。
 ///
-/// Default apply: random attempts per chunk at random columns, reading the 
-/// heightmap with biome filtering, scanning down to support before generating.
+/// Feature interface that attempts object placement at random columns.
 pub trait ObjectGeneratorFeature: GenerateFeature {
     /// Java: `ObjectGenerator getGenerator(RandomSourceProvider random)`(L22).
     fn get_generator(&self, random: &mut Xoroshiro128) -> Box<dyn ObjectGenerator>;
@@ -853,10 +839,9 @@ pub trait ObjectGeneratorFeature: GenerateFeature {
     }
 }
 
-/// Java: `GriddedFeature extends ObjectGeneratorFeature`(feature/GriddedFeature.java).
+/// 在分裂网格内选取放置位置的生成特征接口。
 ///
-/// Points spread over a split x split grid (random in-cell offset plus
-/// distance constraint); the heightmap top decides, no downward scan.
+/// Generation feature interface selecting placement positions on a split grid.
 pub trait GriddedFeature: ObjectGeneratorFeature {
     /// Java: `getSplit()`(L12-14).
     fn get_split(&self) -> i32 {
@@ -934,7 +919,7 @@ pub trait GriddedFeature: ObjectGeneratorFeature {
             }
         }
 
-        // Java L45: queueObject(chunk, object) → root.merge(object)——
+        // Java L45: queueObject(chunk, object) -> root.merge(object);
         // Buffer until stage end, then submit once.
         let places = object.into_places();
         ctx.queue_object(places);

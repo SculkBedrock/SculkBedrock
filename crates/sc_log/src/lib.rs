@@ -10,7 +10,7 @@ i18n!("locales");
 /// `t!`: i18n lookup (**verbatim**, keeps section codes).
 ///
 /// For player-visible text or anything that must keep section codes (chat, command output, error values);
-/// performs no color conversion. For log output use [`t_log!`] (pre-colored at build time, zero runtime cost).
+/// performs no color conversion. For log output use [`t_log!`] (color conversion done at build time).
 #[macro_export]
 #[allow(clippy::crate_in_macro_def)]
 macro_rules! t {

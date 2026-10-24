@@ -1,3 +1,19 @@
+//! 命令补全接口。
+//!
+//! 宿主（服务端）实现 [`CompletionProvider`]，并通过
+//! [`ConsoleHandle::set_provider`][crate::driver::ConsoleHandle::set_provider]
+//! 热替换；控制台只调用并展示结果，绝不缓存或解释命令语义。
+//!
+//! 内置实现：
+//!
+//! - [`NoopCompletionProvider`]：默认占位，无补全（零开销）。
+//! - [`StaticCompletionProvider`]：基于命令快照（名称/别名/描述）的前缀补全；
+//!   宿主按注册表快照重建，插件命令因此自动出现。
+//!
+//! 触发规则（Minecraft 风格，见 [`trigger_at`]）：仅在 `/`（命令位）或
+//! `:`（命名空间位）之后出现补全；应用补全只替换触发词之后的文本，
+//! `/` 与 `:` 前缀原样保留（如 `/st` 变为 `/stop`）。
+//!
 //! Command completion interface.
 //!
 //! The host (server) implements [`CompletionProvider`] and hot-swaps it via
@@ -16,6 +32,8 @@
 
 use std::sync::Arc;
 
+/// 一个补全候选项。
+///
 /// One completion candidate.
 #[derive(Clone, Debug)]
 pub struct CompletionItem {
@@ -41,6 +59,15 @@ impl CompletionItem {
     }
 }
 
+/// 命令补全接口：给定整行与光标（字符索引），返回候选项。
+///
+/// 调用方与实现方共同遵守的约定：
+///
+/// - `cursor` 是 `char` 索引而非字节索引，调用方保证不切断字符边界；
+/// - 返回的候选项已按展示优先级排好序，控制台只按配置上限截断；
+/// - 该方法在控制台 UI 线程同步调用：实现必须快速返回
+///   （只读快照/静态表，不做 IO、不取游戏锁，游戏状态需提前快照）。
+///
 /// Command completion interface: given a full line plus cursor (char index), return candidates.
 ///
 /// Contract shared by callers and implementations:
@@ -59,6 +86,8 @@ pub trait CompletionProvider: Send + Sync + 'static {
     }
 }
 
+/// 默认占位：始终返回空。
+///
 /// Default placeholder: always returns empty.
 pub struct NoopCompletionProvider;
 
@@ -72,6 +101,8 @@ impl CompletionProvider for NoopCompletionProvider {
     }
 }
 
+/// 快照中的一条命令（含别名与描述）。
+///
 /// One command in the snapshot (with aliases and description).
 #[derive(Clone, Debug)]
 pub struct CommandEntry {
@@ -90,12 +121,19 @@ impl CommandEntry {
     }
 }
 
+/// 基于静态快照的前缀补全（宿主按注册表内容周期性重建）。
+///
+/// 匹配规则：
+///
+/// - 只补全第一个 token（命令名位置）；光标在别处时返回空；
+/// - 前缀匹配不区分大小写，命令名排在别名之前；
+/// - token 为空（全新控制台 / 单独的 `/`）时返回全部命令（由调用方截断）。
+///
 /// Prefix completion over a static snapshot (rebuilt periodically by the host from registry contents).
 ///
 /// Match rules:
 ///
-/// - Only the first token (command-name position) is completed; returns empty when the cursor is elsewhere
-///   (argument completion is a future extension point; `complete` already sees the full line and cursor);
+/// - Only the first token (command-name position) is completed; returns empty when the cursor is elsewhere;
 /// - Case-insensitive prefix match, command names rank above aliases;
 /// - An empty token (fresh console / bare `/`) returns all commands (caller truncates).
 #[derive(Clone, Debug, Default)]

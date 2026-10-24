@@ -1,3 +1,14 @@
+//! 匹配：shaped 网格、shapeless 多重集、process 配方。
+//!
+//! 规则：
+//! - shaped 图案在编译期已裁剪；匹配阶段不做镜像，除非设置
+//!   `assume_symmetry`（Microsoft 文档默认 `true`）。这里的镜像指裁剪后
+//!   网格的水平翻转。
+//! - shapeless 在多重集上做有界的确定性二分图匹配，不使用贪心算法。
+//! - 匹配键是（标识符、data 通配、组件指纹）。Stage-1 没有组件，因此需要
+//!   组件的配方在编译期已被禁用，不会进入匹配器。
+//! - 工作台、尺寸与逐槽数量始终校验。
+//!
 //! Matching: shaped grids, shapeless multisets, process recipes.
 //!
 //! Rules:
@@ -5,7 +16,7 @@
 //!   mirroring unless `assume_symmetry` is set (Microsoft docs default
 //!   `true`). Mirroring here means horizontal flip of the trimmed grid.
 //! - Shapeless uses deterministic bounded bipartite matching over a
-//!   multiset, never a naive greedy that fails on overlapping tags.
+//!   multiset, not greedy first-fit.
 //! - The match key is (identifier, data-wildcard, components fingerprint).
 //!   Stage-1 has no components, so any recipe that needs them is disabled
 //!   at compile time and never reaches the matcher.
@@ -17,6 +28,8 @@ use crate::compile::{CompiledRecipe, RecipeBody};
 use crate::kind::StationKind;
 use crate::spec::{IngredientChoice, IngredientSpec, DATA_WILDCARD};
 
+/// 交给匹配器的一个输入物品堆。
+///
 /// One input stack presented to the matcher.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct MatchInput {
@@ -40,6 +53,9 @@ impl MatchInput {
     }
 }
 
+/// 把物品标签解析为成员标识符列表。游戏层用自身标签表提供实现；
+/// 测试使用静态映射表。
+///
 /// Resolves an item tag to member identifiers. The game layer provides
 /// this from its tag tables; tests use a static map.
 pub trait TagResolver {
@@ -104,6 +120,8 @@ fn choice_matches(
     }
 }
 
+/// 用于点解析的旧版重命名别名（wire 编码、产物
+///
 /// Legacy rename alias for point resolution (wire encoding, result
 /// lookup): a single-member group canonicalizes to its member
 /// (`minecraft:fish` → `minecraft:cod`). Multi-member families never
@@ -118,6 +136,8 @@ pub fn rename_alias(tags: &dyn TagResolver, name: &str) -> Option<String> {
     }
 }
 
+/// 对 `Item` 配料的 Bedrock 旧版家族回退。
+///
 /// Bedrock legacy family fallback for `Item` ingredients.
 ///
 /// Vanilla recipe files use pseudo names (`minecraft:planks`, `minecraft:log2`,
@@ -162,6 +182,8 @@ fn spec_matches(
         .any(|c| choice_matches(c, input, tags, max_expansion))
 }
 
+/// 在 `width x height` 合成网格上做定型匹配。
+///
 /// Shaped match over a `width x height` crafting grid.
 ///
 /// `grid` is row-major `width*height` with `None` for empty slots.
@@ -286,6 +308,8 @@ fn offset_matches(
     true
 }
 
+/// 无序匹配：确定性、有界二分图匹配。
+///
 /// Shapeless match: deterministic bounded bipartite matching.
 ///
 /// Each ingredient must be assigned a distinct input stack with enough
@@ -405,6 +429,8 @@ pub fn match_shapeless(
     false
 }
 
+/// 熔炉 / 过程的单输入匹配。
+///
 /// Furnace / process single-input match.
 pub fn match_process_input(
     spec: &IngredientSpec,
@@ -415,6 +441,8 @@ pub fn match_process_input(
     spec_matches(spec, input, tags, max_expansion)
 }
 
+/// 为给定网格找出最佳即时（定型/无序）配方。
+///
 /// Find the best instant (shaped/shapeless) recipe for the given grid.
 ///
 /// Ordering: priority ascending, then identifier ascending. Only recipes
@@ -462,6 +490,8 @@ pub fn find_best_instant<'a>(
     None
 }
 
+/// 事务选择使用的确定性平局决胜辅助函数。
+///
 /// Deterministic tie-break helper used by transaction selection.
 pub fn sort_candidates<'a>(mut candidates: Vec<&'a CompiledRecipe>) -> Vec<&'a CompiledRecipe> {
     candidates.sort_by(|a, b| {
@@ -797,6 +827,8 @@ mod tests {
     }
 }
 
+/// 规划哪些背包槽满足一组单位需求量。
+///
 /// Plan which inventory slots satisfy a list of unit requirements.
 ///
 /// Each requirement is `(spec, units_to_take)`; each slot has a live

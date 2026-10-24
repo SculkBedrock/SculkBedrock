@@ -20,6 +20,8 @@ use crate::utils::ConnectionThreadManager;
 
 pub(crate) const RESOURCE_PACK_CHUNK_SIZE: usize = 8192;
 
+/// 资源包阶段是否强制要求接受（默认 false）。
+///
 /// Whether the resource-pack phase forces acceptance (default false).
 fn force_resource_packs(world: &World) -> bool {
     world

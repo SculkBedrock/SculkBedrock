@@ -1,3 +1,8 @@
+//! SCDB 侧车缓存：按源文件（大小 + 修改时间）失效的旁路缓存读写。
+//!
+//! SCDB sidecar cache: reads and writes a bypass cache invalidated by the
+//! source file (size + modification time).
+
 use std::fs::{self, File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::{self, Read, Write};
@@ -5,13 +10,37 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
+/// 缓存文件魔数。
+///
+/// Cache file magic.
 const MAGIC: &[u8; 8] = b"SCDB\0\0\x01\0";
+/// 头部长度（魔数 + 格式版本 + 源长度 + 源修改时间，各 8 字节）。
+///
+/// Header length (magic + format version + source length + source mtime, 8 bytes each).
 const HEADER_LEN: u64 = 32;
+/// 缓存格式版本。
+///
+/// Cache format version.
 const FORMAT_VERSION: u64 = 1;
+/// 锁等待间隔。
+///
+/// Lock polling interval.
 const LOCK_WAIT: Duration = Duration::from_millis(25);
+/// 锁等待超时。
+///
+/// Lock wait timeout.
 const LOCK_TIMEOUT: Duration = Duration::from_secs(30);
+/// 临时文件序号计数器。
+///
+/// Temp file sequence counter.
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// 计算源文件对应的缓存路径（文件名 + 路径哈希）。
+///
+/// Computes the cache path for a source file (file name plus path hash).
+///
+/// - `cache_dir`: 缓存目录
+/// - `source`: 源文件路径
 fn cache_path(cache_dir: &Path, source: &Path) -> PathBuf {
     let name = source
         .file_name()
@@ -23,11 +52,23 @@ fn cache_path(cache_dir: &Path, source: &Path) -> PathBuf {
     cache_dir.join(format!("{name}-{:016x}.scdb", hasher.finish()))
 }
 
+/// 缓存文件锁：以独占创建 `.scdb.lock` 实现，超时报错。
+///
+/// Cache file lock: implemented via exclusive creation of `.scdb.lock`;
+/// errors on timeout.
 struct CacheLock {
+    /// 锁文件路径。
+    ///
+    /// Lock file path.
     path: PathBuf,
 }
 
 impl CacheLock {
+    /// 获取缓存锁（带超时轮询）。
+    ///
+    /// Acquires the cache lock (polling with a timeout).
+    ///
+    /// - `cache`: 目标缓存文件路径（锁路径由其派生）
     fn acquire(cache: &Path) -> io::Result<Self> {
         let lock_path = cache.with_extension("scdb.lock");
         let started = SystemTime::now();
@@ -54,15 +95,29 @@ impl CacheLock {
 }
 
 impl Drop for CacheLock {
+    /// 释放时删除锁文件。
+    ///
+    /// Removes the lock file on drop.
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
     }
 }
 
+/// 生成临时文件路径（进程 id + 序号保证唯一）。
+///
+/// Generates a temp file path (unique via process id plus sequence).
+///
+/// - `cache`: 目标缓存文件路径
 fn temp_path(cache: &Path) -> PathBuf {
     let id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     cache.with_extension(format!("scdb.tmp.{}.{}", std::process::id(), id))
 }
+/// 读取文件修改时间（纳秒，截断到 u64；不可用时为 0）。
+///
+/// Reads the file modification time in nanoseconds (saturating into u64; 0
+/// when unavailable).
+///
+/// - `metadata`: 文件元数据
 fn modified_nanos(metadata: &fs::Metadata) -> u64 {
     metadata
         .modified()
@@ -72,6 +127,12 @@ fn modified_nanos(metadata: &fs::Metadata) -> u64 {
         .unwrap_or(0)
 }
 
+/// 读取并校验缓存头部；魔数/版本不符或读取失败时为 `None`。
+///
+/// Reads and validates the cache header; `None` on a magic/version mismatch
+/// or a read failure.
+///
+/// - `file`: 已打开的缓存文件
 fn read_header(file: &mut File) -> io::Result<Option<(u64, u64)>> {
     let mut header = [0u8; HEADER_LEN as usize];
     if file.read_exact(&mut header).is_err() {
@@ -89,6 +150,13 @@ fn read_header(file: &mut File) -> io::Result<Option<(u64, u64)>> {
     Ok(Some((source_len, source_mtime)))
 }
 
+/// 读取缓存内容；头部校验失败、源已变更或长度不符时为 `None`。
+///
+/// Reads cached bytes; `None` when the header check fails, the source has
+/// changed, or lengths mismatch.
+///
+/// - `cache`: 缓存文件路径
+/// - `source_metadata`: 源文件元数据
 fn load_cached(cache: &Path, source_metadata: &fs::Metadata) -> io::Result<Option<Vec<u8>>> {
     let mut file = match File::open(cache) {
         Ok(file) => file,
@@ -113,6 +181,14 @@ fn load_cached(cache: &Path, source_metadata: &fs::Metadata) -> io::Result<Optio
     Ok(Some(payload))
 }
 
+/// 原子写入缓存（临时文件 + rename 替换）；失败时清理临时文件。
+///
+/// Atomically writes the cache (temp file plus rename replace); cleans up
+/// the temp file on failure.
+///
+/// - `cache`: 缓存文件路径
+/// - `source_metadata`: 源文件元数据
+/// - `payload`: 待缓存内容
 fn write_cached(cache: &Path, source_metadata: &fs::Metadata, payload: &[u8]) -> io::Result<()> {
     let temp = temp_path(cache);
     let result = (|| {
@@ -135,6 +211,13 @@ fn write_cached(cache: &Path, source_metadata: &fs::Metadata, payload: &[u8]) ->
     result
 }
 
+/// 用临时文件替换目标缓存（目标已存在时先删除再改名）。
+///
+/// Replaces the target cache with the temp file (removing the target first
+/// when it already exists).
+///
+/// - `temp`: 临时文件路径
+/// - `cache`: 目标缓存路径
 fn replace_cache(temp: &Path, cache: &Path) -> io::Result<()> {
     match fs::rename(temp, cache) {
         Ok(()) => Ok(()),
@@ -146,6 +229,13 @@ fn replace_cache(temp: &Path, cache: &Path) -> io::Result<()> {
     }
 }
 
+/// 返回源文件的缓存路径；缓存无效时在锁保护下重建（流式拷贝）。
+///
+/// Returns the cache path for a source file; rebuilds it under the lock
+/// (streaming copy) when the cache is invalid.
+///
+/// - `source`: 源文件路径
+/// - `cache_dir`: 缓存目录
 pub fn load_or_compile_path(source: &Path, cache_dir: &Path) -> io::Result<PathBuf> {
     let metadata = fs::metadata(source)?;
     let cache = cache_path(cache_dir, source);
@@ -195,6 +285,13 @@ pub fn load_or_compile_path(source: &Path, cache_dir: &Path) -> io::Result<PathB
     Ok(cache)
 }
 
+/// 返回源文件内容；命中缓存时直接读缓存，否则读源并尽力持久化缓存。
+///
+/// Returns the source file contents; reads the cache on a hit, otherwise
+/// reads the source and persists the cache best-effort.
+///
+/// - `source`: 源文件路径
+/// - `cache_dir`: 缓存目录
 pub fn load_or_compile(source: &Path, cache_dir: &Path) -> io::Result<Vec<u8>> {
     let metadata = fs::metadata(source)?;
     let cache = cache_path(cache_dir, source);
@@ -217,6 +314,11 @@ pub fn load_or_compile(source: &Path, cache_dir: &Path) -> io::Result<Vec<u8>> {
     Ok(payload)
 }
 
+/// 清理缓存目录中残留的临时文件（`.scdb.tmp.`）。
+///
+/// Removes leftover temp files (`.scdb.tmp.`) from the cache directory.
+///
+/// - `cache_dir`: 缓存目录
 pub fn clear_stale_cache(cache_dir: &Path) {
     let Ok(entries) = fs::read_dir(cache_dir) else {
         return;
@@ -236,14 +338,21 @@ pub fn clear_stale_cache(cache_dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// Per-process counter: parallel tests must never share a directory.
     fn temp_dir() -> PathBuf {
-        let nonce = SystemTime::now()
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("scdb-test-{}-{nonce}", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "scdb-test-{}-{stamp}-{seq}",
+            std::process::id()
+        ))
     }
 
     #[test]

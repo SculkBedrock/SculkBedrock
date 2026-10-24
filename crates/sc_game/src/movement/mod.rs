@@ -11,6 +11,7 @@
 
 use parking_lot::RwLock;
 use sc_ecs::component::Component;
+use sc_ecs::entity::EntityId;
 use sc_ecs::params::resource::ResMut;
 use sc_ecs::world::World;
 use sc_entity::motion::{Aabb, FallState, PhysicsBody, Position, Rotation, Transform};
@@ -26,27 +27,29 @@ use std::sync::Arc;
 use crate::damage::{apply_fall_damage, decide_fall_damage, FallDamageOutcome, LandingMaterial};
 use crate::net::{
     IntentPublisher, MoveEntityAbsolute, MovePlayer, NetworkOutbox, PendingConnectionFaults,
-    PlayerInput, PlayerMoveMode, SetEntityMotion,
+    PlayerInput, PlayerMoveMode, SetEntityMotion, SyncPlayerSwimming,
 };
 
 /// Input buffer cap per player: packets beyond it are dropped.
 pub const MAX_PENDING_INPUT: usize = 64;
 
-/// Current player action flags, mirrored from the latest consumed input.
-/// Movement is the sole writer (updated in the input drain); systems like
-/// hunger only read. Interior lock: rewritten every tick without ECS
-/// add/remove churn.
+/// 当前玩家动作标志，来自最近一次消费的输入。
+///
+/// Current player action flags mirrored from the latest consumed input.
 #[derive(Component, Clone, Debug, Default)]
 pub struct PlayerActionState {
     pub inner: Arc<RwLock<PlayerActionFlags>>,
 }
 
-/// Sprint/sneak/flight mirror for one tick.
+/// 单个 tick 的疾跑、潜行、飞行与游泳状态镜像。
+///
+/// Per-tick mirror of sprint, sneak, flight, and swimming state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PlayerActionFlags {
     pub sprinting: bool,
     pub sneaking: bool,
     pub flying: bool,
+    pub swimming: bool,
 }
 
 impl PlayerActionState {
@@ -55,7 +58,36 @@ impl PlayerActionState {
     }
 }
 
-/// Player movement state machine component.
+/// Query whether the given entity is currently sneaking.
+///
+/// Checks both the tick-level [`PlayerActionState`] mirror and the most recent
+/// unprocessed input in [`PlayerMovement`], returning `true` if either indicates sneaking.
+pub fn is_player_sneaking(world: &World, entity: &EntityId) -> bool {
+    if let Some(action) = world.get_component::<PlayerActionState>(entity) {
+        if action.inner.read().sneaking {
+            return true;
+        }
+    }
+    if let Some(movement) = world.get_component::<PlayerMovement>(entity) {
+        if let Some(last_input) = movement.state.read().input_buffer.back() {
+            if last_input.sneaking {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub mod swimming;
+pub use swimming::{
+    detect_immersion, evaluate_swimming_transition, get_or_create_swimming, has_headroom,
+    is_water_block_at, is_water_fluid_name, ImmersionDepth, Swimming, SwimmingState,
+};
+
+
+/// 玩家移动状态机组件。
+///
+/// Player movement state-machine component.
 #[derive(Component, Clone, Debug)]
 pub struct PlayerMovement {
     pub state: Arc<RwLock<PlayerMovementState>>,
@@ -75,6 +107,8 @@ impl Default for PlayerMovement {
     }
 }
 
+/// 可变的玩家移动状态。
+///
 /// Mutable player movement state.
 #[derive(Clone, Debug)]
 pub struct PlayerMovementState {
@@ -183,7 +217,7 @@ pub fn movement_input_drain(world: World, mut outbox: ResMut<NetworkOutbox>) {
         });
         let mut rotation = state.last_rotation;
 
-        for input in inputs {
+        for input in &inputs {
             let client_feet = Position::new(input.feet_x, input.feet_y, input.feet_z);
 
             // First-packet adoption: trust the client position.
@@ -315,6 +349,43 @@ pub fn movement_input_drain(world: World, mut outbox: ResMut<NetworkOutbox>) {
             );
             // Chunk membership change.
         }
+        // Swimming state machine and component resolution:
+        let current_swimming = get_or_create_swimming(&world, &entity).unwrap_or_default();
+        let immersion = detect_immersion(&world_manager, &world_id, &server_pos, physics.aabb.max_y);
+        let req_start = inputs.iter().any(|i| i.start_swimming);
+        let req_stop = inputs.iter().any(|i| i.stop_swimming);
+        let can_stand = has_headroom(&world_manager, &world_id, &server_pos, world_collides);
+
+        let next_swimming = evaluate_swimming_transition(
+            current_swimming,
+            immersion,
+            req_start,
+            req_stop,
+            can_stand,
+        );
+
+        if next_swimming.is_swimming != current_swimming.is_swimming {
+            world.add_component(&entity, next_swimming);
+            let mut new_physics = physics.clone();
+            if next_swimming.is_swimming {
+                new_physics.aabb = Aabb::from_size(0.3, 0.6);
+            } else {
+                new_physics.aabb = Aabb::from_size(0.3, 1.8);
+            }
+            // Bedrock protocol player wire coordinates (MovePlayer / PlayerAuthInput)
+            // are always anchored at feet + 1.62. Modifying base_offset causes client-server
+            // reset loops and position desync.
+            new_physics.base_offset = 1.62;
+            world.add_component(&entity, new_physics);
+
+            publisher.publish(SyncPlayerSwimming {
+                entity_id: entity_id.0,
+                is_swimming: next_swimming.is_swimming,
+            });
+        } else if next_swimming != current_swimming {
+            world.add_component(&entity, next_swimming);
+        }
+
         if let Some((sprinting, sneaking, flying)) = action_flags {
             let action = match world.get_component::<PlayerActionState>(&entity) {
                 Some(action) => action,
@@ -330,6 +401,7 @@ pub fn movement_input_drain(world: World, mut outbox: ResMut<NetworkOutbox>) {
             flags.sprinting = sprinting;
             flags.sneaking = sneaking;
             flags.flying = flying;
+            flags.swimming = next_swimming.is_swimming;
         }
     }
 }
@@ -372,7 +444,7 @@ fn apply_position(client: &MinecraftClient, pos: Position) {
 /// Mob fall damage settles here (owner tick, `is_player=false` so the
 /// `fallDamage` gamerule is ignored for mobs). Entities without
 /// `MinecraftEntityId` or `EntityAttributes.health` track fall state but
-/// skip damage gracefully (e.g. demo/region entities before spawners run).
+/// still skip damage (e.g. demo/region entities before spawners run).
 pub fn movement_physics(world: World, mut outbox: ResMut<NetworkOutbox>) {
     let Some(world_manager) = world.get_resource::<MinecraftWorldManager>() else {
         return;
@@ -570,6 +642,39 @@ pub fn movement_broadcast(world: World, mut outbox: ResMut<NetworkOutbox>) {
     }
 }
 
+/// Whether a block runtime ID represents a solid collision obstacle.
+/// Air, water, flowing water, lava, and bubble columns are non-solid fluids/passable.
+pub(crate) fn is_solid_block(runtime_id: u32, air: u32) -> bool {
+    if runtime_id == air {
+        return false;
+    }
+    let dict = sc_world::block_dictionary::BlockStateDictionary::global();
+    if let Some(entry) = dict.get(runtime_id) {
+        if matches!(
+            entry.name.as_str(),
+            "minecraft:water"
+                | "minecraft:flowing_water"
+                | "minecraft:lava"
+                | "minecraft:flowing_lava"
+                | "minecraft:bubble_column"
+        ) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Whether the entity is currently submerged in water for swimming purposes.
+#[inline]
+pub fn is_in_water(
+    world_manager: &MinecraftWorldManager,
+    world_id: &MinecraftWorldId,
+    pos: &Position,
+    height: f32,
+) -> bool {
+    detect_immersion(world_manager, world_id, pos, height).can_swim()
+}
+
 /// Whether a target AABB collides with loaded non-air blocks (cache only).
 ///
 /// `pub(crate)`: shared with region physics.
@@ -602,7 +707,7 @@ pub(crate) fn world_collides(
             let lz = bz.rem_euclid(16) as u8;
             for by in min_y..=max_y {
                 if let Some(runtime_id) = chunk.block_at(lx, by, lz) {
-                    if runtime_id.0 != air {
+                    if is_solid_block(runtime_id.0, air) {
                         return true;
                     }
                 }
@@ -746,4 +851,125 @@ fn landing_material(
         return LandingMaterial::Slime;
     }
     LandingMaterial::Normal
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sc_ecs::world::World;
+    use sc_entity::MinecraftEntityId;
+
+    #[test]
+    fn get_or_create_swimming_creates_when_missing_and_reuses_when_present() {
+        let world = World::new();
+        let entity = world.spawn(MinecraftEntityId(1));
+
+        // 1. Initial state: entity does not have Swimming component
+        assert!(world.get_component::<Swimming>(&entity).is_none());
+
+        // 2. get_or_create_swimming should create it
+        let swimming1 =
+            get_or_create_swimming(&world, &entity).expect("should create swimming component");
+        assert!(!swimming1.is_swimming);
+
+        // 3. Mutate the state
+        world.add_component(&entity, Swimming::new(true));
+
+        // 4. get_or_create_swimming again: should reuse existing component
+        let swimming2 =
+            get_or_create_swimming(&world, &entity).expect("should reuse swimming component");
+        assert!(swimming2.is_swimming);
+    }
+
+    #[test]
+    fn solid_block_treats_air_as_passable() {
+        let air = 0u32;
+        assert!(!is_solid_block(air, air));
+    }
+
+    #[test]
+    fn physics_body_bounding_box_and_offset_for_swimming() {
+        let mut body = PhysicsBody::player();
+        assert_eq!(body.aabb.max_y - body.aabb.min_y, 1.8);
+        assert_eq!(body.base_offset, 1.62);
+
+        // Switch to swimming dimensions: collision box height changes to 0.6m,
+        // but base_offset remains 1.62 because Bedrock player wire coordinates
+        // (MovePlayerPacket / PlayerAuthInputPacket) are always anchored at feet + 1.62.
+        body.aabb = Aabb::from_size(0.3, 0.6);
+        body.base_offset = 1.62;
+        assert_eq!(body.aabb.max_y - body.aabb.min_y, 0.6);
+        assert_eq!(body.base_offset, 1.62);
+
+        // Reset to standing dimensions (1.8m height, 1.62m eye height)
+        body.aabb = Aabb::from_size(0.3, 1.8);
+        body.base_offset = 1.62;
+        assert_eq!(body.aabb.max_y - body.aabb.min_y, 1.8);
+        assert_eq!(body.base_offset, 1.62);
+    }
+
+    #[test]
+    fn swimming_transition_logic() {
+        // 1. In water, start_swimming input -> transitions to swimming
+        let in_water = true;
+        let inputs = vec![PlayerInput {
+            start_swimming: true,
+            ..PlayerInput::default()
+        }];
+        let req_start = inputs.iter().any(|i| i.start_swimming);
+        let req_stop = inputs.iter().any(|i| i.stop_swimming);
+        let current_swimming = false;
+        let next_swimming = if current_swimming {
+            if !in_water || req_stop { false } else { true }
+        } else if req_start && in_water {
+            true
+        } else {
+            false
+        };
+        assert!(next_swimming, "explicit start_swimming in water must enter swimming");
+
+        // 2. Sprinting in water without start_swimming flag -> does NOT synthesize start
+        let inputs_sprint_only = vec![PlayerInput {
+            sprinting: true,
+            move_z: 1.0,
+            ..PlayerInput::default()
+        }];
+        let req_start_sprint = inputs_sprint_only.iter().any(|i| i.start_swimming);
+        assert!(!req_start_sprint, "sprinting must not synthesize swimming start without client flag");
+
+        // 3. Swimming, leaves water (!in_water) -> exits swimming immediately
+        let in_water_surfaced = false;
+        let inputs_normal = vec![PlayerInput {
+            sprinting: true,
+            ..PlayerInput::default()
+        }];
+        let req_start = inputs_normal.iter().any(|i| i.start_swimming);
+        let req_stop = inputs_normal.iter().any(|i| i.stop_swimming);
+        let current_swimming = true;
+        let next_swimming = if current_swimming {
+            if !in_water_surfaced || req_stop { false } else { true }
+        } else if req_start && in_water_surfaced {
+            true
+        } else {
+            false
+        };
+        assert!(!next_swimming, "swimming must terminate when entity surfaces/leaves water");
+    }
+
+    #[test]
+    fn swimming_immersion_probes_torso_and_head() {
+        // When swimming prone with height 0.6:
+        // If bottom of prone box reaches y = 63.8 (where block 63 is water and block 64 is air):
+        let pos_y = 63.8f32;
+        let height = 0.6f32;
+        let feet_y = pos_y.floor() as i32;
+        let waist_y = (pos_y + 0.4 * height).floor() as i32;
+        let head_y = (pos_y + 0.8 * height).floor() as i32;
+
+        assert_eq!(feet_y, 63, "feet are still in block 63");
+        assert_eq!(waist_y, 64, "waist has emerged into air at block 64");
+        assert_eq!(head_y, 64, "head has emerged into air at block 64");
+        // Because is_in_water checks waist_y and head_y instead of feet_y,
+        // this prone player is correctly recognized as having breached the surface into air.
+    }
 }

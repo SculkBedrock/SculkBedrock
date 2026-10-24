@@ -133,6 +133,8 @@ pub enum SCPluginLoaderError {
 }
 
 impl SCPluginLoaderError {
+    /// 构造 zip 错误并捕获调用位置。
+    ///
     /// Build a zip error, capturing the call site.
     #[track_caller]
     pub fn zip_error(source: ZipError) -> Self {
@@ -144,6 +146,8 @@ impl SCPluginLoaderError {
         }
     }
 
+    /// 构造 I/O 错误并捕获调用位置。
+    ///
     /// Build an I/O error, capturing the call site.
     #[track_caller]
     pub fn io_error(source: Error) -> Self {
@@ -155,6 +159,8 @@ impl SCPluginLoaderError {
         }
     }
 
+    /// 构造库错误并捕获调用位置。
+    ///
     /// Build a library error, capturing the call site.
     #[track_caller]
     pub fn lib_error(source: libloading::Error) -> Self {
@@ -166,6 +172,8 @@ impl SCPluginLoaderError {
         }
     }
 
+    /// 构造清单 JSON 错误并捕获调用位置。
+    ///
     /// Build a manifest JSON error, capturing the call site.
     #[track_caller]
     pub fn serde_error(source: serde_json::Error) -> Self {
@@ -177,6 +185,8 @@ impl SCPluginLoaderError {
         }
     }
 
+    /// 构造 ABI 不匹配错误并捕获调用位置。
+    ///
     /// Build an ABI mismatch error, capturing the call site.
     #[track_caller]
     pub fn invalid_host_plugin_abi(abi: u32) -> Self {
@@ -229,6 +239,8 @@ type CreateRustPluginFn = unsafe extern "C" fn() -> Box<dyn SCPlugin>;
 pub struct SCPluginLoader;
 
 impl SCPluginLoader {
+    /// 读取插件清单（不加载；bootstrap 用它区分 rust/cabi 类型）。
+    ///
     /// Reads the plugin manifest (without loading; bootstrap uses it to tell rust/cabi kinds apart).
     pub fn read_manifest<B: AsRef<[u8]>>(
         bytes: B,
@@ -244,10 +256,12 @@ impl SCPluginLoader {
             .map_err(|e| SCPluginLoaderError::serde_error(e))
     }
 
+    /// 加载宿主 ABI 插件（版本包插件的路径）：zip -> plugin.so ->
+    ///
     /// Loads a **host ABI** plugin (the path for version-pack plugins): zip -> plugin.so ->
     /// dlopen -> `get_host_plugin` (returns the fixed `HostPluginV1` table)
-    /// -> `enable(&api)`. Plugins only depend on `sc_plugin_api` (C-ABI) and never link the sc_* core,
-    /// avoiding duplicate instantiation segfaults with the host.
+    /// -> `enable(&api)`. Plugins depend only on `sc_plugin_api` (C-ABI) and never link
+    /// the sc_* core crates.
     pub fn load_rust_plugin<B: AsRef<[u8]>>(
         bytes: B,
         app: sc_ecs::app::App,

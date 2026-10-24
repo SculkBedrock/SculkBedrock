@@ -117,10 +117,8 @@ impl Selection {
 
 /// Log viewport position.
 ///
-/// Key semantic: while reviewing, anchor the absolute row number ([`Frozen`](Self::Frozen)) instead of
-/// "rows from the bottom". A from-the-bottom offset would shift the viewed rows up as new logs arrive,
-/// pushing away the rows being read. Anchoring the absolute index keeps the view still while
-/// new logs only accumulate below (visible after returning to the bottom).
+/// While reviewing, anchor the absolute row number ([`Frozen`](Self::Frozen)):
+/// the view stays still and new logs only accumulate below (visible after returning to the bottom).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum ScrollView {
     /// Follow the newest logs (not reviewing).
@@ -141,7 +139,7 @@ impl ScrollView {
 /// Log area layout (shared by rendering and mouse hit-testing so both see the same rows).
 ///
 /// Long logs wrap automatically: one logical log may take several visual rows (continuations have no indent).
-/// `start/end/up` still count logical log indexes (identical to old behavior when every log is one row);
+/// `start/end/up` still count logical log indexes;
 /// `first_sub` records the sub-row offset of the first visible log (only the tail may show at follow-bottom).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LogLayout {
@@ -336,12 +334,10 @@ pub(crate) fn log_layout(
     log_layout_wrapped(height, popup_items, total, &|_| 1, evicted, view)
 }
 
-/// Count of "new logs not yet scrolled past" while reviewing (the badge text).
-///
-/// Meaning: among arrived logs, those both below the viewport and past the freeze watermark:
-/// - the freeze watermark excludes older reviewed rows (scrolling up a few rows must not invent dozens);
-/// - below-the-viewport shrinks the count while scrolling back: fewer near the bottom,
-///   exactly 0 at the bottom (badge disappears); newly arriving logs only grow it.
+/// Count of "new logs not yet scrolled past" while reviewing (the badge text):
+/// arrived logs both below the viewport and past the freeze watermark.
+/// - below-the-viewport shrinks the count while scrolling back (0 at the bottom, badge disappears);
+/// - newly arriving logs only grow it.
 pub(crate) fn unseen_count(
     log_seq: u64,
     evicted: u64,
@@ -365,7 +361,7 @@ pub(crate) fn unseen_count(
 /// Scrolling down that still lands in the top row (taller than the step) advances one row instead;
 /// with no full page left it follows the bottom, so tall rows can never trap the wheel.
 /// Heights are evaluated on demand (only near the window, never over the whole log).
-/// Identical to old logic for all-single-row logs. A too-small window (invalid layout) keeps the view.
+/// A too-small window (invalid layout) keeps the view.
 pub(crate) fn scroll_view_wrapped(
     height: usize,
     popup_items: usize,
@@ -421,7 +417,7 @@ pub(crate) fn scroll_view_wrapped(
     }
 }
 
-/// Viewport scroll (single-line form: `delta` counts logical rows with identical behavior; tests only).
+/// Viewport scroll (single-line form: `delta` counts logical rows; tests only).
 #[cfg(test)]
 pub(crate) fn scroll_view(
     height: usize,
@@ -435,8 +431,6 @@ pub(crate) fn scroll_view(
 }
 
 /// Jump geometry (wrapped form): keeps the view when the target is visible, otherwise centers by visual rows.
-///
-/// Pure function for unit tests; identical to old logic for all-single-row logs.
 pub(crate) fn jump_target_view_wrapped(
     height: usize,
     popup: usize,
@@ -452,7 +446,7 @@ pub(crate) fn jump_target_view_wrapped(
     }
     let idx = usize::try_from(target_seq.saturating_sub(evicted)).unwrap_or(usize::MAX);
     if idx >= layout.start && idx < layout.end {
-        return view; // 已可见，不动（少跳动）。
+        return view; // already visible: no move, less jitter.
     }
     // Leave half a page of visual rows above the target; the landing row shows whole (clamped to the full-page start).
     let want_top = visual_prefix(total, height_of, idx).saturating_sub(layout.log_rows / 2);
@@ -605,9 +599,9 @@ pub(super) fn build_log_styled(line: &LogLine, styled: bool) -> String {
 /// Right panel cell (`visible_cols` columns, steady `SIDE_PANEL_WIDTH`):
 /// `zone_row` is the in-panel row number (from 0, covering log rows, fills, hints, and popup rows).
 ///
-/// Background uses one shade darker than the title/input bars (`SIDE_PANEL_BG`), standing apart;
+/// Background uses one shade darker than the title/input bars (`SIDE_PANEL_BG`);
 /// row 0 is the title (online count), then one player name per row (overlong names truncate),
-/// an empty list shows a low-key placeholder below the first row. A dim gray separator blends the edge.
+/// an empty list shows a placeholder below the first row. A dim gray separator blends the edge.
 /// While sliding in, only the left `visible_cols` columns show (the panel grows leftward from the right edge).
 pub(super) fn side_panel_cell(
     buf: &mut String,
@@ -659,7 +653,7 @@ pub(super) fn side_panel_cell(
 
 /// Log row tail: content (already truncated to the content width) pads to `cw` columns plus panel plus newline.
 ///
-/// With the panel hidden the bytes match the old behavior exactly (no pad spaces; the render layer erases tails);
+/// With the panel hidden no pad spaces are emitted (the render layer erases tails);
 /// while sliding in (`panel_cols` below full width) a transparent gap separates the panel from the content.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn emit_log_zone_row(

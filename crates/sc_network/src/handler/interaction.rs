@@ -1,5 +1,22 @@
+//! 玩家交互数据包转换：挖掘/切换槽位在接收循环内进入每玩家的有界 FIFO，
+//! 放置/容器操作则走边界事件。
+//!
+//! - `PlayerAction`（0x24）START_BREAK -> [`StartBreakRequest`]（记录 BreakingState）
+//! - `PlayerAction`（0x24）STOP_BREAK -> [`BreakBlockRequest`]（require_breaking_state=true）
+//! - `PlayerAction`（0x24）ABORT_BREAK -> [`AbortBreakRequest`]（清除 BreakingState）
+//! - `PlayerAction`（0x24）CREATIVE_DESTROY -> [`BreakBlockRequest`]（require_breaking_state=false）
+//! - `PlayerAction`（0x24）RESPAWN -> 游戏侧 `RespawnRequest`（死亡界面按钮）
+//! - `Respawn`（0x2d）客户端请求 -> 游戏侧 `RespawnRequest`（当前客户端的死亡界面
+//!   按钮：零坐标 + 出生进度 state）
+//! - `InventoryTransaction`（0x1e）USE_ITEM ClickBlock -> [`PlaceBlockRequest`]
+//! - `MobEquipment`（0x1f）快捷栏切换 -> [`HeldSlotChanged`]
+//!
+//! 边界事件位于 sc_game::interaction（游戏域）；本处理器只负责解码；游戏域的
+//! SCEventUpdate 系统（在本插件之后注册）通过 BlockChangeQueue 消费它们。
+//!
 //! Player interaction packet translation: digging/slot-switches enter a per-player
 //! bounded FIFO inside the receive loop, while place/container ops stay boundary
+//! events.
 //!
 //! - `PlayerAction` (0x24) START_BREAK -> [`StartBreakRequest`] (records BreakingState)
 //! - `PlayerAction` (0x24) STOP_BREAK -> [`BreakBlockRequest`] (require_breaking_state=true)
@@ -37,6 +54,7 @@ impl Plugin for SCInteractionHandlerPlugin {
                 handle_interact,
                 handle_container_close,
                 handle_player_action_respawn,
+                handle_player_action_swimming,
                 handle_respawn_packet,
             ),
         );
@@ -66,6 +84,9 @@ fn handle_container_close(
             event.packet.container_type,
             event.packet.was_server_initiated
         );
+        if let Some(conn) = world.get_component::<crate::player_connection::PlayerConnection>(&event.entity) {
+            conn.clear_container_window(event.packet.window_id);
+        }
         world.send_event(sc_game::interaction::CloseInventoryRequest {
             entity: event.entity,
             window_id: event.packet.window_id,
@@ -75,6 +96,8 @@ fn handle_container_close(
     }
 }
 
+/// 每收到一个数据包调用一次，保持跨数据包与跨类型的顺序。
+///
 /// Called once per received packet, preserving cross-packet and cross-type order.
 pub(crate) fn enqueue_ordered_mining(
     world: &World,
@@ -188,6 +211,9 @@ fn translate_mining_packet(
     true
 }
 
+/// 死亡界面的重生按钮：`PlayerAction(RESPAWN)` 转换为与协议无关的游戏请求；
+/// 游戏侧在执行前先校验 `Dead`，因此多余或重复的点击是无害的。
+///
 /// Death-screen respawn button: `PlayerAction(RESPAWN)` becomes a
 /// protocol-independent game request; the game validates `Dead` before
 /// acting, so stray/duplicate clicks are harmless.
@@ -207,6 +233,66 @@ fn handle_player_action_respawn(
     }
 }
 
+/// 回退/旧版游泳开关：`PlayerAction(START_SWIMMING / STOP_SWIMMING)` 转换为
+/// 游戏侧的 `PlayerInput` 并入队，等待移动系统消费。
+///
+/// Fallback / legacy swimming toggle: `PlayerAction(START_SWIMMING / STOP_SWIMMING)`
+/// translated into game-side `PlayerInput` and enqueued for movement drain.
+fn handle_player_action_swimming(
+    world: World,
+    mut reader: EventReader<MinecraftPacketReceiver<crate::protocol::client::action::PlayerAction>>,
+) {
+    use crate::protocol::client::action::PlayerActionType;
+    use sc_entity::motion::{Position, Transform};
+    use sc_game::movement::{PlayerMovement, MAX_PENDING_INPUT};
+    use sc_game::net::PlayerInput;
+
+    for event in reader.read() {
+        let is_start = event.packet.action == PlayerActionType::START_SWIMMING;
+        let is_stop = event.packet.action == PlayerActionType::STOP_SWIMMING;
+        if !is_start && !is_stop {
+            continue;
+        }
+        let Some(movement) = world.get_component::<PlayerMovement>(&event.entity) else {
+            continue;
+        };
+        let (pos, rot) = if let Some(transform) = world.get_component::<Transform>(&event.entity) {
+            let t = transform.read();
+            (t.position, t.rotation)
+        } else {
+            let state = movement.state.read();
+            (
+                state.last_position.unwrap_or_else(|| Position::new(0.0, 0.0, 0.0)),
+                state.last_rotation,
+            )
+        };
+        let input = PlayerInput {
+            feet_x: pos.x,
+            feet_y: pos.y,
+            feet_z: pos.z,
+            yaw: rot.yaw,
+            pitch: rot.pitch,
+            head_yaw: rot.head_yaw,
+            move_x: 0.0,
+            move_z: 0.0,
+            sneaking: false,
+            jumping: false,
+            sprinting: false,
+            flying: false,
+            start_swimming: is_start,
+            stop_swimming: is_stop,
+            tick: 0,
+        };
+        let mut state = movement.state.write();
+        if state.input_buffer.len() < MAX_PENDING_INPUT {
+            state.push_input(input, MAX_PENDING_INPUT);
+        }
+    }
+}
+
+/// 死亡界面的重生按钮（数据包形式）：客户端发送位置为零、并带上自身出生进度
+/// state 的 `Respawn`。任意 state 都视为重生请求；游戏侧在执行前先校验 `Dead`。
+///
 /// Death-screen respawn button (packet form): the client sends `Respawn`
 /// with a zero position and its spawn-progress state. Any state acts as the
 /// request; the game validates `Dead` before acting.

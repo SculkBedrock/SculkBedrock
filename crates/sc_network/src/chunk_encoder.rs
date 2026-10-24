@@ -1,3 +1,8 @@
+//! 按内容版本有界并行的 LevelChunk 编码工作器。
+//!
+//! 编码按 world/chunk 代次与 wire profile 合并。消费者 ticket 是按需租约：
+//! 无消费者的排队作业会被跳过，已完成结果仅在调用方仍持有时才被发现。
+//!
 //! Bounded, per-content-version LevelChunk encoding workers.
 //!
 //! Encodes are coalesced by world/chunk generation and wire profile. Consumer
@@ -22,39 +27,59 @@ use tokio::sync::watch;
 
 use crate::protocol::server::chunk::LevelChunk;
 
-const JOB_QUEUE_CAPACITY: usize = 128;
+const JOB_QUEUE_CAPACITY: usize = 1024;
 const MAX_WAITERS_PER_KEY: usize = 64;
 
 #[derive(Clone, Debug, Eq, PartialEq, ScError)]
 pub enum ChunkEncodeError {
+    /// 编码期间区块发生变化。
+    ///
     /// Chunk changed during encoding.
     #[sc_error(code = "network.chunk.stale_generation")]
     StaleGeneration {
-        /// English detail explaining the cause.
+        /// 说明错误原因的细节。
+        ///
+        /// Detail explaining the cause.
         detail: String,
+        /// 构造位置。
+        ///
         /// Construction site.
         site: ScSite,
     },
+    /// 方块映射非法。
+    ///
     /// Block mapping is invalid.
     #[sc_error(code = "network.chunk.invalid_block_mapping")]
     InvalidBlockMapping {
-        /// English detail explaining the cause.
+        /// 说明错误原因的细节。
+        ///
+        /// Detail explaining the cause.
         detail: String,
+        /// 构造位置。
+        ///
         /// Construction site.
         site: ScSite,
     },
+    /// 编码工作器发生 panic。
+    ///
     /// Encoding worker panicked.
     #[sc_error(code = "network.chunk.worker_panicked")]
     WorkerPanicked {
-        /// English detail explaining the cause.
+        /// 说明错误原因的细节。
+        ///
+        /// Detail explaining the cause.
         detail: String,
+        /// 构造位置。
+        ///
         /// Construction site.
         site: ScSite,
     },
 }
 
 impl ChunkEncodeError {
-    /// Build a stale-generation error, capturing the call site.
+    /// 构造一个 stale-generation 错误，并捕获调用位置。
+    ///
+    /// Builds a stale-generation error, capturing the call site.
     #[track_caller]
     pub fn stale_generation(detail: String) -> Self {
         Self::StaleGeneration {
@@ -63,7 +88,9 @@ impl ChunkEncodeError {
         }
     }
 
-    /// Build an invalid-block-mapping error, capturing the call site.
+    /// 构造一个 invalid-block-mapping 错误，并捕获调用位置。
+    ///
+    /// Builds an invalid-block-mapping error, capturing the call site.
     #[track_caller]
     pub fn invalid_block_mapping(detail: String) -> Self {
         Self::InvalidBlockMapping {
@@ -72,7 +99,9 @@ impl ChunkEncodeError {
         }
     }
 
-    /// Build a worker-panicked error, capturing the call site.
+    /// 构造一个 worker-panicked 错误，并捕获调用位置。
+    ///
+    /// Builds a worker-panicked error, capturing the call site.
     #[track_caller]
     pub fn worker_panicked(detail: String) -> Self {
         Self::WorkerPanicked {
@@ -112,34 +141,54 @@ impl std::error::Error for ChunkEncodeError {}
 
 #[derive(Clone, Debug, Eq, PartialEq, ScError)]
 pub enum ChunkEncodeSubmitError {
+    /// 编码队列繁忙。
+    ///
     /// Encode queue is busy.
     #[sc_error(code = "network.chunk.submit_busy")]
     Busy {
-        /// English detail explaining the cause.
+        /// 说明错误原因的细节。
+        ///
+        /// Detail explaining the cause.
         detail: String,
+        /// 构造位置。
+        ///
         /// Construction site.
         site: ScSite,
     },
+    /// 编码器已关闭。
+    ///
     /// Encoder is closed.
     #[sc_error(code = "network.chunk.submit_closed")]
     Closed {
-        /// English detail explaining the cause.
+        /// 说明错误原因的细节。
+        ///
+        /// Detail explaining the cause.
         detail: String,
+        /// 构造位置。
+        ///
         /// Construction site.
         site: ScSite,
     },
+    /// 编码等待者过多。
+    ///
     /// Too many encode waiters.
     #[sc_error(code = "network.chunk.submit_too_many_waiters")]
     TooManyWaiters {
-        /// English detail explaining the cause.
+        /// 说明错误原因的细节。
+        ///
+        /// Detail explaining the cause.
         detail: String,
+        /// 构造位置。
+        ///
         /// Construction site.
         site: ScSite,
     },
 }
 
 impl ChunkEncodeSubmitError {
-    /// Build a busy error, capturing the call site.
+    /// 构造一个 busy 错误，并捕获调用位置。
+    ///
+    /// Builds a busy error, capturing the call site.
     #[track_caller]
     pub fn busy(detail: String) -> Self {
         Self::Busy {
@@ -148,7 +197,9 @@ impl ChunkEncodeSubmitError {
         }
     }
 
-    /// Build a closed error, capturing the call site.
+    /// 构造一个 closed 错误，并捕获调用位置。
+    ///
+    /// Builds a closed error, capturing the call site.
     #[track_caller]
     pub fn closed(detail: String) -> Self {
         Self::Closed {
@@ -157,7 +208,9 @@ impl ChunkEncodeSubmitError {
         }
     }
 
-    /// Build a too-many-waiters error, capturing the call site.
+    /// 构造一个 too-many-waiters 错误，并捕获调用位置。
+    ///
+    /// Builds a too-many-waiters error, capturing the call site.
     #[track_caller]
     pub fn too_many_waiters(detail: String) -> Self {
         Self::TooManyWaiters {
@@ -197,18 +250,26 @@ impl std::error::Error for ChunkEncodeSubmitError {}
 
 #[derive(Clone, Debug, Eq, PartialEq, ScError)]
 pub enum ChunkEncodeWaitError {
+    /// 编码通道已关闭。
+    ///
     /// Encode channel is closed.
     #[sc_error(code = "network.chunk.wait_closed")]
     Closed {
-        /// English detail explaining the cause.
+        /// 说明错误原因的细节。
+        ///
+        /// Detail explaining the cause.
         detail: String,
+        /// 构造位置。
+        ///
         /// Construction site.
         site: ScSite,
     },
 }
 
 impl ChunkEncodeWaitError {
-    /// Build a closed error, capturing the call site.
+    /// 构造一个 closed 错误，并捕获调用位置。
+    ///
+    /// Builds a closed error, capturing the call site.
     #[track_caller]
     pub fn closed(detail: String) -> Self {
         Self::Closed {
@@ -243,6 +304,7 @@ struct EncodeKey {
     generation: u64,
     incarnation: u128,
     wire_profile: u32,
+    generator_fingerprint: u64,
 }
 
 struct EncodeEntry {
@@ -264,6 +326,9 @@ struct ExecutorInner {
     workers: Mutex<Option<Vec<thread::JoinHandle<()>>>>,
 }
 
+/// 单个共享编码结果的租约。持有 ticket 直到调用方发布或拒绝该结果，
+/// 使并发消费者可以加入已完成的编码而非重复提交。
+///
 /// A lease on one shared encode result. Keep the ticket alive until the caller
 /// publishes or rejects the result so a concurrent consumer can join the
 /// completed operation instead of starting a duplicate encode.
@@ -293,6 +358,9 @@ impl Drop for ChunkEncodeTicket {
     }
 }
 
+/// 网络侧持有的工作线程池；工作线程只接收不可变的区块列句柄，
+/// 从不访问 ECS 资源、玩家连接或数据包钩子。
+///
 /// Network-owned worker pool; workers receive only immutable column handles and
 /// never access ECS resources, player connections, or packet hooks.
 #[derive(Resource, Clone)]
@@ -303,7 +371,7 @@ pub struct ChunkEncodeExecutor {
 
 impl ChunkEncodeExecutor {
     pub fn new(worker_count: usize, wire_profile: u32) -> io::Result<Self> {
-        let worker_count = worker_count.clamp(1, 4);
+        let worker_count = worker_count.clamp(2, 8);
         let (tx, rx) = mpsc::sync_channel::<EncodeJob>(JOB_QUEUE_CAPACITY);
         let receiver = Arc::new(Mutex::new(rx));
         let inflight = Arc::new(Mutex::new(HashMap::new()));
@@ -340,7 +408,7 @@ impl ChunkEncodeExecutor {
         let parallelism = thread::available_parallelism()
             .map(|count| count.get())
             .unwrap_or(4);
-        (parallelism / 2).clamp(1, 4)
+        (parallelism / 2).clamp(2, 8)
     }
 
     pub fn try_submit(
@@ -353,6 +421,7 @@ impl ChunkEncodeExecutor {
             generation: column.generation(),
             incarnation: column.incarnation(),
             wire_profile: self.wire_profile,
+            generator_fingerprint: column.generator_fingerprint(),
         };
         let mut inflight = self.inner.inflight.lock();
         inflight.retain(|_, entry| entry.strong_count() > 0);
@@ -405,6 +474,8 @@ impl ChunkEncodeExecutor {
         }
     }
 
+    /// 关闭准入通道，排空已接受的编码并加入工作线程。可重复调用。
+    ///
     /// Close admission, drain accepted encodes, and join workers. Idempotent.
     pub fn shutdown(&self) {
         let _ = self.inner.jobs.lock().take();
@@ -457,6 +528,11 @@ fn worker_loop(receiver: Arc<Mutex<mpsc::Receiver<EncodeJob>>>, inflight: Arc<Mu
 }
 
 fn encode(job: &EncodeJob) -> Result<Arc<CachedChunk>, ChunkEncodeError> {
+    if !job.column.is_ready() || job.column.generator_fingerprint() != job.key.generator_fingerprint {
+        return Err(ChunkEncodeError::stale_generation(
+            "column is not ready or generator fingerprint mismatch during encoding".into(),
+        ));
+    }
     let chunk = job.column.read();
     let generation = job.column.generation();
     if generation != job.key.generation || job.column.incarnation() != job.key.incarnation {
@@ -466,7 +542,7 @@ fn encode(job: &EncodeJob) -> Result<Arc<CachedChunk>, ChunkEncodeError> {
     }
     let packet = LevelChunk::from_chunk(&chunk)
         .map_err(|error| ChunkEncodeError::invalid_block_mapping(error.to_string()))?;
-    if job.column.generation() != generation {
+    if job.column.generation() != generation || !job.column.is_ready() {
         return Err(ChunkEncodeError::stale_generation(
             "chunk changed during encoding".into(),
         ));
@@ -492,6 +568,7 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
 mod tests {
     use super::*;
     use sc_world::chunk::{Chunk, ChunkPosition};
+    use sc_world::generation::record::ReadyCertificate;
     use sc_world::manager::MinecraftWorldId;
     use sc_world::storage::ChunkKey;
     use std::future::Future;
@@ -504,14 +581,29 @@ mod tests {
             .block_on(future)
     }
 
+    fn test_ready_column(pos: ChunkPosition) -> Arc<ChunkColumn> {
+        let col = Arc::new(ChunkColumn::new(Chunk::empty_overworld(pos)));
+        col.set_ready(
+            ReadyCertificate {
+                base_valid: true,
+                structure_seals_complete: true,
+                decoration_seals_complete: true,
+                all_fragments_verified: true,
+                assembly_validated: true,
+                metadata_included: true,
+                owner_epoch: 0,
+            },
+            0xcafe,
+        );
+        col
+    }
+
     #[test]
     fn shared_key_consumers_receive_the_same_completed_encode() {
         let executor = ChunkEncodeExecutor::new(1, 2168).expect("create encoder");
         let world_id = MinecraftWorldId::random();
         let cache_key = ChunkCacheKey::new(world_id, ChunkKey::new(0, ChunkPosition::new(2, -3)));
-        let column = Arc::new(ChunkColumn::new(Chunk::empty_overworld(
-            cache_key.chunk.position,
-        )));
+        let column = test_ready_column(cache_key.chunk.position);
 
         let mut first = executor
             .try_submit(cache_key.clone(), column.clone())
@@ -533,9 +625,7 @@ mod tests {
             .clone();
 
         assert!(Arc::ptr_eq(&first_payload, &second_payload));
-        let reloaded = Arc::new(ChunkColumn::new(Chunk::empty_overworld(
-            cache_key.chunk.position,
-        )));
+        let reloaded = test_ready_column(cache_key.chunk.position);
         let mut replacement = executor.try_submit(cache_key, reloaded.clone()).unwrap();
         let replacement_result = block_on(replacement.wait()).unwrap();
         let replacement_payload = replacement_result.as_ref().as_ref().unwrap();
@@ -551,7 +641,7 @@ mod tests {
             MinecraftWorldId::random(),
             ChunkKey::new(0, ChunkPosition::new(0, 0)),
         );
-        let column = Arc::new(ChunkColumn::new(Chunk::empty_overworld(key.chunk.position)));
+        let column = test_ready_column(key.chunk.position);
         let mut first = executor
             .try_submit(key.clone(), column.clone())
             .expect("submit first");
@@ -573,18 +663,35 @@ mod tests {
     }
 
     #[test]
+    fn unready_column_is_rejected_as_stale_generation() {
+        let executor = ChunkEncodeExecutor::new(1, 2168).expect("create encoder");
+        let world_id = MinecraftWorldId::random();
+        let cache_key = ChunkCacheKey::new(world_id, ChunkKey::new(0, ChunkPosition::new(2, -3)));
+        // Column is NOT marked ready
+        let column = Arc::new(ChunkColumn::new(Chunk::empty_overworld(
+            cache_key.chunk.position,
+        )));
+        let mut ticket = executor.try_submit(cache_key, column).expect("submit unready");
+        let result = block_on(ticket.wait()).expect("wait outcome");
+        assert!(matches!(
+            result.as_ref(),
+            Err(ChunkEncodeError::StaleGeneration { .. })
+        ));
+        executor.shutdown();
+    }
+
+    #[test]
     fn stale_generation_is_not_encoded_as_current_payload() {
         let executor = ChunkEncodeExecutor::new(1, 2168).expect("create encoder");
         let world_id = MinecraftWorldId::random();
         let cache_key = ChunkCacheKey::new(world_id, ChunkKey::new(0, ChunkPosition::new(2, -3)));
-        let column = Arc::new(ChunkColumn::new(Chunk::empty_overworld(
-            cache_key.chunk.position,
-        )));
+        let column = test_ready_column(cache_key.chunk.position);
         let key = EncodeKey {
             cache_key,
             generation: column.generation().wrapping_sub(1),
             incarnation: column.incarnation(),
             wire_profile: executor.wire_profile,
+            generator_fingerprint: column.generator_fingerprint(),
         };
         let (result, _) = watch::channel(None);
         let job = EncodeJob {

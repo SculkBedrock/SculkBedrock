@@ -22,6 +22,11 @@ use sc_world::chunk::ChunkPosition;
 use sc_world::chunk_view::{ChunkSendSettings, ChunkView};
 use sc_world::manager::{MinecraftWorldId, MinecraftWorldManager};
 
+/// 处理客户端的区块半径请求（RequestChunkRadius）。
+///
+/// 只挂载/更新 ChunkView（发送交给区块流水线）；回复 ChunkRadiusUpdated，
+/// 并附带一条 NetworkChunkPublisherUpdate。
+///
 /// Handle a client chunk radius request (RequestChunkRadius).
 ///
 /// Only attach/update the ChunkView (the chunk pipeline takes over sending);
@@ -137,9 +142,12 @@ pub(crate) fn request_chunk_radius(
     }
 }
 
+/// 现代 Bedrock 客户端在区块阶段发送 ServerboundLoadingScreen（0x138）。
+/// 将其按类型化的状态机信号处理，而不是按未知数据包跳过。
+///
 /// Modern Bedrock clients send ServerboundLoadingScreen (0x138) during the
-/// chunk phase. Treat it as a typed state-machine signal so it is no longer
-/// skipped as an unknown high packet.
+/// chunk phase. Treat it as a typed state-machine signal instead of an
+/// unknown packet.
 pub(crate) fn serverbound_loading_screen(
     world: World,
     mut event_reader: EventReader<MinecraftPacketReceiver<ServerboundLoadingScreen>>,
@@ -155,6 +163,9 @@ pub(crate) fn serverbound_loading_screen(
     }
 }
 
+/// 客户端初始化完成（SetLocalPlayerAsInitialized）：进入 InGame，并触发
+/// 玩家可见性广播（PlayerList + AddPlayer）。
+///
 /// Client initialization complete (SetLocalPlayerAsInitialized): enter InGame
 /// and trigger the player-visibility broadcast (PlayerList + AddPlayer).
 pub(crate) fn set_local_player_as_initialized(
@@ -178,6 +189,11 @@ pub(crate) fn set_local_player_as_initialized(
     }
 }
 
+/// 玩家可见性编排：
+/// 1) 向同世界其他玩家广播：PlayerList ADD + AddPlayer；
+/// 2) 向新玩家发送：对每个已有玩家 PlayerList ADD + AddPlayer。
+/// 数据全部来自连接层。
+///
 /// Player-visibility orchestration:
 /// 1) Broadcast to other same-world players: PlayerList ADD + AddPlayer;
 /// 2) To the new player: PlayerList ADD + AddPlayer for each existing player.

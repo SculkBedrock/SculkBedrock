@@ -67,15 +67,17 @@ pub const REGEN_EXHAUSTION_COST: f32 = 6.0;
 pub const STARVE_FLOOR_EASY: f32 = 10.0;
 pub const STARVE_FLOOR_NORMAL: f32 = 1.0;
 
-/// Server-only hunger phase + odometry state (never synced). Interior lock:
-/// rewritten every tick without ECS add/remove churn; hunger is the sole
-/// writer, movement only feeds it via [`PlayerActionState`].
+/// 仅服务端使用的饥饿阶段与里程状态，不参与同步。
+///
+/// Server-only hunger phase and odometry state, never synchronized.
 #[derive(Component, Clone, Debug, Default)]
 pub struct HungerClock {
     pub inner: Arc<RwLock<HungerClockData>>,
 }
 
-/// Phase timer plus last authoritative position/airborne snapshot.
+/// 饥饿阶段计时器与最近一次权威位置、腾空状态快照。
+///
+/// Phase timer plus the latest authoritative position and airborne snapshot.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HungerClockData {
     pub ticks: u16,
@@ -123,11 +125,16 @@ pub fn add_exhaustion(world: &World, entity: &EntityId, amount: f32) -> bool {
         saturation.current_value,
         exhaustion.current_value,
     );
-    exhaustion.current_value = (exhaustion.current_value + amount).min(EXHAUSTION_MAX);
+    let hunger_max = hunger.max_value;
+    let saturation_max = saturation.max_value;
+    let exhaustion_max = exhaustion.max_value;
+    exhaustion.current_value = (exhaustion.current_value + amount).min(exhaustion_max);
     cascade_exhaustion(
         &mut hunger.current_value,
         &mut saturation.current_value,
         &mut exhaustion.current_value,
+        hunger_max,
+        saturation_max,
     );
     (
         hunger.current_value,
@@ -174,9 +181,15 @@ fn drain_enabled(world: &World, entity: &EntityId) -> bool {
 /// Cascade crossed thresholds immediately: 4.0 → -1 saturation, else
 /// -1 hunger (no spillover from fractional saturation). Loops: one call
 /// can cross several thresholds on big drains.
-fn cascade_exhaustion(hunger: &mut f32, saturation: &mut f32, exhaustion: &mut f32) {
-    *hunger = hunger.clamp(0.0, HUNGER_MAX);
-    *saturation = saturation.clamp(0.0, SATURATION_MAX);
+fn cascade_exhaustion(
+    hunger: &mut f32,
+    saturation: &mut f32,
+    exhaustion: &mut f32,
+    hunger_max: f32,
+    saturation_max: f32,
+) {
+    *hunger = hunger.clamp(0.0, hunger_max);
+    *saturation = saturation.clamp(0.0, saturation_max);
     while *exhaustion >= EXHAUSTION_THRESHOLD {
         *exhaustion -= EXHAUSTION_THRESHOLD;
         if *saturation > 0.0 {
@@ -261,6 +274,7 @@ fn action_drain(
         let distance = (dx * dx + dy * dy + dz * dz).sqrt();
         if distance >= MOVE_THRESHOLD {
             let sprinting = flags.sprinting && hunger > 6.0;
+            let swimming = flags.swimming;
             let mut jump = 0.0;
             if odometry.air_ticks == 3 {
                 jump = if sprinting {
@@ -269,7 +283,9 @@ fn action_drain(
                     JUMP_EXHAUSTION
                 };
             }
-            drain += if sprinting {
+            drain += if swimming {
+                0.01 * distance
+            } else if sprinting {
                 SPRINT_EXHAUSTION_PER_BLOCK * distance + jump
             } else {
                 jump
@@ -308,9 +324,12 @@ pub fn tick_hunger(
     ) else {
         return false;
     };
-    hunger.current_value = hunger.current_value.clamp(0.0, HUNGER_MAX);
-    saturation.current_value = saturation.current_value.clamp(0.0, SATURATION_MAX);
-    exhaustion.current_value = exhaustion.current_value.clamp(0.0, EXHAUSTION_MAX);
+    let hunger_max = hunger.max_value;
+    let saturation_max = saturation.max_value;
+    let exhaustion_max = exhaustion.max_value;
+    hunger.current_value = hunger.current_value.clamp(0.0, hunger_max);
+    saturation.current_value = saturation.current_value.clamp(0.0, saturation_max);
+    exhaustion.current_value = exhaustion.current_value.clamp(0.0, exhaustion_max);
     // Baseline for change detection: snapshot BEFORE any accrual, so
     // drain-only ticks still publish instead of piggybacking on other
     // syncs.
@@ -341,8 +360,8 @@ pub fn tick_hunger(
     if matches!(difficulty, Difficulty::Peaceful) {
         let mut hunger_changed = false;
         let mut health_changed = false;
-        if hunger.current_value < HUNGER_MAX && tick % 10 == 0 {
-            hunger.current_value = (hunger.current_value + 1.0).min(HUNGER_MAX);
+        if hunger.current_value < hunger.max_value && tick % 10 == 0 {
+            hunger.current_value = (hunger.current_value + 1.0).min(hunger.max_value);
             hunger_changed = true;
         }
         if health.current_value < health.max_value && phase(PEACEFUL_MEND_INTERVAL) {
@@ -388,11 +407,13 @@ pub fn tick_hunger(
             teleported,
         );
     }
-    exhaustion.current_value = (exhaustion.current_value + action_cost).min(EXHAUSTION_MAX);
+    exhaustion.current_value = (exhaustion.current_value + action_cost).min(exhaustion_max);
     cascade_exhaustion(
         &mut hunger.current_value,
         &mut saturation.current_value,
         &mut exhaustion.current_value,
+        hunger_max,
+        saturation_max,
     );
 
     let mut fatal = false;
@@ -412,7 +433,7 @@ pub fn tick_hunger(
     {
         health.current_value = (health.current_value + 1.0).min(health.max_value);
         exhaustion.current_value =
-            (exhaustion.current_value + REGEN_EXHAUSTION_COST).min(EXHAUSTION_MAX);
+            (exhaustion.current_value + REGEN_EXHAUSTION_COST).min(exhaustion_max);
     }
     if fatal {
         world.remove_component::<Dead>(entity);
@@ -579,6 +600,7 @@ mod tests {
             sprinting: false,
             sneaking: false,
             flying: false,
+            swimming: false,
         };
         let sprint = PlayerActionFlags {
             sprinting: true,
@@ -856,4 +878,33 @@ mod tests {
             0.0
         );
     }
+
+    #[test]
+    fn hunger_respects_custom_attribute_caps() {
+        let (world, entity) = world_with_difficulty(Difficulty::Normal);
+        let attributes = world
+            .get_component::<EntityAttributes>(&entity)
+            .expect("attributes");
+        // Set custom lower caps: hunger max 12, saturation max 10, exhaustion max 5.
+        if let Some(mut h) = attributes.get_mut(EntityAttributes::MAX_HUNGER) {
+            h.max_value = 12.0;
+            h.current_value = 15.0; // above custom cap
+        }
+        if let Some(mut s) = attributes.get_mut(EntityAttributes::SATURATION) {
+            s.max_value = 10.0;
+            s.current_value = 12.0; // above custom cap
+        }
+        if let Some(mut e) = attributes.get_mut(EntityAttributes::EXHAUSTION) {
+            e.max_value = 5.0;
+            e.current_value = 6.0; // above custom cap
+        }
+        let mut outbox = crate::net::NetworkOutbox::default();
+        let mut publisher = IntentPublisher::new(&mut outbox);
+        tick_hunger(&world, &entity, 7, &mut publisher);
+
+        assert_eq!(hunger_of(&world, &entity, EntityAttributes::MAX_HUNGER), 12.0);
+        assert_eq!(hunger_of(&world, &entity, EntityAttributes::SATURATION), 9.0); // 1 drain from 5 - 4 = 1 remainder
+        assert_eq!(hunger_of(&world, &entity, EntityAttributes::EXHAUSTION), 1.0);
+    }
 }
+

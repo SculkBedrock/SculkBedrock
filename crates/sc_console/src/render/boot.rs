@@ -1,3 +1,5 @@
+//! TUI 渲染：启动动画部分（由 `render.rs` 拆出；在 `crate::render` 重新导出）。
+//!
 //! TUI rendering: boot section (split from `render.rs`; re-exported at `crate::render`).
 
 use super::*;
@@ -35,8 +37,7 @@ pub(crate) struct BootFrame {
 }
 
 /// Boot frame from boot age: `None` means finished (the caller returns to steady boot state).
-///
-/// Pure function (explicit clock) for unit tests; every progress clamps to 0..1, narrow terminals clamp columns.
+/// Every progress clamps to 0..1; narrow terminals clamp columns.
 pub(crate) fn boot_frame(elapsed_ms: u64) -> Option<BootFrame> {
     if elapsed_ms >= BOOT_TOTAL_MS {
         return None;
@@ -64,8 +65,6 @@ pub(crate) fn boot_frame(elapsed_ms: u64) -> Option<BootFrame> {
 /// the budget fills whole rows top to bottom; when done everything shows,
 /// matching steady state with no jump. `title_t` is the linear typing progress shared with the title.
 /// Wide-char safety comes from [`crate::ansi::truncate_styled`] (never splits a wide char).
-///
-/// Pure function (explicit progress) for unit tests.
 pub(crate) fn boot_log_budgets(visible_rows: usize, width: usize, title_t: f32) -> Vec<usize> {
     let progress = title_t.clamp(0.0, 1.0);
     let total = visible_rows.saturating_mul(width);
@@ -154,7 +153,7 @@ pub(super) fn render_boot_header(
         return;
     }
     // Bars filled: the first row types out (the marker joins the typing first), using the breathing title color
-    // (same function as the post-stretch steady boot state, so handoff is seamless); CPU fades in on the right.
+    // (same function as the post-stretch steady boot state, so the handoff text matches); CPU fades in on the right.
     let full: Vec<char> = format!("⬢ {core}").chars().collect();
     let n = (full.len() as f32 * boot.title_t).ceil() as usize;
     let shown: String = full.iter().take(n.min(full.len())).collect();

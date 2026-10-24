@@ -1,21 +1,6 @@
-//! Structure populators.
+//! 结构填充器接口与沙漠水井、沼泽小屋等结构实现。
 //!
-//! | Rust module | Contents |
-//! |---|---|
-//! | This module | `Populator` + `PopulatorStructure` base definitions |
-//! | [`placement`] | Structure placement records |
-//! | [`structures`] | Small structures (desert well, swamp hut, helpers) |
-//! | [`normal`] | Portable subset of the 17 normal structure populators |
-//!
-//! Design notes:
-//! - The abstract `Populator` base maps to the [`Populator`] trait: `root`
-//!   merging is done via `ctx.queue_object` (a generator-root buffer), and
-//!   the random source is a local `Xoroshiro128` inside `apply` (re-seeded
-//!   on every call, matching the shared-source semantics).
-//! - The `shouldGenerateStructures` flag (generator setting "structures",
-//!   default true) maps to the `ctx.structures` field.
-//! - Not covered: NBT-template populators (ruined portal, igloo, fossil,
-//!   village, and others needing a structure-NBT loader).
+//! Structure populator interface and implementations such as desert wells and swamp huts.
 
 pub mod normal;
 pub mod placement;
@@ -27,9 +12,9 @@ use crate::worldgen::context::ChunkGenerateContext;
 // Populator trait
 // ---------------------------------------------------------------------------
 
-/// Base populator: `apply` funnels structure blocks through
-/// `ctx.queue_object(places)` into the root buffer, committed at the end
-/// of the stage.
+/// 结构填充器接口：生成结构方块并通过队列对象写入区块。
+///
+/// Structure populator interface generating structure blocks and queuing them for the chunk.
 pub trait Populator: Send + Sync {
     /// Returns the populator name.
     fn name(&self) -> &'static str;

@@ -1,3 +1,5 @@
+//! NBT 读取入口：`NbtReader` 及 `NbtReadTrait` 实现（网络/本地变体）。
+//!
 //! NBT read entry point: `NbtReader` plus `NbtReadTrait` implementations (network/local variants).
 
 use crate::NbtValue;

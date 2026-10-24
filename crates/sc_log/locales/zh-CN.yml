@@ -98,6 +98,8 @@ console.chunk.encode_fail: "§e区块 >> §a(%{x},%{y}) 编码 worker 失败: %{
 console.chunk.spawn_threshold: "§e区块 >> §a首生阈值到达: chunks_sent=%{sent} (spawn_threshold=%{threshold})§r"
 console.chunk.spawn_incomplete: "§e区块 >> §a首生阶段未完成: %{error}§r"
 console.chunk.spawn_unreachable: "§e区块 >> §a玩家 %{entity} 的 PLAYER_SPAWN 阈值 %{threshold} 不可达(半径 %{requested}，期望 %{available} 区块)；保留配置阈值，客户端初始化可能无限等待§r"
+console.chunk.cps: "§e区块 >> §a当前 CPS: §b%{cps} §a(近 %{secs}s 发送: §b%{count}§a, 在途: §b%{in_flight}§a, 待发: §b%{queued}§a, 线程: §b%{workers}§a, 累计: §b%{total}§a)§r"
+console.chunk.cps_idle: "§e区块 >> §a视距内区块加载完成，当前 CPS: 0.0 (累计发送: %{total})§r"
 console.fault.isolated: "§e连接故障 >> §a已隔离 %{count} 个连接§r"
 console.fault.isolated_tick: "§e连接故障 >> §a本 tick 已隔离 %{count} 个连接，待处理=%{pending}§r"
 console.login.keypair_fail: "§e登录失败[%{addr}] >> §a无法生成加密密钥对§r"

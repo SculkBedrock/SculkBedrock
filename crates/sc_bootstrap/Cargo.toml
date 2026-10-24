@@ -13,6 +13,7 @@ sc_entity = { path = "../sc_entity" }
 sc_game = { path = "../sc_game" }
 sc_packloader = { path = "../sc_packloader" }
 sc_world = { path = "../sc_world" }
+sc_worldgen = { path = "../sc_worldgen" }
 sc_plugin = { path = "../sc_plugin" }
 sc_command = { path = "../sc_command" }
 sc_block = { path = "../sc_block" }

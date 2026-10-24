@@ -1,3 +1,9 @@
+//! 服务端权威的执行交易。
+//!
+//! 网络层只把数据包转换成 [`CraftIntent`]；全部校验与状态变更都在这里针对
+//! 抽象库存完成。跨 `await` 不持有锁：所有方法都在自有快照上同步执行，
+//! 跨 region 协调使用带操作 id 的显式 prepare/commit/abort。
+//!
 //! Server-authoritative craft transactions.
 //!
 //! The network layer only translates packets into [`CraftIntent`]; all
@@ -16,6 +22,8 @@ use crate::matching::{item_family_matches, match_shapeless, MatchInput, TagResol
 use crate::registry::RecipeRegistryFingerprint;
 use crate::spec::IngredientSpec;
 
+/// 谁在合成。
+///
 /// Who is crafting.
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct CraftActor {
@@ -23,6 +31,8 @@ pub struct CraftActor {
     pub entity_generation: u64,
 }
 
+/// 在哪里合成。
+///
 /// Where the craft happens.
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct CraftContext {
@@ -39,6 +49,8 @@ pub struct CraftContext {
     pub client_claims_in_reach: bool,
 }
 
+/// 一个期望的输入槽（库存下标 + 期望内容）。
+///
 /// One expected input slot (inventory index + expected content).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ExpectedSlot {
@@ -48,6 +60,10 @@ pub struct ExpectedSlot {
     pub count: u16,
 }
 
+/// 与协议无关的合成请求。由 `sc_network` 从 `InventoryTransaction` /
+/// `PlayerAuthInput` / `ItemStackRequest` / 容器开关构造，由 `sc_game` 执行，
+/// 执行过程不涉及包类型。
+///
 /// Protocol-independent craft request. Built by `sc_network` from
 /// `InventoryTransaction` / `PlayerAuthInput` / `ItemStackRequest` /
 /// container open-close; executed by `sc_game` without packet types.
@@ -72,6 +88,8 @@ impl CraftIntent {
     }
 }
 
+/// 交易引擎使用的抽象库存槽。
+///
 /// Abstract inventory slot used by the transaction engine.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TxSlot {
@@ -95,6 +113,8 @@ impl TxSlot {
     }
 }
 
+/// 带修订计数器的抽象可变库存。
+///
 /// Abstract mutable inventory with a revision counter.
 #[derive(Clone, Debug)]
 pub struct TxInventory {
@@ -111,6 +131,8 @@ impl TxInventory {
     }
 }
 
+/// 终态回执：每个操作 id 恰好一个。
+///
 /// Terminal receipt: exactly one per operation id.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum CraftReceipt {
@@ -152,6 +174,8 @@ impl std::fmt::Display for CraftReject {
     }
 }
 
+/// 有界幂等日志：操作 (player, op) -> 回执。
+///
 /// Bounded idempotency log: operation (player, op) -> receipt.
 #[derive(Clone, Debug, Default)]
 pub struct SeenOperations {
@@ -185,6 +209,8 @@ impl SeenOperations {
     }
 }
 
+/// 合成意图的有界准入队列。
+///
 /// Bounded admission queue for craft intents.
 #[derive(Debug)]
 pub struct CraftQueue {
@@ -217,6 +243,8 @@ impl CraftQueue {
     }
 }
 
+/// 跨 region 预留（prepare 阶段的记录）。
+///
 /// Cross-region reservation (prepare phase).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RegionReservation {
@@ -233,6 +261,8 @@ pub enum TxnDecision {
     Abort(String),
 }
 
+/// 依据各参与方的就绪状态决定提交或中止。
+///
 /// Decide commit/abort from participant readiness.
 pub fn decide_commit(ready: &[bool], reason: &str) -> TxnDecision {
     if ready.iter().all(|r| *r) {
@@ -242,6 +272,8 @@ pub fn decide_commit(ready: &[bool], reason: &str) -> TxnDecision {
     }
 }
 
+/// 游戏层在纯库存编辑前后校验的参数。
+///
 /// Parameters the game layer checks around the pure inventory edit.
 #[derive(Clone, Debug)]
 pub struct CommitChecks {
@@ -268,6 +300,8 @@ fn to_match_inputs(slots: &[TxSlot]) -> Vec<MatchInput> {
         .collect()
 }
 
+/// 针对 `inventory` 原子地执行一次即时合成。
+///
 /// Execute one instant craft atomically against `inventory`.
 ///
 /// Steps (all or nothing):
@@ -695,6 +729,8 @@ fn recipe_shaped_cells(recipe: &CompiledRecipe) -> Vec<IngredientSpec> {
     }
 }
 
+/// 在不实际合成的前提下校验工作台标签是否允许该配方。
+///
 /// Validate a station tag against the recipe without crafting.
 pub fn station_allows(recipe: &CompiledRecipe, station: StationKind) -> bool {
     recipe.stations.is_empty() || recipe.stations.contains(&station)

@@ -165,6 +165,11 @@ pub(super) fn break_block(
         revert_single_block(world, outbox, &request.entity, request.position);
         return;
     }
+    let initial_damage = world
+        .get_component::<sc_item::PlayerInventory>(&request.entity)
+        .and_then(|inv| inv.get(inv.selected_slot() as usize))
+        .map(|s| s.damage)
+        .unwrap_or(0);
     let admitted = queue.try_push_break(
         BlockChange {
             world_id: world_id.as_ref().clone(),
@@ -175,7 +180,11 @@ pub(super) fn break_block(
             flags: update_flags::DEFAULT,
         },
         target,
-        BlockBreakContext { hand, creative },
+        BlockBreakContext {
+            hand,
+            creative,
+            initial_damage,
+        },
     );
     world.remove_component::<BreakingState>(&request.entity);
     if admitted.is_none() {

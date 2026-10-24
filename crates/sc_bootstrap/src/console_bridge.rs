@@ -1,37 +1,34 @@
-//! Console bridge: the only contact point between `sc_console` (pure terminal UI) and game ECS.
+//! 控制台桥：`sc_console`（纯终端 UI）与游戏 ECS 之间的唯一接触点，
+//! 把终端输入转成游戏边界事件，把游戏快照推给 TUI。
 //!
-//! # Why a separate file
+//! 必备顺序：本插件必须在 [`sc_command::SCCommandPlugin`]、
+//! [`sc_world::SCWorldPlugin`] 之后、[`sc_game::SCGamePlugin`] 之前组装；
+//! `Last` 按注册顺序执行，退出序列必须是 chunk 刷盘 -> 恢复终端 ->
+//! `std::process::exit(0)`。恢复终端也依赖 `sc_console` 内部的 `atexit`
+//! 兜底，本系统为主路径。
 //!
-//! `sc_console` depends on no game crate; this file is the sole reverse dependency
-//! (`sc_bootstrap` -> `sc_console`), translating terminal IO into game-boundary events:
+//! 背压：控制台到游戏为有界通道（`ConsoleConfig::input_queue`，默认 128），
+//! 每 tick 最多排空 [`DRAIN_PER_TICK`] 行；游戏到控制台的日志用 `try_send`
+//! 不阻塞（队列满时丢弃并计数）。
 //!
-//! ```text
-//! Console thread --String (owned, bounded)--> drain_console_commands (PreUpdate)
-//!   -> RawCommandInput { origin: Console } -> dispatch_commands -> command systems
-//! Registry/version snapshot -> sync_console_meta -> TUI completion plus top version bar
-//! Startup done (PostStartup) -> mark_server_running -> TUI sweep plus input unlock
-//! SCExit -> chunk flush (world plugin) -> shutdown_console_on_exit (Last) -> terminal restore
-//! (before process::exit)
-//! ```
+//! Console bridge: the only contact point between `sc_console` (pure terminal UI) and
+//! game ECS. Converts terminal IO into game-boundary events and pushes game snapshots
+//! to the TUI.
 //!
-//! # Required ordering
+//! Required ordering: this plugin must be added **after**
+//! [`sc_command::SCCommandPlugin`] and [`sc_world::SCWorldPlugin`], and **before**
+//! [`sc_game::SCGamePlugin`] (see `sc_bootstrap::build_app`). `Last` runs in
+//! registration order, so the exit sequence must be chunk flush -> terminal restore by
+//! [`shutdown_console_on_exit`] -> `std::process::exit(0)` in `on_exit_shutdown_regions`
+//! (restoring the terminal before the flush would hide the flush; restoring after
+//! `process::exit` leaves the terminal in the alternate screen / raw mode).
+//! Terminal restore also has an `atexit` fallback inside `sc_console`; this system is
+//! the primary path.
 //!
-//! - This plugin must be added **after** [`sc_command::SCCommandPlugin`],
-//!   **after** [`sc_world::SCWorldPlugin`], and **before** [`sc_game::SCGamePlugin`] in
-//!   `build_app` (see `sc_bootstrap::build_app`):
-//!   `Last` runs in registration order, so the exit sequence must be chunk flush -> this file's
-//!   shutdown system restoring the terminal -> `std::process::exit(0)` in `on_exit_shutdown_regions`.
-//!   Flushing must precede terminal restore: only a live TUI can show flush completion;
-//!   restoring first would hide flushing in the background, looking like an instant exit (data still saved).
-//!   Terminal restore must precede `process::exit(0)`, otherwise a standalone exit leaves the terminal garbled
-//!   alternate screen / raw mode.
-//! - Terminal restore also has an `atexit` fallback inside `sc_console`; this system is the primary path.
-//!
-//! # Backpressure
-//!
-//! - Console to game: bounded channel (`ConsoleConfig::input_queue`, default 128), draining at most
-//!   [`DRAIN_PER_TICK`] lines per tick with the remainder left for later ticks;
-//! - Game to console logs: `try_send` never blocks (drops and counts when full, visible in the TUI status bar).
+//! Backpressure: console to game uses a bounded channel
+//! (`ConsoleConfig::input_queue`, default 128), draining at most [`DRAIN_PER_TICK`]
+//! lines per tick with the remainder left for later ticks; game to console logs use
+//! `try_send` and never block (drops and counts when full, visible in the TUI status bar).
 
 use sc_log::t_log;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -73,6 +70,8 @@ fn lock_bridge() -> std::sync::MutexGuard<'static, BridgeInner> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// 插件入口（顺序要求见模块文档）。
+///
 /// Plugin entry (see the module docs for ordering).
 pub struct ConsoleBridgePlugin;
 
@@ -104,6 +103,9 @@ impl Plugin for ConsoleBridgePlugin {
     }
 }
 
+/// 阻塞直到欢迎界面结束（见 [`ConsoleHandle::welcome_done`]）。
+/// 仅在存在面向用户的欢迎界面时等待；控制台请求退出时立即返回，不阻塞关闭流程。
+///
 /// Blocks until the welcome screen ends (see [`ConsoleHandle::welcome_done`]).
 ///
 /// Waits only when a welcome screen faces the user; releases immediately when the console
@@ -127,6 +129,9 @@ fn wait_for_welcome_gate() {
     }
 }
 
+/// 尽力读取 `[server] language`（TUI 启动时的渲染语言种子）。
+/// 读取失败回退到控制台默认值，配置错误由拥有该职责的 `init_properties` 稍后报告。
+///
 /// Best-effort read of `[server] language` (the TUI's render seed at spawn).
 ///
 /// Failures fall back to the console default and are reported later by
@@ -135,6 +140,9 @@ fn read_properties_language() -> Option<String> {
     read_properties_early().map(|p| p.language)
 }
 
+/// 为构建期种子尽力加载完整配置（语言用于日志区域设置，`log_level` 用于日志门控）。
+/// `None` 表示保持当前默认值；PreStartup/SCStartup 路径随后权威地重新应用全部配置。
+///
 /// Best-effort full properties load for build-time seeds (language for log
 /// locale, `log_level` for log gates). `None` keeps today's defaults; the
 /// PreStartup/SCStartup path re-applies everything authoritatively.
@@ -144,6 +152,9 @@ fn read_properties_early() -> Option<ServerProperties> {
     ServerProperties::load(&path).ok()
 }
 
+/// 用于过滤的 `[log] log_level` 文本（仅 `info` 收窄；其它值，包括权威加载时会被拒绝的
+/// 未来值，都保持 `debug`）。
+///
 /// `[log] log_level` text to filter (only `info` narrows; anything else,
 /// including future values rejected at authoritative load, stays `debug`).
 fn level_filter_for(log_level: &str) -> log::LevelFilter {
@@ -153,13 +164,12 @@ fn level_filter_for(log_level: &str) -> log::LevelFilter {
     }
 }
 
+/// 为构建期窗口预先应用文件中的语言与日志级别。
+/// 幂等且尽力而为；`init_properties`/`startup` 随后权威地重新应用。
+///
 /// Pre-apply file language and log level for the build-time window.
 ///
-/// Plugin `build` (welcome gate, build-time quote fetch, early warnings)
-/// runs before PreStartup/SCStartup own the config; without this, that whole
-/// window logs with the default locale (raw `en.<key>` lines) and always at
-/// Debug (third-party fetch traces flood `info` runs). Idempotent and
-/// best-effort; `init_properties`/`startup` re-apply authoritatively later.
+/// Idempotent and best-effort; `init_properties`/`startup` re-apply authoritatively later.
 fn apply_build_time_locale_and_log_level() {
     let Some(props) = read_properties_early() else {
         return;
@@ -171,12 +181,12 @@ fn apply_build_time_locale_and_log_level() {
     set_console_max_level(filter);
 }
 
-/// Persist the welcome choice (if any) into `server_properties.toml`.
+/// 将本次欢迎选择（若有）写入 `server_properties.toml`。
+/// 语言 id 与引言开关都在此一次写入；`take` 由调用方完成。
 ///
-/// Single source of truth for both ids: the console thread never touches the
-/// file (no TOML there, comments must survive); the host applies the one-shot
-/// choice handed over via the handle. `take` is done by the caller so the same
-/// choice also drives the quote fetch below.
+/// Persist this run's welcome choice (if any) into `server_properties.toml`.
+///
+/// Writes both the language id and the quote toggle in one pass; `take` is done by the caller.
 fn apply_console_language_choice(choice: Option<sc_console::WelcomeChoice>) {
     let Some(choice) = choice else {
         return;
@@ -228,15 +238,21 @@ fn apply_console_language_choice(choice: Option<sc_console::WelcomeChoice>) {
     }
 }
 
+/// 重写既有 TOML 文本中 `[server]` 下的键，其余内容逐字节保留（注释、顺序、格式）。
+/// 每对为 `[server]` 下的 `key = value`（布尔值传入 `"true"` / `"false"` 并裸写）：
+/// 已存在的键替换值并保留行尾注释；缺失的键按对序插入到段头之后。
+/// 无 `[server]` 段：返回 `None`。
+///
 /// Rewrite `[server]` keys inside existing TOML text, preserving everything
 /// else byte-for-byte (comments, order, formatting).
 ///
 /// Each pair is `key = value` under `[server]` (booleans pass `"true"` /
 /// `"false"` and are written bare): an existing key has its value replaced
 /// with the trailing comment kept; a missing key is inserted right after the
-/// section header, in pair order. No `[server]` section: `None` (the file is
-/// unloadable anyway; the caller warns instead of fabricating sections).
+/// section header, in pair order. No `[server]` section: `None`.
 fn patch_server_keys(text: &str, pairs: &[(&str, &str)]) -> Option<String> {
+    /// 把一行拆成代码部分与行尾 `#` 注释（引号外）。
+    ///
     /// Split a line into code plus trailing `#` comment (outside quotes).
     fn split_comment(line: &str) -> (&str, &str) {
         let mut quote: Option<char> = None;
@@ -257,6 +273,8 @@ fn patch_server_keys(text: &str, pairs: &[(&str, &str)]) -> Option<String> {
         (line, "")
     }
 
+    /// 渲染单个值：布尔裸写，其余用双引号包裹。
+    ///
     /// Render one value: booleans bare, everything else double-quoted.
     fn render_value(value: &str) -> String {
         if value == "true" || value == "false" {
@@ -266,11 +284,15 @@ fn patch_server_keys(text: &str, pairs: &[(&str, &str)]) -> Option<String> {
         }
     }
 
+    /// 首个 `[server]` 段的索引（`None` 表示文件不可加载）。
+    ///
     /// Index of the first `[server]` header (`None` = unloadable file).
     fn server_header(lines: &[&str]) -> Option<usize> {
         lines.iter().position(|l| l.trim() == "[server]")
     }
 
+    /// `[server]` 下 `key` 在工作副本中的索引（`None` 表示需插入）。
+    ///
     /// Index of `key` under `[server]` in the working copy (`None` = insert).
     fn server_key(out: &[String], key: &str) -> Option<usize> {
         let mut in_server = false;
@@ -331,6 +353,9 @@ fn patch_server_keys(text: &str, pairs: &[(&str, &str)]) -> Option<String> {
     Some(text)
 }
 
+/// 同步给 TUI 的元数据：补全快照版本，加顶栏（核心/版本包版本）与在线玩家
+/// 列表（侧栏）。
+///
 /// Metadata synced to the TUI: completion snapshot version plus top bar (core/version-pack versions)
 /// plus the online player list (side panel).
 #[derive(Resource, Default)]
@@ -341,6 +366,8 @@ struct ConsoleMetaCache {
     players: Vec<String>,
 }
 
+/// 启动控制台线程（幂等；已在运行时复用现有线程）。
+///
 /// Starts the console thread (idempotent; reuses it when already running).
 fn init_console() {
     {
@@ -396,15 +423,17 @@ fn init_console() {
     }
 }
 
+/// 在启用时启动每日引言副标题（欢迎门禁之后；仅 GUI 模式）。
+/// 来源：本次选择的复选框，否则读取 `server_properties.toml` `[server] enable_hitokoto`
+/// （默认关闭）；关闭时完全跳过取数。开启时同步取一次首帧（1 秒超时），失败时回退内置条目，
+/// 之后由后台线程每 30 秒轮换。
+///
 /// Start the daily-quote subtitle when enabled (post-gate; GUI only).
 ///
 /// Source of truth: this run's selector checkbox, else `server.properties`
 /// `[server] enable_hitokoto` (default off). Fetch is skipped entirely when
-/// off — no API call, no rotation thread, the title row stays empty.
-/// Quote: synchronously fetches once (1s timeout) so the first frame is
-/// already correct with no later flicker, falling back to a builtin; a
-/// background thread then rotates every 30s. The TUI renders it with a
-/// typewriter animation, replayed only on content change.
+/// off. Quote: synchronously fetches once (1s timeout), falling back to a
+/// builtin; a background thread then rotates every 30s.
 fn maybe_start_hitokoto(choice: Option<WelcomeChoice>) {
     let on = match choice {
         Some(c) => c.hitokoto,
@@ -434,6 +463,8 @@ fn maybe_start_hitokoto(choice: Option<WelcomeChoice>) {
         });
 }
 
+/// 尽力读取 `[server] enable_hitokoto`（任何失败均按关闭处理）。
+///
 /// Best-effort read of `[server] enable_hitokoto` (default off on any failure).
 fn read_properties_hitokoto() -> bool {
     let path = match std::env::current_dir() {
@@ -462,10 +493,12 @@ fn pick_fallback_hitokoto() -> &'static str {
     FALLBACK_HITOKOTO[(secs as usize) % FALLBACK_HITOKOTO.len()]
 }
 
+/// 引言轮换循环（后台线程）：启动时已取到第一条，此处每 30 秒轮换一次。
+/// 成功时使用 API 内容，否则按序取下一条内置条目；线程随进程终止，无需显式停止。
+///
 /// Quote rotation loop (background thread): startup already fetched the first entry; rotates every 30s here.
 ///
-/// Uses the API on success, otherwise the next builtin in order (guarantees a fresh line each half minute).
-/// The thread dies with the process, no explicit stop needed; unchanged `set_subtitle` content replays no animation.
+/// Uses the API on success, otherwise the next builtin in order. The thread dies with the process, no explicit stop needed.
 fn hitokoto_loop(handle: ConsoleHandle) {
     let mut fallback_idx = 0usize;
     loop {
@@ -480,6 +513,8 @@ fn hitokoto_loop(handle: ConsoleHandle) {
     }
 }
 
+/// 抓取一条引言（`https://v1.hitokoto.cn/?c=f`），失败时返回 `None`。
+///
 /// Fetches a quote (`https://v1.hitokoto.cn/?c=f`), returning `None` on failure.
 fn fetch_hitokoto(timeout: std::time::Duration) -> Option<String> {
     let config = ureq::config::Config::builder()
@@ -505,11 +540,15 @@ fn fetch_hitokoto(timeout: std::time::Duration) -> Option<String> {
     }
 }
 
+/// 当前控制台句柄（TUI 已关闭时为 `None`）。
+///
 /// Current console handle (`None` while the TUI is down).
 pub fn console_handle() -> Option<ConsoleHandle> {
     lock_bridge().driver.as_ref().map(ConsoleDriver::handle)
 }
 
+/// 非阻塞地最多排空 `max` 行用户输入。
+///
 /// Non-blockingly drains up to `max` lines of user input.
 fn drain_lines(max: usize) -> Vec<String> {
     let slot = lock_bridge();
@@ -525,6 +564,8 @@ fn drain_lines(max: usize) -> Vec<String> {
     out
 }
 
+/// 恢复终端并回收控制台线程（幂等）。
+///
 /// Restores the terminal and reaps the console thread (idempotent).
 pub fn shutdown_console() {
     let driver = lock_bridge().driver.take();
@@ -532,10 +573,14 @@ pub fn shutdown_console() {
     drop(driver);
 }
 
+/// PreUpdate：把控制台输入转换为游戏边界事件（`CommandOrigin::Console`）。
+/// 只做机制层转换（空行已被驱动过滤）；权限、别名与分词在同 tick 稍后的
+/// `dispatch_commands` 中处理。
+///
 /// PreUpdate: console input to game-boundary events (`CommandOrigin::Console`).
 ///
 /// Performs mechanics-only conversion (empty lines already filtered by the driver); permissions/aliases/tokenizing
-/// are handled later the same tick by `dispatch_commands` (dispatch runs in `SCConnectionUpdate`, see schedule).
+/// are handled later the same tick by `dispatch_commands`.
 fn drain_console_commands(world: World) {
     for raw in drain_lines(DRAIN_PER_TICK) {
         world.send_event(RawCommandInput {
@@ -546,12 +591,9 @@ fn drain_console_commands(world: World) {
     }
 }
 
-/// PreUpdate: pushes metadata snapshots (completion plus top version bar) to the TUI, only on change.
+/// PreUpdate：仅在变化时把元数据快照（补全项加顶栏版本）推送给 TUI。
 ///
-/// - Completion: a `CommandRegistry::revision` change rebuilds the snapshot; plugin commands registered
-///   at `enable` time appear in completion automatically without a console restart;
-/// - Version bar: core version (`Server::global`) and pack tag (`SCVersionPack::manifest`)
-///   push once ready (late pack loads fill in on the first valued tick).
+/// PreUpdate: pushes metadata snapshots (completion plus top version bar) to the TUI, only on change.
 fn sync_console_meta(world: World, mut cache: ResMut<ConsoleMetaCache>) {
     let Some(handle) = console_handle() else {
         return;
@@ -605,6 +647,8 @@ fn sync_console_meta(world: World, mut cache: ResMut<ConsoleMetaCache>) {
     }
 }
 
+/// PostStartup（仅一次）：服务器启动完成，TUI 播放绿色扫光并解锁输入。
+///
 /// PostStartup (once): server startup done, so the TUI plays the green sweep and unlocks input.
 fn mark_server_running() {
     if let Some(handle) = console_handle() {
@@ -612,6 +656,9 @@ fn mark_server_running() {
     }
 }
 
+/// Last：收到 `SCExit` 时恢复终端（必须早于游戏域的 `process::exit`，
+/// 由插件注册顺序保证，见模块文档）。
+///
 /// Last: restores the terminal on `SCExit` (must run before the game domain `process::exit`,
 /// ordered by plugin registration, see module docs).
 fn shutdown_console_on_exit(mut reader: EventReader<SCExit>) {

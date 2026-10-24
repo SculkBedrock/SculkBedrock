@@ -1,3 +1,7 @@
+//! 客户端登录包：身份数据、皮肤与认证信息。
+//!
+//! Client login packets: identity data, skin and authentication information.
+
 use crate::utils::auth::{self, AuthPayload, AuthType, ChainValidationResult, IdentityData};
 use base64::prelude::{BASE64_STANDARD, BASE64_STANDARD_NO_PAD};
 use base64::Engine;
@@ -12,6 +16,9 @@ use std::io::Error;
 use std::str::FromStr;
 use uuid::Uuid;
 
+/// 登录客户端的设备类型。
+///
+/// The device type of a logging-in client.
 #[derive(Copy, Clone, Debug)]
 pub enum LoginDevice {
     Unknown,
@@ -32,6 +39,9 @@ pub enum LoginDevice {
 }
 
 impl LoginDevice {
+    /// 返回该设备类型在协议中的数值序号。
+    ///
+    /// Returns the numeric ordinal of this device type in the protocol.
     pub fn index(&self) -> i32 {
         match self {
             LoginDevice::Unknown => 0,
@@ -52,6 +62,9 @@ impl LoginDevice {
         }
     }
 
+    /// 返回该设备类型对应的显示名称。
+    ///
+    /// Returns the display name of this device type.
     pub fn to_string(&self) -> &'static str {
         match self {
             LoginDevice::Unknown => "Unknown",
@@ -72,6 +85,12 @@ impl LoginDevice {
         }
     }
 
+    /// 由协议中的序号解析出设备类型，未知序号归为 `Unknown`。
+    ///
+    /// Parses a device type from its protocol ordinal; unknown ordinals map to
+    /// `Unknown`.
+    ///
+    /// - `u8`: 协议中的设备序号
     pub fn from_u8(u8: u8) -> Self {
         match u8 {
             0 => LoginDevice::Unknown,
@@ -95,6 +114,11 @@ impl LoginDevice {
 }
 
 impl Display for LoginDevice {
+    /// 将设备类型格式化为其显示名称。
+    ///
+    /// Formats the device type as its display name.
+    ///
+    /// - `f`: 输出格式化器
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.to_string())
     }
@@ -102,6 +126,12 @@ impl Display for LoginDevice {
 
 impl FromStr for LoginDevice {
     type Err = ();
+    /// 由显示名称解析设备类型，未知名称归为 `Unknown`。
+    ///
+    /// Parses a device type from its display name; unknown names map to
+    /// `Unknown`.
+    ///
+    /// - `s`: 设备类型的显示名称
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "Unknown" => Ok(LoginDevice::Unknown),
@@ -124,38 +154,91 @@ impl FromStr for LoginDevice {
     }
 }
 
+/// 登录包（0x01），客户端在登录流程中提交身份、皮肤与设备信息。
+///
+/// Login packet (0x01), where the client submits identity, skin and device
+/// information during the login flow.
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct Login {
+    /// 玩家显示名。
+    ///
+    /// The player display name.
     pub username: String,
+    /// 客户端使用的协议版本号。
+    ///
+    /// The protocol version used by the client.
     pub protocol: u32,
+    /// 玩家身份 UUID。
+    ///
+    /// The player identity UUID.
     pub identity: Uuid,
+    /// 玩家身份公钥。
+    ///
+    /// The player identity public key.
     pub identity_public_key: String,
+    /// 客户端随机 ID。
+    ///
+    /// The client random id.
     pub client_id: i64,
+    /// 玩家皮肤数据。
+    ///
+    /// The player skin data.
     pub skin: Skin,
+    /// 令牌签发时间（Unix 毫秒）。
+    ///
+    /// The token issue time (Unix milliseconds).
     pub issue_unix_time: i64,
+    /// 客户端设备操作系统编号。
+    ///
+    /// The client device operating system ordinal.
     pub device_os: u8,
+    /// 客户端设备型号。
+    ///
+    /// The client device model.
     pub device_model: String,
+    /// 客户端语言代码。
+    ///
+    /// The client language code.
     pub language_code: String,
+    /// 客户端游戏版本。
+    ///
+    /// The client game version.
     pub game_version: String,
+    /// 玩家连接的服务器地址。
+    ///
+    /// The server address the player connected to.
     pub server_address: String,
-    /// Authentication type
+    /// 认证类型。
+    ///
+    /// Authentication type.
     pub auth_type: AuthType,
-    /// Whether Mojang signature verification passed (quick check)
+    /// Mojang 签名校验是否通过（快速检查结果）。
+    ///
+    /// Whether Mojang signature verification passed (quick check).
     pub signed: bool,
-    /// Raw auth payload for later async verification (Token Auth and Chain)
+    /// 原始认证载荷，供后续异步校验使用（Token Auth 与 Chain）。
+    ///
+    /// Raw auth payload for later async verification (Token Auth and Chain).
     pub auth_payload: AuthPayload,
-    /// XUID (extracted from Token Auth or Chain)
+    /// XUID（从 Token Auth 或 Chain 中提取）。
+    ///
+    /// XUID (extracted from Token Auth or Chain).
     pub xuid: String,
 }
 
 impl Login {
+    /// 异步校验登录签名。
+    ///
     /// Asynchronously verify the login signature.
     /// Call after Reader::read; performs full signature verification
     /// for Token Auth (JWKS) and Certificate Chain (Mojang signatures).
+    ///
+    /// # Errors
+    /// 签名校验失败或网络请求失败时返回 IO 错误。
     pub async fn validate(&mut self) -> Result<ChainValidationResult, Error> {
         let payload = self.auth_payload.clone();
         let result = auth::validate_payload(payload).await?;
-        // Update identity from verified data.
+        // Update identity fields from the validated data.
         self.username = result.identity.display_name.clone();
         self.identity = result.identity.identity;
         self.identity_public_key = result.identity.identity_public_key.clone();
@@ -166,6 +249,15 @@ impl Login {
 }
 
 impl Reader<Login> for Login {
+    /// 从字节流中解码一个登录包，解析其中的认证链与皮肤数据。
+    ///
+    /// Decodes a login packet from a byte stream, parsing the authentication
+    /// chain and skin data it carries.
+    ///
+    /// - `buf`: 输入字节读取器
+    ///
+    /// # Errors
+    /// 缓冲区不足、认证数据格式非法或皮肤数据缺失时返回 IO 错误。
     fn read(buf: &mut ByteReader) -> Result<Login, Error> {
         let mut protocol = buf.read_u32()?;
         if protocol == 0 {
@@ -176,29 +268,29 @@ impl Reader<Login> for Login {
         let buf = buf.read_sized_slice()?;
         let mut buf = ByteReader::from(buf);
 
-        // Parse chain/auth data.
+        // Parse chain/token authentication data.
         let len = buf.read_u32_le()? as usize;
         let chain_data = buf.read_bytes(len)?;
         let chain_data_str = String::from_utf8_lossy(&chain_data).to_string();
 
         debug!("Login >> Auth data: {}", &chain_data_str);
 
-        // Parse the outer JSON with the auth module.
+        // Parse the outer JSON via the auth module.
         let auth_payload = auth::parse_auth_wrapper(&chain_data_str)?;
         let auth_type = auth_payload.auth_type();
 
         debug!("Login >> Auth type: {:?}", auth_type);
 
-        // Extract identity data synchronously (no signature check).
+        // Synchronously extract identity data (no signature check).
         let identity_data = match &auth_payload {
             AuthPayload::Token { token, .. } => {
-                // Token Auth: xname, xid, cpk from JWT claims.
+                // Token auth: xname, xid, cpk come from the JWT claims.
                 let claims = decode_jwt_payload(token, 1)
                     .ok_or(Error::other("Cannot decode Token JWT payload"))?;
                 extract_token_claims(&claims)?
             }
             AuthPayload::Certificate { chain, .. } => {
-                // Certificate Chain: payload of the last JWT.
+                // Certificate chain: take the payload of the last JWT.
                 let last_jwt = chain
                     .last()
                     .ok_or(Error::other("Empty certificate chain"))?;
@@ -213,10 +305,10 @@ impl Reader<Login> for Login {
         let identity_public_key = identity_data.identity_public_key;
         let xuid = identity_data.xuid;
 
-        // Keep the raw AuthPayload for later async verification.
+        // Keep the original AuthPayload for later async validation.
         let auth_payload_clone = auth_payload.clone();
 
-        // Extract issue time.
+        // Extract the issue time.
         let issue_unix_time = match &auth_payload {
             auth::AuthPayload::Certificate { chain, .. } => chain
                 .last()
@@ -230,8 +322,8 @@ impl Reader<Login> for Login {
                 .unwrap_or(-1),
         };
 
-        // Signed flag: assumed signed for Token Auth with Full auth type;
-        // real verification happens asynchronously in validate().
+        // Signed flag: for the Full auth type assume signed; the real
+        // check runs asynchronously in validate().
         let signed = auth_type == AuthType::Full;
 
         // Parse skin data.
@@ -278,7 +370,7 @@ impl Reader<Login> for Login {
                 if let Some(skin_id) = skin_token.get("SkinId").and_then(|v| v.as_str()) {
                     skin = Skin::new_base64(skin_data_b64, skin_width, skin_height, skin_id).map(
                         |mut s| {
-                            // Keep all appearance fields for 1:1 PlayerList echo;
+                            // Keep all cosmetic fields for verbatim PlayerList echo;
                             // missing fields crash real clients.
                             s.play_fab_id = skin_token
                                 .get("PlayFabId")
@@ -481,14 +573,24 @@ impl Reader<Login> for Login {
 }
 
 impl Writer for Login {
+    /// 登录包无需回写，编码为空操作。
+    ///
+    /// The login packet is never written back; encoding is a no-op.
+    ///
+    /// - `_buf`: 输出字节写入器（未使用）
     fn write(&self, _buf: &mut ByteWriter) -> Result<(), Error> {
         Ok(())
     }
 }
 
-// Helpers.
+// Internal helper functions.
 
-/// Decode one JWT section (0=header, 1=payload).
+/// 解码 JWT 的某一段（0 为头部，1 为载荷）。
+///
+/// Decodes one JWT section (0=header, 1=payload).
+///
+/// - `jwt_str`: 完整的 JWT 字符串
+/// - `index`: 待解码的段序号
 fn decode_jwt_payload(jwt_str: &str, index: usize) -> Option<Value> {
     let parts: Vec<&str> = jwt_str.split('.').collect();
     if parts.len() < 2 {
@@ -501,7 +603,14 @@ fn decode_jwt_payload(jwt_str: &str, index: usize) -> Option<Value> {
     serde_json::from_slice(&decoded).ok()
 }
 
+/// 从令牌认证的 JWT 声明中提取身份数据。
+///
 /// Identity data from Token Auth JWT claims.
+///
+/// - `claims`: 已解码的 JWT 载荷
+///
+/// # Errors
+/// 声明缺失 `xname`、`xid` 或 `cpk` 字段时返回 IO 错误。
 fn extract_token_claims(claims: &Value) -> Result<IdentityData, Error> {
     let claims = claims
         .as_object()
@@ -525,7 +634,7 @@ fn extract_token_claims(claims: &Value) -> Result<IdentityData, Error> {
         .ok_or(Error::other("Missing 'cpk' in token claims"))?
         .to_string();
 
-    // UUID derives from the XUID.
+    // UUID is derived from the XUID.
     let identity = uuid_from_xuid(&xuid);
 
     let title_id = claims
@@ -544,7 +653,14 @@ fn extract_token_claims(claims: &Value) -> Result<IdentityData, Error> {
     })
 }
 
+/// 从证书链 JWT 载荷中提取身份数据（旧格式）。
+///
 /// Identity data from a Certificate Chain JWT payload (legacy format).
+///
+/// - `payload`: 已解码的 JWT 载荷
+///
+/// # Errors
+/// 载荷缺少身份公钥、`extraData` 或身份字段时返回 IO 错误。
 fn extract_chain_claims(payload: &Value) -> Result<IdentityData, Error> {
     let payload = payload
         .as_object()
@@ -570,7 +686,7 @@ fn extract_chain_claims(payload: &Value) -> Result<IdentityData, Error> {
         .ok_or(Error::other("Missing displayName in extraData"))?
         .to_string();
 
-    // Try several candidate fields for identity.
+    // Try candidate identity fields in order.
     let identity_str = extra_data
         .get("identity")
         .or_else(|| extra_data.get("xuid"))
@@ -604,18 +720,37 @@ fn extract_chain_claims(payload: &Value) -> Result<IdentityData, Error> {
     })
 }
 
+/// 由 XUID 派生 UUID（UUID v3，基于 MD5）。
+///
 /// Derive a UUID from an XUID (UUID v3, MD5-based).
+///
+/// - `xuid`: 玩家的 XUID 字符串
 fn uuid_from_xuid(xuid: &str) -> Uuid {
     let data = format!("pocket-auth-1-xuid:{}", xuid);
     Uuid::new_v3(&Uuid::NAMESPACE_OID, data.as_bytes())
 }
 
+/// 本地玩家初始化完成包（0x71），客户端通知服务端其本地实体已就绪。
+///
+/// Set local player as initialized packet (0x71), where the client notifies
+/// the server that its local entity is ready.
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct SetLocalPlayerAsInitialized {
+    /// 本地玩家实体的运行时 ID。
+    ///
+    /// The runtime id of the local player entity.
     pub entity_runtime_id: u64,
 }
 
 impl sc_binary::interfaces::Reader<SetLocalPlayerAsInitialized> for SetLocalPlayerAsInitialized {
+    /// 从字节流中解码一个本地玩家初始化包。
+    ///
+    /// Decodes a set local player as initialized packet from a byte stream.
+    ///
+    /// - `buf`: 输入字节读取器
+    ///
+    /// # Errors
+    /// 缓冲区不足时返回 IO 错误。
     fn read(buf: &mut sc_binary::ByteReader) -> Result<Self, Error> {
         Ok(Self {
             entity_runtime_id: buf.read_var_u64()?,
@@ -624,6 +759,14 @@ impl sc_binary::interfaces::Reader<SetLocalPlayerAsInitialized> for SetLocalPlay
 }
 
 impl sc_binary::interfaces::Writer for SetLocalPlayerAsInitialized {
+    /// 将本地玩家初始化包编码写入字节流。
+    ///
+    /// Encodes the set local player as initialized packet into a byte stream.
+    ///
+    /// - `buf`: 输出字节写入器
+    ///
+    /// # Errors
+    /// 写入失败时返回 IO 错误。
     fn write(&self, buf: &mut sc_binary::ByteWriter) -> Result<(), Error> {
         buf.write_var_u64(self.entity_runtime_id)
     }

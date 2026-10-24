@@ -1,3 +1,8 @@
+//! 客户端移动与输入包：玩家认证输入及其附属结构。
+//!
+//! Client movement and input packets: player auth input and its companion
+//! structures.
+
 use std::collections::HashSet;
 use std::io::{Error, ErrorKind};
 
@@ -6,43 +11,136 @@ use sc_binary::{ByteReader, ByteWriter};
 use sc_network_macros::MinecraftPacket;
 use sc_utils::game::structs::position::MinecraftPosition;
 
-/// PlayerAuthInputPacket, protocol 2168.
+/// 玩家认证输入包（0x90），协议版本 2168。
+///
+/// Player auth input packet (0x90), protocol version 2168.
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct PlayerAuthInput {
+    /// 本次输入附带的物品栏请求（合成等操作）。
+    ///
+    /// The item stack request carried by this input (crafting and similar
+    /// operations).
     pub item_stack_request: Option<super::crafting_request::ItemStackRequestEntry>,
+    /// 玩家俯仰角。
+    ///
+    /// The player pitch angle.
     pub pitch: f32,
+    /// 玩家偏航角。
+    ///
+    /// The player yaw angle.
     pub yaw: f32,
+    /// 玩家当前坐标（眼位）。
+    ///
+    /// The current player position (eye level).
     pub position: MinecraftPosition,
+    /// 移动向量 X 分量。
+    ///
+    /// The X component of the move vector.
     pub move_vector_x: f32,
+    /// 移动向量 Z 分量。
+    ///
+    /// The Z component of the move vector.
     pub move_vector_z: f32,
+    /// 头部朝向偏航角。
+    ///
+    /// The head yaw angle.
     pub head_yaw: f32,
+    /// 本次输入包含的动作集合。
+    ///
+    /// The set of actions contained in this input.
     pub input_data: HashSet<AuthInputAction>,
+    /// 本次输入包含的方块操作列表。
+    ///
+    /// The list of block actions contained in this input.
     pub block_actions: Vec<PlayerBlockAction>,
+    /// 客户端的输入方式（鼠标、触摸、手柄等）。
+    ///
+    /// The client input mode (mouse, touch, gamepad and so on).
     pub input_mode: PlayerInputMode,
+    /// 客户端的游戏模式编号。
+    ///
+    /// The numeric game mode of the client.
     pub play_mode: u32,
+    /// 交互模型编号。
+    ///
+    /// The interaction model ordinal.
     pub interaction_model: i32,
+    /// 交互旋转 X 分量。
+    ///
+    /// The X component of the interact rotation.
     pub interact_rotation_x: f32,
+    /// 交互旋转 Z 分量。
+    ///
+    /// The Z component of the interact rotation.
     pub interact_rotation_z: f32,
+    /// 客户端的当前 tick 计数。
+    ///
+    /// The current tick counter of the client.
     pub tick: u64,
+    /// 相对上一 tick 的位置增量。
+    ///
+    /// The position delta relative to the previous tick.
     pub delta: MinecraftPosition,
+    /// 摇杆移动 X 分量。
+    ///
+    /// The X component of the analog move.
     pub analog_move_x: f32,
+    /// 摇杆移动 Y 分量。
+    ///
+    /// The Y component of the analog move.
     pub analog_move_y: f32,
+    /// 摄像机朝向 X 分量。
+    ///
+    /// The X component of the camera orientation.
     pub camera_orientation_x: f32,
+    /// 摄像机朝向 Y 分量。
+    ///
+    /// The Y component of the camera orientation.
     pub camera_orientation_y: f32,
+    /// 摄像机朝向 Z 分量。
+    ///
+    /// The Z component of the camera orientation.
     pub camera_orientation_z: f32,
+    /// 原始移动输入 X 分量。
+    ///
+    /// The X component of the raw move input.
     pub raw_move_x: f32,
+    /// 原始移动输入 Y 分量。
+    ///
+    /// The Y component of the raw move input.
     pub raw_move_y: f32,
 }
 
+/// 玩家方块操作：一次具体的方块交互动作。
+///
+/// A player block action: one concrete block interaction action.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlayerBlockAction {
+    /// 操作类型编号。
+    ///
+    /// The action type ordinal.
     pub action_type: i32,
+    /// 目标方块的 X 坐标。
+    ///
+    /// The X coordinate of the target block.
     pub block_x: i32,
+    /// 目标方块的 Y 坐标。
+    ///
+    /// The Y coordinate of the target block.
     pub block_y: i32,
+    /// 目标方块的 Z 坐标。
+    ///
+    /// The Z coordinate of the target block.
     pub block_z: i32,
+    /// 交互朝向的方块面。
+    ///
+    /// The block face of the interaction.
     pub face: i32,
 }
 
+/// 认证输入动作：客户端上报的输入标志位。
+///
+/// Auth input action: an input flag reported by the client.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum AuthInputAction {
@@ -115,6 +213,10 @@ pub enum AuthInputAction {
 }
 
 impl AuthInputAction {
+    /// 全部输入动作的顺序数组，序号即协议中的判别值。
+    ///
+    /// The ordered array of all input actions; the index is the protocol
+    /// discriminant.
     pub const ALL: [AuthInputAction; 66] = [
         Self::Ascend,
         Self::Descend,
@@ -184,6 +286,12 @@ impl AuthInputAction {
         Self::InternalUpdate,
     ];
 
+    /// 由协议序号解析输入动作，越界或负数返回 `None`。
+    ///
+    /// Parses an input action from its protocol ordinal; returns `None` for
+    /// out-of-range or negative values.
+    ///
+    /// - `ordinal`: 协议中的动作序号
     fn from_ordinal(ordinal: i32) -> Option<Self> {
         (ordinal >= 0)
             .then_some(ordinal as usize)
@@ -191,6 +299,9 @@ impl AuthInputAction {
     }
 }
 
+/// 客户端输入方式：鼠标、触摸、手柄等。
+///
+/// Client input mode: mouse, touch, gamepad and so on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum PlayerInputMode {
@@ -202,6 +313,12 @@ pub enum PlayerInputMode {
 }
 
 impl PlayerInputMode {
+    /// 由协议序号解析输入方式，未知序号归为 `Unknown`。
+    ///
+    /// Parses an input mode from its protocol ordinal; unknown ordinals map
+    /// to `Unknown`.
+    ///
+    /// - `ordinal`: 协议中的输入方式序号
     fn from_ordinal(ordinal: u32) -> Self {
         match ordinal {
             1 => Self::Mouse,
@@ -214,8 +331,15 @@ impl PlayerInputMode {
 }
 
 impl PlayerAuthInput {
+    /// 玩家眼高（米）。
+    ///
+    /// The eye height of the player in meters.
     pub const EYE_HEIGHT: f32 = 1.62;
 
+    /// 计算玩家脚部位置：由眼高从当前坐标推导。
+    ///
+    /// Computes the player's feet position from the current position and the
+    /// eye height.
     pub fn feet_position(&self) -> MinecraftPosition {
         MinecraftPosition::new(
             self.position.x,
@@ -224,28 +348,68 @@ impl PlayerAuthInput {
         )
     }
 
+    /// 判断本次输入是否包含指定动作。
+    ///
+    /// Checks whether this input contains the given action.
+    ///
+    /// - `action`: 待检查的输入动作
     pub fn has_input(&self, action: AuthInputAction) -> bool {
         self.input_data.contains(&action)
     }
 
+    /// 玩家当前是否处于潜行状态。
+    ///
+    /// Whether the player is currently sneaking.
     pub fn sneaking(&self) -> bool {
         self.has_input(AuthInputAction::Sneaking) || self.has_input(AuthInputAction::SneakDown)
     }
 
+    /// 玩家当前是否处于跳跃状态。
+    ///
+    /// Whether the player is currently jumping.
     pub fn jumping(&self) -> bool {
         self.has_input(AuthInputAction::Jumping) || self.has_input(AuthInputAction::JumpDown)
     }
 
+    /// 玩家当前是否处于疾跑状态。
+    ///
+    /// Whether the player is currently sprinting.
     pub fn sprinting(&self) -> bool {
         self.has_input(AuthInputAction::Sprinting)
             || self.has_input(AuthInputAction::StartSprinting)
     }
 
+    /// 玩家当前是否处于飞行状态。
+    ///
+    /// Whether the player is currently flying.
     pub fn flying(&self) -> bool {
         self.has_input(AuthInputAction::StartFlying)
     }
+
+    /// 玩家本次输入是否刚开始游泳。
+    ///
+    /// Whether the player started swimming in this input.
+    pub fn start_swimming(&self) -> bool {
+        self.has_input(AuthInputAction::StartSwimming)
+    }
+
+    /// 玩家本次输入是否停止游泳。
+    ///
+    /// Whether the player stopped swimming in this input.
+    pub fn stop_swimming(&self) -> bool {
+        self.has_input(AuthInputAction::StopSwimming)
+    }
 }
 
+/// 读取旧版协议的可选字段对：首个布尔标志决定是否存在。
+///
+/// Reads a legacy optional field pair: the first boolean flag decides
+/// whether it is present.
+///
+/// - `buf`: 输入字节读取器
+///
+/// # Errors
+/// 缓冲区不足时返回 IO 错误。
 fn read_optional_legacy_pair(buf: &mut ByteReader) -> Result<bool, Error> {
     if !buf.read_bool()? {
         return Ok(false);
@@ -253,6 +417,14 @@ fn read_optional_legacy_pair(buf: &mut ByteReader) -> Result<bool, Error> {
     Ok(buf.read_bool()?)
 }
 
+/// 读取玩家方块操作列表，条目数量超过上限时拒绝。
+///
+/// Reads the list of player block actions, rejecting oversized lists.
+///
+/// - `buf`: 输入字节读取器
+///
+/// # Errors
+/// 缓冲区不足或条目数量超过 100 时返回 IO 错误。
 fn read_block_actions(buf: &mut ByteReader) -> Result<Vec<PlayerBlockAction>, Error> {
     let count = buf.read_var_u32()? as usize;
     if count > 100 {
@@ -275,6 +447,16 @@ fn read_block_actions(buf: &mut ByteReader) -> Result<Vec<PlayerBlockAction>, Er
     Ok(actions)
 }
 
+/// 写入玩家方块操作列表，空列表写出单个 false 标志。
+///
+/// Writes the list of player block actions; an empty list is written as a
+/// single false flag.
+///
+/// - `buf`: 输出字节写入器
+/// - `actions`: 待写入的方块操作列表
+///
+/// # Errors
+/// 写入失败时返回 IO 错误。
 fn write_block_actions(buf: &mut ByteWriter, actions: &[PlayerBlockAction]) -> Result<(), Error> {
     if actions.is_empty() {
         buf.write_bool(false)?;
@@ -294,6 +476,16 @@ fn write_block_actions(buf: &mut ByteWriter, actions: &[PlayerBlockAction]) -> R
     Ok(())
 }
 
+/// 写入输入动作集合：先写存在标志，再写动作数量与各动作序号。
+///
+/// Writes the set of input actions: a presence flag first, then the action
+/// count and the ordinals.
+///
+/// - `buf`: 输出字节写入器
+/// - `actions`: 待写入的输入动作集合
+///
+/// # Errors
+/// 写入失败时返回 IO 错误。
 fn write_input_data(buf: &mut ByteWriter, actions: &HashSet<AuthInputAction>) -> Result<(), Error> {
     buf.write_bool(!actions.is_empty())?;
     if actions.is_empty() {
@@ -314,6 +506,15 @@ fn write_input_data(buf: &mut ByteWriter, actions: &HashSet<AuthInputAction>) ->
 }
 
 impl Reader<PlayerAuthInput> for PlayerAuthInput {
+    /// 从字节流中解码一个玩家认证输入包。
+    ///
+    /// Decodes a player auth input packet from a byte stream.
+    ///
+    /// - `buf`: 输入字节读取器
+    ///
+    /// # Errors
+    /// 缓冲区不足、动作序号非法、数量超限或遇到不支持的物品交互时返回 IO
+    /// 错误。
     fn read(buf: &mut ByteReader) -> Result<PlayerAuthInput, Error> {
         let pitch = buf.read_f32_le()?;
         let yaw = buf.read_f32_le()?;
@@ -420,6 +621,14 @@ impl Reader<PlayerAuthInput> for PlayerAuthInput {
 }
 
 impl Writer for PlayerAuthInput {
+    /// 将玩家认证输入包编码写入字节流。
+    ///
+    /// Encodes the player auth input packet into a byte stream.
+    ///
+    /// - `buf`: 输出字节写入器
+    ///
+    /// # Errors
+    /// 写入失败时返回 IO 错误。
     fn write(&self, buf: &mut ByteWriter) -> Result<(), Error> {
         buf.write_f32_le(self.pitch)?;
         buf.write_f32_le(self.yaw)?;

@@ -138,14 +138,9 @@ use crate::worldgen::stages::chunk_hash;
 // GenerateFeature: base feature interface
 // ---------------------------------------------------------------------------
 
-/// Base feature interface.
+/// 生成特征接口：在区块生成上下文中应用特征。
 ///
-/// The block-write root is managed by the stage and passed via `apply`;
-/// the RNG is built per apply (seeded from the level seed, chunk position,
-/// and feature-name hash).
-///
-/// Each feature implements `apply` + `name`; the interface matches the stage
-/// interface but features run batched inside the chunk-feature stage.
+/// Generation feature interface applying a feature within a chunk generation context.
 pub trait GenerateFeature: Send + Sync {
     /// Applies the feature to the chunk context.
     fn apply(&self, ctx: &mut ChunkGenerateContext<'_>);
@@ -178,13 +173,9 @@ pub trait GenerateFeature: Send + Sync {
 // CountGenerateFeature: count-based feature base
 // ---------------------------------------------------------------------------
 
-/// Count-based feature base.
+/// 按基础数量加随机数量重复执行 populate 的特征接口。
 ///
-/// Calls `populate` a total of `get_base() + random.next_bounded_int(get_random())`
-/// times, with a per-chunk seed mixing the level seed, chunk position, and
-/// feature-name hash.
-///
-/// Current concrete case: the extreme-hills surface emerald feature.
+/// Feature interface repeating populate a base count plus a random count of times.
 pub trait CountGenerateFeature: GenerateFeature {
     /// Base placement count.
     fn get_base(&self) -> i32;

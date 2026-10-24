@@ -1,3 +1,6 @@
+//! NBT 写入入口：`NbtWriter` 及 `NbtWriteTrait` 实现；`NbtCustomWrite` 为 bool 等
+//! 自定义类型提供 NBT 表示。
+//!
 //! NBT write entry point: `NbtWriter` plus `NbtWriteTrait` implementations; `NbtCustomWrite`
 //! provides the NBT representation for custom types such as bool.
 

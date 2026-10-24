@@ -16,30 +16,78 @@ use std::io::Error;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// Player eye height. Bedrock player positions are eye level (feet + 1.62);
-// the StartGame player position adds this offset on write.
+/// 玩家眼睛高度。Bedrock 玩家位置为视线高度（脚底 + 1.62）；
+/// StartGame 写玩家位置时会加上该偏移。
+///
+/// Player eye height. Bedrock player positions are eye level (feet +
+/// 1.62); the StartGame player position adds this offset on write.
 const PLAYER_EYE_HEIGHT: f32 = 1.62;
 // Retained wire-protocol constant; V3 movement not yet gated in this build.
 #[allow(dead_code)]
 const SERVER_AUTHORITATIVE_V3_MOVEMENT: i32 = 3;
 
+/// PlayStatusPacket：登录/出生阶段状态包。
+///
+/// PlayStatusPacket: login/spawn phase status packet.
+///
+/// 状态码见 [`PlayStatus`] 的关联常量。
 #[derive(Clone, Debug, BinaryIo, MinecraftPacket)]
 pub struct PlayStatus {
+    /// 状态码，见 [`PlayStatus`] 的 LOGIN_*/PLAYER_SPAWN 常量。
+    ///
+    /// Status code, see the LOGIN_*/PLAYER_SPAWN constants on
+    /// [`PlayStatus`].
     pub status: u32,
 }
 
 impl PlayStatus {
+    /// 登录成功。
+    ///
+    /// Login succeeded.
     pub const LOGIN_SUCCESS: u32 = 0;
+    /// 客户端侧登录失败。
+    ///
+    /// Login failed on the client side.
     pub const LOGIN_FAILED_CLIENT: u32 = 1;
+    /// 服务端侧登录失败。
+    ///
+    /// Login failed on the server side.
     pub const LOGIN_FAILED_SERVER: u32 = 2;
+    /// 玩家出生。
+    ///
+    /// Player spawn.
     pub const PLAYER_SPAWN: u32 = 3;
+    /// 租户无效导致登录失败。
+    ///
+    /// Login failed due to an invalid tenant.
     pub const LOGIN_FAILED_INVALID_TENANT: u32 = 4;
+    /// 教育版/原版不匹配导致登录失败。
+    ///
+    /// Login failed due to an Edu/Vanilla mismatch.
     pub const LOGIN_FAILED_VANILLA_EDU: u32 = 5;
+    /// 原版/教育版不匹配导致登录失败。
+    ///
+    /// Login failed due to a Vanilla/Edu mismatch.
     pub const LOGIN_FAILED_EDU_VANILLA: u32 = 6;
+    /// 服务器已满导致登录失败。
+    ///
+    /// Login failed because the server is full.
     pub const LOGIN_FAILED_SERVER_FULL: u32 = 7;
+    /// 编辑器世界到原版客户端不匹配。
+    ///
+    /// Editor world to vanilla client mismatch.
     pub const LOGIN_FAILED_EDITOR_TO_VANILLA_MISMATCH: u32 = 8;
+    /// 原版世界到编辑器客户端不匹配。
+    ///
+    /// Vanilla world to editor client mismatch.
     pub const LOGIN_FAILED_VANILLA_TO_EDITOR_MISMATCH: u32 = 9;
 
+    /// 状态码转可读名称；未知码返回 `"UNKNOWN"`。
+    ///
+    /// Maps a status code to a readable name; unknown codes return
+    /// `"UNKNOWN"`.
+    ///
+    /// - `status`: 状态码
     pub fn get_string(status: u32) -> &'static str {
         match status {
             Self::LOGIN_SUCCESS => "LOGIN_SUCCESS",
@@ -61,47 +109,165 @@ impl PlayStatus {
     }
 }
 
+/// StartGamePacket (0x0b)：登录成功后向客户端下发世界初始化数据。
+///
+/// StartGamePacket (0x0b): sends world initialization data to the client
+/// after a successful login.
+///
+/// 包体包含实体 id、位置、游戏规则、实验开关、世界设置等大量字段，
+/// 布局随协议版本变化。
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct StartGame {
+    /// 玩家实体 id（同时用作 entityUniqueId 与 entityRuntimeId）。
+    ///
+    /// Player entity id (used as both entityUniqueId and entityRuntimeId).
     pub entity_id: u64,
+    /// 玩家偏航角。
+    ///
+    /// Player yaw.
     pub yaw: f32,
+    /// 玩家俯仰角。
+    ///
+    /// Player pitch.
     pub pitch: f32,
+    /// 是否为编辑器世界。
+    ///
+    /// Whether the world is an editor world.
     pub world_editor: bool,
+    /// 游戏规则集合。
+    ///
+    /// Game rule set.
     pub gamerules: GameRules,
+    /// 服务端属性（缺失时写包失败）。
+    ///
+    /// Server properties (a missing value fails the write).
     pub server_properties: Option<ServerProperties>,
+    /// 客户端数据（位置、游戏模式等）。
+    ///
+    /// Client data (position, gamemode, etc.).
     pub client_data: MinecraftClientData,
+    /// 世界数据（种子、生成器、难度等）。
+    ///
+    /// World data (seed, generator, difficulty, etc.).
     pub world_data: MinecraftWorldData,
+    /// 物品调色板（序列化后的 ItemComponent 字节）。
+    ///
+    /// Item palette (serialized ItemComponent bytes).
     pub item_palette: Arc<Vec<u8>>,
+    /// 是否禁用 Persona。
+    ///
+    /// Whether personas are disabled.
     pub disabling_personas: bool,
+    /// 是否禁用自定义皮肤。
+    ///
+    /// Whether custom skins are disabled.
     pub disabling_custom_skins: bool,
+    /// 是否静默表情聊天。
+    ///
+    /// Whether emote chat is muted.
     pub emote_chat_muted: bool,
+    /// 是否硬核模式。
+    ///
+    /// Whether hardcore mode is on.
     pub is_hardcore: bool,
+    /// 是否为试玩世界。
+    ///
+    /// Whether this is a trial world.
     pub is_trial: bool,
+    /// 聊天限制等级。
+    ///
+    /// Chat restriction level.
     pub chat_restriction_level: i8,
+    /// 是否禁用玩家交互。
+    ///
+    /// Whether player interactions are disabled.
     pub disable_player_interactions: bool,
+    /// 世界 id 字符串。
+    ///
+    /// World id string.
     pub level_id: String,
+    /// 高级世界模板 id。
+    ///
+    /// Premium world template id.
     pub premium_world_template_id: String,
+    /// 服务端权威移动模式（已从线上格式移除，保留字段）。
+    ///
+    /// Server-authoritative movement mode (removed from the wire format;
+    /// field retained).
     pub server_authoritative_movement: Option<i32>,
+    /// 移动是否服务端权威。
+    ///
+    /// Whether movement is server-authoritative.
     pub is_movement_server_authoritative: bool,
+    /// 当前 tick。
+    ///
+    /// Current tick.
     pub current_tick: i64,
+    /// 附随机种子。
+    ///
+    /// Enchantment seed.
     pub enchantment_seed: i32,
+    /// 多人游戏关联 id。
+    ///
+    /// Multiplayer correlation id.
     pub multiplayer_correlation_id: String,
+    /// 是否启用物品堆叠网络管理器。
+    ///
+    /// Whether the item stack net manager is enabled.
     pub enable_item_stack_net_manager: bool,
+    /// 玩家属性 NBT 数据。
+    ///
+    /// Player property NBT data.
     pub player_property_data: CompoundNbt,
+    /// 是否启用客户端侧生成。
+    ///
+    /// Whether client-side generation is enabled.
     pub client_side_generation_enabled: bool,
+    /// 方块网络 id 是否使用哈希（FNV1a）。
+    ///
+    /// Whether block network ids are hashed (FNV1a).
     pub block_network_ids_hashed: bool,
+    /// 声音是否服务端权威。
+    ///
+    /// Whether sounds are server-authoritative.
     pub is_sounds_server_authoritative: bool,
+    /// 服务端编辑器连接策略。
+    ///
+    /// Server editor connection policy.
     pub server_editor_connection_policy: i32,
+    /// 编辑器世界是否允许匿名掉落物。
+    ///
+    /// Whether anonymous block drops are allowed in editor worlds.
     pub allow_anonymous_block_drops_in_editor_worlds: bool,
+    /// 是否记录聊天日志（仅 2168 前协议存在）。
+    ///
+    /// Whether chat is logged (present only before protocol 2168).
     pub logging_chat: bool,
 }
 
 impl StartGame {
+    /// 写入自定义方块段（当前恒为空列表）。
+    ///
+    /// Writes the custom blocks section (currently always an empty list).
+    ///
+    /// - `buf`: 输出字节写入器
+    ///
+    /// # Errors
+    /// 写入缓冲区失败时返回 IO 错误。
     pub fn write_custom_blocks(&self, buf: &mut ByteWriter) -> Result<(), Error> {
         buf.write_var_u32(0)
-        //TODO: custom blocks (needs version-pack vs resource-pack split)
+        // custom blocks are not serialized yet (version-pack vs resource-pack split pending)
     }
 
+    /// 写入实验列表（按服务端属性开关收集，长度为 LInt）。
+    ///
+    /// Writes the experiments list (collected from the server property
+    /// toggles, length encoded as LInt).
+    ///
+    /// - `buf`: 输出字节写入器
+    ///
+    /// # Errors
+    /// 缺少服务端属性或写入失败时返回错误。
     pub fn write_experiments(&self, buf: &mut ByteWriter) -> Result<(), Error> {
         let mut experiments = vec![];
         let Some(server_properties) = self.server_properties.as_ref() else {
@@ -140,6 +306,15 @@ impl StartGame {
 }
 
 impl Writer for StartGame {
+    /// 写入 StartGame 包体（含调试日志；需要全局协议信息与服务端属性）。
+    ///
+    /// Writes the StartGame body (with debug logging; requires global
+    /// protocol info and server properties).
+    ///
+    /// - `buf`: 输出字节写入器
+    ///
+    /// # Errors
+    /// 协议信息未初始化、缺少服务端属性或写入失败时返回错误。
     fn write(&self, buf: &mut ByteWriter) -> Result<(), Error> {
         let protocol_info = ProtocolInfo::global().ok_or_else(|| {
             Error::new(
@@ -314,6 +489,12 @@ impl Writer for StartGame {
 }
 
 impl Reader<StartGame> for StartGame {
+    /// 不支持解码：服务端只发送 StartGame。
+    ///
+    /// Decoding is unsupported: the server only sends StartGame.
+    ///
+    /// # Errors
+    /// 始终返回 [`std::io::ErrorKind::Unsupported`] 错误。
     fn read(_buf: &mut ByteReader) -> Result<StartGame, Error> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
@@ -365,7 +546,7 @@ mod tests {
             achievements_disable: false,
             hide_seed: false,
             view_distance: 10,
-            chunks_per_tick: 4,
+            chunks_per_tick: 128,
             spawn_threshold: 56,
             debug_blocked_packets: Vec::new(),
         };
@@ -409,6 +590,12 @@ mod tests {
 }
 
 impl Default for StartGame {
+    /// 默认实现：`block_network_ids_hashed` 默认为 `true`（v2168 起广播
+    /// 并使用 FNV1a 方块状态哈希，而非 version-pack 运行时 id）。
+    ///
+    /// Default implementation: `block_network_ids_hashed` defaults to
+    /// `true` (v2168+ advertises and serializes hashed block-state IDs
+    /// (FNV1a hashes), not version-pack runtime IDs).
     fn default() -> Self {
         Self {
             entity_id: 0,

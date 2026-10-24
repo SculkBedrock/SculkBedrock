@@ -1,20 +1,6 @@
-//! Port of the float-precision noise family.
+//! f32 精度噪声采样器族：Perlin 与单形噪声。
 //!
-//! - `NoiseF.java` (abstract base) → [`NoiseF`] (fields) + [`NoiseFSampler`] (virtuals + octave loops)
-//! - `PerlinF.java` → [`PerlinF`]
-//! - `SimplexF.java` → [`SimplexF`]
-//!
-//! Reference sources live under `.fetch/`.
-//!
-//! The inheritance chain `SimplexF extends PerlinF extends NoiseF` becomes
-//! composition in Rust: `SimplexF { perlin: PerlinF }`, `PerlinF { base: NoiseF }`;
-//! abstract `getNoise2D/getNoise3D` plus concrete `noise2D/noise3D` (octave loops)
-//! live on the [`NoiseFSampler`] trait.
-//!
-//! Constructor overloads map to Rust names:
-//! - `new(random, octaves, persistence)` ← `(RandomSourceProvider, float, float)`
-//! - `new_with_expansion(random, octaves, persistence, expansion)`
-//!   ← `(RandomSourceProvider, float, float, float)`
+//! f32-precision noise sampler family: Perlin and simplex noise.
 
 use crate::worldgen::random::RandomSourceProvider;
 
@@ -23,9 +9,9 @@ use crate::worldgen::random::RandomSourceProvider;
 // NoiseF.
 // ---------------------------------------------------------------------------
 
-/// Instance-field half of the abstract base.
+/// 噪声采样器（f32）的公共实例状态：原点与置换表。
 ///
-/// `protected` fields become `pub(crate)` (noise family only).
+/// Shared instance state of f32 noise samplers: origin and permutation table.
 #[derive(Clone, Debug)]
 pub struct NoiseF {
     /// Permutation table (filled by the `PerlinF` constructor, 512 long).
@@ -149,11 +135,9 @@ impl NoiseF {
 // Abstract methods and concrete noise2D/noise3D.
 // ---------------------------------------------------------------------------
 
-/// Abstract `getNoise2D/getNoise3D` plus concrete octave-loop methods.
-/// (`noise2D/noise3D`).
+/// 提供二维/三维噪声取值与八度循环的采样接口（f32）。
 ///
-/// Virtual dispatch lives on the trait: `noise2D/noise3D` are default methods
-/// dispatching through `self.get_noise_2d()/get_noise_3d()`.
+/// Sampling interface providing 2D/3D noise values and octave loops (f32).
 pub trait NoiseFSampler {
     /// Inherited base fields via composition.
     fn base(&self) -> &NoiseF;
@@ -235,9 +219,9 @@ pub trait NoiseFSampler {
 // PerlinF.
 // ---------------------------------------------------------------------------
 
-/// Java: `PerlinF extends NoiseF`.
+/// Perlin 噪声采样器（f32）。
 ///
-/// Inherited fields via [`NoiseF`] composition (`self.base`).
+/// Perlin noise sampler using f32.
 pub struct PerlinF {
     /// Inherited base state.
     pub base: NoiseF,
@@ -416,9 +400,9 @@ pub const G43: f32 = G4 * 3.0;
 #[allow(dead_code)]
 pub const G44: f32 = G4 * 4.0 - 1.0;
 
-/// Java: `SimplexF extends PerlinF`.
+/// 单形噪声采样器（f32）。
 ///
-/// Inheritance chain via composition: `self.perlin.base`.
+/// Simplex noise sampler using f32.
 pub struct SimplexF {
     /// Parent (`PerlinF` plus its `NoiseF` fields).
     pub perlin: PerlinF,

@@ -1,3 +1,8 @@
+//! 目录式资源包加载器：扫描目录下的 zip/mcpack 与清单目录包。
+//!
+//! Directory-based resource pack loader: scans a directory for
+//! zip/mcpack files and manifest directory packs.
+
 use crate::pack::ResourcePack;
 use crate::pack_loader::pack::zipped::{PackSource, ZippedResourcePack};
 use crate::pack_loader::PackLoaderTrait;
@@ -7,6 +12,11 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+/// 取路径扩展名（小写；无扩展名为空串）。
+///
+/// Returns the path extension (lowercased; empty when absent).
+///
+/// - `filename`: 文件路径
 pub(crate) fn get_extension(filename: &Path) -> String {
     filename
         .extension()
@@ -15,11 +25,22 @@ pub(crate) fn get_extension(filename: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// 目录资源包加载器：从指定目录发现全部包。
+///
+/// Directory resource pack loader: discovers all packs under a directory.
 pub struct ResourcePackZippedLoader {
+    /// 被扫描的目录路径。
+    ///
+    /// The scanned directory path.
     dir_path: PathBuf,
 }
 
 impl ResourcePackZippedLoader {
+    /// 以目标目录构造加载器。
+    ///
+    /// Creates a loader for the given directory.
+    ///
+    /// - `dir_path`: 待扫描目录
     pub fn new<P: AsRef<Path>>(dir_path: P) -> Self {
         Self {
             dir_path: dir_path.as_ref().to_path_buf(),
@@ -28,6 +49,11 @@ impl ResourcePackZippedLoader {
 }
 
 impl PackLoaderTrait for ResourcePackZippedLoader {
+    /// 扫描目录并加载全部可解析资源包（zip/mcpack 与清单目录）；
+    /// 不可读的条目仅告警跳过。
+    ///
+    /// Scans the directory and loads all parseable packs (zip/mcpack and
+    /// manifest directories); unreadable entries only warn and are skipped.
     fn get_resource_packs(&self) -> Vec<ResourcePack> {
         // Only repo-root `resource_packs/` overlays are client-downloaded;
         // `behavior_packs/` overlays stay silent about missing bytes.

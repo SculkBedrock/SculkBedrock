@@ -1,8 +1,19 @@
+//! 连接级故障隔离的消费方（网络域）。
+//!
+//! 游戏域通过 [`PendingConnectionFaults`] 登记“该玩家已无法保持一致”的终止
+//! 状态；本模块每 tick 消费一批请求，并真正断开这些连接。
+//!
+//! 顺序与预算：
+//! - 每 tick 最多处理 [`MAX_FAULTS_PER_TICK`] 个请求，避免单 tick 内出现断开
+//!   风暴（每次断开会为了可靠窗口 `sleep(5s)`）；
+//! - `take_all()` 之后剩余的请求会**退回队列**，绝不静默丢弃；
+//! - 针对已消失实体的请求只计数（该请求已无意义），不计为失败。
+//!
 //! Consumer of connection-level fault isolation (network domain).
 //!
 //! The game domain registers the terminal "this player can no longer stay
 //! consistent" state via [`PendingConnectionFaults`]; this module consumes a batch
-//! of requests every tick and actually disconnects those connections, so faulty
+//! of requests every tick and actually disconnects those connections.
 //!
 //! Ordering and budget:
 //! - At most [`MAX_FAULTS_PER_TICK`] requests per tick, avoiding a burst of
@@ -18,9 +29,16 @@ use sc_game::net_faults::{ConnectionFault, PendingConnectionFaults};
 use crate::player_connection::PlayerConnection;
 use sc_log::t_log;
 
+/// 每 tick 最多执行的隔离数量。
+///
 /// Maximum isolations executed per tick.
 const MAX_FAULTS_PER_TICK: usize = 8;
 
+/// 消费连接隔离请求并断开对应连接。
+///
+/// ECS 系统必须返回 `()`，因此每 tick 的数量只写入日志；下方的公开辅助函数
+/// 供测试与诊断使用。
+///
 /// Consumes connection-isolation requests and disconnects those connections.
 ///
 /// ECS systems must return `()`, so the per-tick count is only logged; the
@@ -32,6 +50,10 @@ pub fn disconnect_faulted_connections(world: World) {
     }
 }
 
+/// 消费隔离请求，最多隔离 [`MAX_FAULTS_PER_TICK`] 个。
+///
+/// 返回本次调用真正开始关闭的连接数量。
+///
 /// Consume isolation requests, isolating up to [`MAX_FAULTS_PER_TICK`] of them.
 ///
 /// Returns the number of connections this call actually started closing.
@@ -71,6 +93,8 @@ pub fn take_faults_and_isolate(world: World) -> usize {
     disconnected
 }
 
+/// 针对不可恢复的终止状态断开单个连接。
+///
 /// Terminate one connection for an unrecoverable terminal state.
 fn isolate_fault(world: &World, fault: ConnectionFault) -> bool {
     let entity = world

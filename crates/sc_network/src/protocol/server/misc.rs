@@ -8,26 +8,60 @@ use sc_utils::game::skin::Skin;
 use std::io::Error;
 use uuid::Uuid;
 
-/// SetSpawnPositionPacket (0x2b)
-/// Spawn position notification for the client.
+/// SetSpawnPositionPacket (0x2b)：出生点位置通知。
+///
+/// SetSpawnPositionPacket (0x2b): spawn position notification for the
+/// client.
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct SetSpawnPosition {
+    /// 出生点类型：0 = 玩家出生点，1 = 世界出生点。
+    ///
+    /// Spawn type: 0 = player spawn, 1 = world spawn.
     pub spawn_type: u32, // 0 = player spawn, 1 = world spawn
+    /// 出生点 X 坐标。
+    ///
+    /// Spawn X coordinate.
     pub x: i32,
+    /// 出生点 Y 坐标。
+    ///
+    /// Spawn Y coordinate.
     pub y: i32,
+    /// 出生点 Z 坐标。
+    ///
+    /// Spawn Z coordinate.
     pub z: i32,
+    /// 维度 id。
+    ///
+    /// Dimension id.
     pub dimension: i32,
-    /// Optional compass/respawn block position. Left unset during
-    /// normal join, which serializes as Bedrock's invalid block position.
+    /// 可选的指南针/重生方块位置。正常加入时不设置，序列化为
+    /// Bedrock 的无效方块位置。
+    ///
+    /// Optional compass/respawn block position. Left unset during normal
+    /// join, which serializes as Bedrock's invalid block position.
     pub spawn_block_position: Option<(i32, i32, i32)>,
 }
 
 impl SetSpawnPosition {
+    /// 玩家出生点类型。
+    ///
+    /// Player spawn type.
     pub const TYPE_PLAYER_SPAWN: u32 = 0;
+    /// 世界出生点类型。
+    ///
+    /// World spawn type.
     pub const TYPE_WORLD_SPAWN: u32 = 1;
 }
 
 impl Writer for SetSpawnPosition {
+    /// 写入 SetSpawnPosition 包体。
+    ///
+    /// Writes the SetSpawnPosition packet body.
+    ///
+    /// - `buf`: 输出字节写入器
+    ///
+    /// # Errors
+    /// 写入缓冲区失败时返回 IO 错误。
     fn write(&self, buf: &mut ByteWriter) -> Result<(), Error> {
         buf.write_var_i32(self.spawn_type as i32)?; // putVarInt
         write_block_position(buf, self.x, self.y, self.z)?;
@@ -41,8 +75,17 @@ impl Writer for SetSpawnPosition {
     }
 }
 
-/// Bedrock `BlockPosition`: x/y/z are all zigzag varint32, matching
-/// `UpdateBlock`.
+/// 写入 Bedrock `BlockPosition`：x/y/z 均为 zigzag varint32，与
+/// `UpdateBlock` 一致。
+///
+/// Writes a Bedrock `BlockPosition`: x/y/z are all zigzag varint32,
+/// matching `UpdateBlock`.
+///
+/// - `buf`: 输出字节写入器
+/// - `x`/`y`/`z`: 方块坐标
+///
+/// # Errors
+/// 写入缓冲区失败时返回 IO 错误。
 fn write_block_position(buf: &mut ByteWriter, x: i32, y: i32, z: i32) -> Result<(), Error> {
     buf.write_var_i32(x)?;
     buf.write_var_i32(y)?;
@@ -50,6 +93,12 @@ fn write_block_position(buf: &mut ByteWriter, x: i32, y: i32, z: i32) -> Result<
 }
 
 impl Reader<SetSpawnPosition> for SetSpawnPosition {
+    /// 不支持解码：服务端只发送出生点通知。
+    ///
+    /// Decoding is unsupported: the server only sends spawn notifications.
+    ///
+    /// # Errors
+    /// 始终返回 [`std::io::ErrorKind::Unsupported`] 错误。
     fn read(_buf: &mut ByteReader) -> Result<SetSpawnPosition, Error> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
@@ -58,14 +107,26 @@ impl Reader<SetSpawnPosition> for SetSpawnPosition {
     }
 }
 
-/// SetTimePacket (0x0a)
-/// World time sync.
+/// SetTimePacket (0x0a)：世界时间同步。
+///
+/// SetTimePacket (0x0a): world time sync.
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct SetTime {
+    /// 世界时间（tick）。
+    ///
+    /// World time in ticks.
     pub time: i32,
 }
 
 impl Writer for SetTime {
+    /// 写入 SetTime 包体。
+    ///
+    /// Writes the SetTime packet body.
+    ///
+    /// - `buf`: 输出字节写入器
+    ///
+    /// # Errors
+    /// 写入缓冲区失败时返回 IO 错误。
     fn write(&self, buf: &mut ByteWriter) -> Result<(), Error> {
         buf.write_var_i32(self.time)?; // putVarInt
         Ok(())
@@ -73,6 +134,14 @@ impl Writer for SetTime {
 }
 
 impl Reader<SetTime> for SetTime {
+    /// 解码 SetTime 包体。
+    ///
+    /// Decodes a SetTime body.
+    ///
+    /// - `buf`: 输入字节读取器
+    ///
+    /// # Errors
+    /// 缓冲区不足时返回解码错误。
     fn read(buf: &mut ByteReader) -> Result<SetTime, Error> {
         Ok(SetTime {
             time: buf.read_var_i32()?,
@@ -80,29 +149,61 @@ impl Reader<SetTime> for SetTime {
     }
 }
 
-/// RespawnPacket (0x2d)
-/// Death-screen dismissal handshake, both directions:
-/// - client -> server on respawn-button click (position zeros, state is the
-///   client's spawn-progress echo; any state acts as the request, the game
-///   validates `Dead` before acting);
-/// - server -> client after vitals/teleport restore (`READY_TO_SPAWN`
-///   with the spawn position).
+/// RespawnPacket (0x2d)：死亡界面确认握手，双向包：
+///
+/// RespawnPacket (0x2d): death-screen dismissal handshake, both directions:
+///
+/// - 客户端 → 服务端：点击重生按钮（位置为零，state 是客户端出生进度的
+///   回显；任何 state 都作为请求，游戏在行动前校验 `Dead`）；
+/// - 服务端 → 客户端：恢复生命值/传送后（`READY_TO_SPAWN` 加出生位置）。
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct Respawn {
+    /// 出生位置 X 坐标（服务端发送时有效）。
+    ///
+    /// Spawn X coordinate (meaningful on server sends).
     pub x: f32,
+    /// 出生位置 Y 坐标（服务端发送时有效）。
+    ///
+    /// Spawn Y coordinate (meaningful on server sends).
     pub y: f32,
+    /// 出生位置 Z 坐标（服务端发送时有效）。
+    ///
+    /// Spawn Z coordinate (meaningful on server sends).
     pub z: f32,
+    /// 出生状态，见 [`Respawn`] 的 STATE_* 常量。
+    ///
+    /// Spawn state, see the STATE_* constants on [`Respawn`].
     pub state: u8,
+    /// 实体运行时 id。
+    ///
+    /// Entity runtime id.
     pub entity_id: u64,
 }
 
 impl Respawn {
+    /// 正在寻找出生点。
+    ///
+    /// Searching for a spawn position.
     pub const STATE_SEARCHING_FOR_SPAWN: u8 = 0;
+    /// 准备出生。
+    ///
+    /// Ready to spawn.
     pub const STATE_READY_TO_SPAWN: u8 = 1;
+    /// 出生完成。
+    ///
+    /// Finished spawning.
     pub const STATE_FINISHED_SPAWNING: u8 = 2;
 }
 
 impl Writer for Respawn {
+    /// 写入 Respawn 包体。
+    ///
+    /// Writes the Respawn packet body.
+    ///
+    /// - `buf`: 输出字节写入器
+    ///
+    /// # Errors
+    /// 写入缓冲区失败时返回 IO 错误。
     fn write(&self, buf: &mut ByteWriter) -> Result<(), Error> {
         buf.write_f32_le(self.x)?;
         buf.write_f32_le(self.y)?;
@@ -113,6 +214,14 @@ impl Writer for Respawn {
 }
 
 impl Reader<Respawn> for Respawn {
+    /// 解码 Respawn 包体。
+    ///
+    /// Decodes a Respawn body.
+    ///
+    /// - `buf`: 输入字节读取器
+    ///
+    /// # Errors
+    /// 缓冲区不足时返回解码错误。
     fn read(buf: &mut ByteReader) -> Result<Respawn, Error> {
         Ok(Respawn {
             x: buf.read_f32_le()?,
@@ -124,14 +233,26 @@ impl Reader<Respawn> for Respawn {
     }
 }
 
-/// SetDifficultyPacket (0x3c)
-/// Game difficulty setting.
+/// SetDifficultyPacket (0x3c)：游戏难度设置。
+///
+/// SetDifficultyPacket (0x3c): game difficulty setting.
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct SetDifficulty {
+    /// 难度 id。
+    ///
+    /// Difficulty id.
     pub difficulty: u32,
 }
 
 impl Writer for SetDifficulty {
+    /// 写入 SetDifficulty 包体。
+    ///
+    /// Writes the SetDifficulty packet body.
+    ///
+    /// - `buf`: 输出字节写入器
+    ///
+    /// # Errors
+    /// 写入缓冲区失败时返回 IO 错误。
     fn write(&self, buf: &mut ByteWriter) -> Result<(), Error> {
         buf.write_var_u32(self.difficulty)?; // putUnsignedVarInt
         Ok(())
@@ -139,6 +260,14 @@ impl Writer for SetDifficulty {
 }
 
 impl Reader<SetDifficulty> for SetDifficulty {
+    /// 解码 SetDifficulty 包体。
+    ///
+    /// Decodes a SetDifficulty body.
+    ///
+    /// - `buf`: 输入字节读取器
+    ///
+    /// # Errors
+    /// 缓冲区不足时返回解码错误。
     fn read(buf: &mut ByteReader) -> Result<SetDifficulty, Error> {
         Ok(SetDifficulty {
             difficulty: buf.read_var_u32()?,
@@ -146,14 +275,26 @@ impl Reader<SetDifficulty> for SetDifficulty {
     }
 }
 
-/// SetCommandsEnabledPacket (0x3b)
-/// Client command toggle.
+/// SetCommandsEnabledPacket (0x3b)：客户端命令开关。
+///
+/// SetCommandsEnabledPacket (0x3b): client command toggle.
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct SetCommandsEnabled {
+    /// 是否启用命令。
+    ///
+    /// Whether commands are enabled.
     pub enabled: bool,
 }
 
 impl Writer for SetCommandsEnabled {
+    /// 写入 SetCommandsEnabled 包体。
+    ///
+    /// Writes the SetCommandsEnabled packet body.
+    ///
+    /// - `buf`: 输出字节写入器
+    ///
+    /// # Errors
+    /// 写入缓冲区失败时返回 IO 错误。
     fn write(&self, buf: &mut ByteWriter) -> Result<(), Error> {
         buf.write_bool(self.enabled)?; // putBoolean
         Ok(())
@@ -161,6 +302,14 @@ impl Writer for SetCommandsEnabled {
 }
 
 impl Reader<SetCommandsEnabled> for SetCommandsEnabled {
+    /// 解码 SetCommandsEnabled 包体。
+    ///
+    /// Decodes a SetCommandsEnabled body.
+    ///
+    /// - `buf`: 输入字节读取器
+    ///
+    /// # Errors
+    /// 缓冲区不足时返回解码错误。
     fn read(buf: &mut ByteReader) -> Result<SetCommandsEnabled, Error> {
         Ok(SetCommandsEnabled {
             enabled: buf.read_bool()?,
@@ -168,14 +317,27 @@ impl Reader<SetCommandsEnabled> for SetCommandsEnabled {
     }
 }
 
-/// GameRulesChangedPacket (0x48)
-/// Game rule change sync.
+/// GameRulesChangedPacket (0x48)：游戏规则变更同步。
+///
+/// GameRulesChangedPacket (0x48): game rule change sync.
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct GameRulesChanged {
+    /// 变更后的游戏规则集合。
+    ///
+    /// The updated game rule set.
     pub gamerules: GameRules,
 }
 
 impl Writer for GameRulesChanged {
+    /// 写入 GameRulesChanged 包体（非 StartGame 模式：INTEGER 用 LInt）。
+    ///
+    /// Writes the GameRulesChanged body (non-StartGame mode: INTEGER uses
+    /// LInt).
+    ///
+    /// - `buf`: 输出字节写入器
+    ///
+    /// # Errors
+    /// 写入缓冲区失败时返回 IO 错误。
     fn write(&self, buf: &mut ByteWriter) -> Result<(), Error> {
         // Non-StartGame mode: INTEGER uses LInt (4-byte little-endian).
         buf.write_game_rules_with_mode(&self.gamerules, false)?;
@@ -184,6 +346,12 @@ impl Writer for GameRulesChanged {
 }
 
 impl Reader<GameRulesChanged> for GameRulesChanged {
+    /// 不支持解码：服务端只发送游戏规则变更。
+    ///
+    /// Decoding is unsupported: the server only sends rule changes.
+    ///
+    /// # Errors
+    /// 始终返回 [`std::io::ErrorKind::Unsupported`] 错误。
     fn read(_buf: &mut ByteReader) -> Result<GameRulesChanged, Error> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
@@ -192,19 +360,34 @@ impl Reader<GameRulesChanged> for GameRulesChanged {
     }
 }
 
-/// PlayerListPacket (0x3f)
-/// Online player list sync.
+/// PlayerListPacket (0x3f)：在线玩家列表同步。
+///
+/// PlayerListPacket (0x3f): online player list sync.
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct PlayerList {
+    /// 列表操作类型：0 = ADD，1 = REMOVE。
+    ///
+    /// List operation: 0 = ADD, 1 = REMOVE.
     pub list_type: u8, // 0=ADD, 1=REMOVE
+    /// 条目列表。
+    ///
+    /// Entry list.
     pub entries: Vec<PlayerListEntry>,
 }
 
 impl PlayerList {
+    /// ADD 操作类型。
+    ///
+    /// ADD operation type.
     pub const TYPE_ADD: u8 = 0;
+    /// REMOVE 操作类型。
+    ///
+    /// REMOVE operation type.
     pub const TYPE_REMOVE: u8 = 1;
 
-    /// Empty ADD list.
+    /// 构造空的 ADD 列表。
+    ///
+    /// Builds an empty ADD list.
     pub fn empty_add() -> Self {
         Self {
             list_type: Self::TYPE_ADD,
@@ -213,22 +396,62 @@ impl PlayerList {
     }
 }
 
+/// PlayerListEntry：玩家列表条目。
+///
+/// PlayerListEntry: a player list entry.
 #[derive(Clone, Debug)]
 pub struct PlayerListEntry {
+    /// 玩家 UUID。
+    ///
+    /// Player UUID.
     pub uuid: Uuid,
+    /// 实体 id。
+    ///
+    /// Entity id.
     pub entity_id: i64,
+    /// 玩家名。
+    ///
+    /// Player name.
     pub name: String,
+    /// Xbox 用户 id。
+    ///
+    /// Xbox user id.
     pub xuid: String,
+    /// 平台聊天 id。
+    ///
+    /// Platform chat id.
     pub platform_chat_id: String,
+    /// 构建平台 id。
+    ///
+    /// Build platform id.
     pub build_platform: i32,
+    /// 皮肤数据。
+    ///
+    /// Skin data.
     pub skin: Option<Skin>,
+    /// 是否为教师账号。
+    ///
+    /// Whether this is a teacher account.
     pub is_teacher: bool,
+    /// 是否为房主。
+    ///
+    /// Whether this is the host.
     pub is_host: bool,
+    /// 是否为分屏子客户端。
+    ///
+    /// Whether this is a split-screen sub-client.
     pub is_sub_client: bool,
+    /// 列表颜色。
+    ///
+    /// List color.
     pub color: i32,
 }
 
 impl Default for PlayerListEntry {
+    /// 默认实现：build_platform 为 -1，其余为空值。
+    ///
+    /// Default implementation: build_platform is -1, everything else is
+    /// empty.
     fn default() -> Self {
         Self {
             uuid: Uuid::nil(),
@@ -246,11 +469,22 @@ impl Default for PlayerListEntry {
     }
 }
 
-/// Sanitize one skin image for the wire: bytes must be exactly `w*h*4`.
+/// 清洗一张用于上线的皮肤图片：字节数必须恰好为 `w*h*4`。
+/// 登录解析只校验主图；声明尺寸不匹配（或 base64 解码失败）的
+/// 披风/动画图会被原样回显，真实客户端会因多读而断开连接。
+/// 不一致的图片降级为空 0x0 图片，而不是杀死会话。
+///
+/// Sanitizes one skin image for the wire: bytes must be exactly `w*h*4`.
 /// Login parsing only validates the main image; cape/animation images with
 /// mismatched claims (or failed base64 decodes) echo verbatim and the real
 /// client over-reads and drops the connection. Inconsistent images degrade
 /// to an empty 0x0 image instead of killing the session.
+///
+/// - `width`/`height`: 声明尺寸
+/// - `bytes`: 图片字节
+///
+/// # Returns
+/// 一致时原样返回，否则 `(0, 0, &[])`。
 fn consistent_image(width: i32, height: i32, bytes: &[u8]) -> (i32, i32, &[u8]) {
     let expected = (width as usize)
         .checked_mul(height as usize)
@@ -262,7 +496,11 @@ fn consistent_image(width: i32, height: i32, bytes: &[u8]) -> (i32, i32, &[u8]) 
     }
 }
 
-/// PlayerList ADD entry body:
+/// PlayerList ADD 条目体（字段顺序）：
+/// uuid + entityId(varlong) + name + xuid + platformChatId + buildPlatform(LInt)
+/// + skin + isTeacher + isHost + isSubClient + color(LInt)。
+///
+/// PlayerList ADD entry body (field order):
 /// uuid + entityId(varlong) + name + xuid + platformChatId + buildPlatform(LInt)
 /// + skin + isTeacher + isHost + isSubClient + color(LInt).
 fn write_player_list_add_entry(buf: &mut ByteWriter, entry: &PlayerListEntry) -> Result<(), Error> {
@@ -428,6 +666,10 @@ fn write_player_list_add_entry(buf: &mut ByteWriter, entry: &PlayerListEntry) ->
     Ok(())
 }
 
+/// PersonaPieceType 枚举 id（unknown=0；协议 2225 及之后 CoCo=28，之前
+/// unsupported=28、2225 及之后为 29）。输入是登录中带 "persona_" 前缀的字符串
+/// （如 persona_skeleton），未知值映射为 0。
+///
 /// PersonaPieceType enum id (unknown=0, CoCo=28 on protocol 2225 and
 /// later, unsupported=28 before and 29 on 2225 and later).
 /// Input is the login "persona_" prefixed string (e.g. persona_skeleton),
@@ -480,6 +722,8 @@ fn persona_piece_type_id(piece_type: &str) -> i32 {
     }
 }
 
+/// 将 packId 字符串转为 UUID（解析失败时为 nil UUID）。
+///
 /// packId string to UUID (nil UUID on parse failure).
 fn parse_persona_pack_uuid(value: &str) -> Uuid {
     Uuid::parse_str(value).unwrap_or_else(|_| Uuid::nil())
@@ -534,6 +778,12 @@ impl Reader<PlayerList> for PlayerList {
     }
 }
 
+/// SetEntityDataPacket（0x27）：向客户端下发实体元数据。
+/// 线序：实体 runtime id，随后是元数据条目。
+///   putUnsignedVarInt(0) // entity int properties
+///   putUnsignedVarInt(0) // entity float properties
+///   putUnsignedVarLong(frame)
+///
 /// SetEntityDataPacket (0x27)
 /// Entity metadata delivery to the client.
 /// Wire order: entity runtime id, then metadata entries.
@@ -548,6 +798,8 @@ pub struct SetEntityData {
 }
 
 impl SetEntityData {
+    /// 空的 SetEntityData 包（无元数据）。
+    ///
     /// Empty SetEntityData packet (no metadata).
     pub fn empty(entity_runtime_id: u64) -> Self {
         Self {
@@ -558,6 +810,8 @@ impl SetEntityData {
     }
 }
 
+/// 实体元数据条目。
+///
 /// Entity metadata entry.
 #[derive(Clone, Debug)]
 pub struct EntityMetadataEntry {
@@ -566,6 +820,8 @@ pub struct EntityMetadataEntry {
     pub value: EntityMetadataValue,
 }
 
+/// 实体元数据值。
+///
 /// Entity metadata value.
 #[derive(Clone, Debug)]
 pub enum EntityMetadataValue {
@@ -580,10 +836,16 @@ pub enum EntityMetadataValue {
     Vector3f(f32, f32, f32),
 }
 
+/// 实体元数据写入器（SetEntityData 与 AddItemActor 共用）。
+///
+/// 每条：key(varuint32) + type(varuint32) + legacy_type(u8) + value。
+/// 较新协议增加 legacy type 字节；1.26.40 布局：
+/// key(varint)+type(varint)+legacy_type(u8)+value。
+///
 /// Entity metadata writer (shared by SetEntityData and AddItemActor).
 ///
 /// Per entry: key(varuint32) + type(varuint32) + legacy_type(u8) + value.
-/// Newer protocols add the legacy type byte; the official 1.26.40 schema:
+/// Newer protocols add the legacy type byte; the 1.26.40 schema:
 /// key(varint)+type(varint)+legacy_type(u8)+value.
 pub(crate) fn write_entity_metadata(
     buf: &mut ByteWriter,
@@ -656,18 +918,26 @@ impl Reader<SetEntityData> for SetEntityData {
     }
 }
 
+/// CraftingDataPacket（0x34）：向客户端下发合配方数据（分段计数布局）。
+///
+/// 下方线格式结构并非内部配方结构，而是由 [`CraftingData::from_snapshot`] 从
+/// [`sc_recipe::RecipeRegistrySnapshot`] 构造出的 2168 线格式表示。只发送正确
+/// 编译、可在线表达的合成；其余进入 disabled 列表且从不编码。
+///
 /// CraftingDataPacket (0x34)
 /// Crafting recipe data for the client (segmented counts layout).
 ///
 /// Wire structs below are **not** the internal recipe structs: they are the
 /// 2168 wire representation built from a
 /// [`sc_recipe::RecipeRegistrySnapshot`] via [`CraftingData::from_snapshot`].
-/// Only correctly compiled, wire-expressible recipes are sent; anything
-/// else is reported in the disabled list and never encoded.
+/// Only correctly compiled, wire-expressible recipes are sent; anything else is
+/// reported in the disabled list and never encoded.
 #[derive(Clone, Debug, MinecraftPacket)]
 pub struct CraftingData {
     pub clean_recipes: bool,
     pub shaped: Vec<CraftingShapedWire>,
+    /// 无形合成与熔炉条目共用无形段（逐条 tag 区分 furnace/smoker/blast）。
+    ///
     /// Shapeless crafting + furnace entries share the shapeless
     /// segment (the per-entry tag distinguishes furnace/smoker/blast).
     pub shapeless: Vec<CraftingShapelessWire>,
@@ -677,12 +947,16 @@ pub struct CraftingData {
     pub reducers: Vec<CraftingReducerWire>,
 }
 
+/// 2168 有形合成条目。
+///
 /// 2168 shaped entry.
 #[derive(Clone, Debug)]
 pub struct CraftingShapedWire {
     pub recipe_id: String,
     pub width: u8,
     pub height: u8,
+    /// 行主序 `width*height`；`None` 表示空格。
+    ///
     /// Row-major `width*height`; `None` = empty slot.
     pub ingredients: Vec<Option<CraftingIngredientWire>>,
     pub results: Vec<CraftingResultWire>,
@@ -692,6 +966,8 @@ pub struct CraftingShapedWire {
     pub network_id: u32,
 }
 
+/// 2168 无形/熔炉条目。
+///
 /// 2168 shapeless/furnace entry.
 #[derive(Clone, Debug)]
 pub struct CraftingShapelessWire {
@@ -703,6 +979,8 @@ pub struct CraftingShapelessWire {
     pub network_id: u32,
 }
 
+/// 2168 锻造转换条目。
+///
 /// 2168 smithing-transform entry.
 #[derive(Clone, Debug)]
 pub struct CraftingSmithingWire {
@@ -715,6 +993,8 @@ pub struct CraftingSmithingWire {
     pub network_id: u32,
 }
 
+/// 2168 酿造条目（数字 id + meta）。
+///
 /// 2168 brewing entry (numeric ids + meta).
 #[derive(Clone, Debug)]
 pub struct CraftingBrewingWire {
@@ -726,6 +1006,8 @@ pub struct CraftingBrewingWire {
     pub output_meta: i32,
 }
 
+/// 2168 酿造容器条目（数字 id）。
+///
 /// 2168 brewing-container entry (numeric ids).
 #[derive(Clone, Debug)]
 pub struct CraftingContainerWire {
@@ -734,6 +1016,8 @@ pub struct CraftingContainerWire {
     pub output_id: i32,
 }
 
+/// 2168 材料分解条目：输入物品 key 加元素输出。
+///
 /// 2168 material-reducer entry: input item key plus element outputs.
 #[derive(Clone, Debug)]
 pub struct CraftingReducerWire {
@@ -741,6 +1025,8 @@ pub struct CraftingReducerWire {
     pub outputs: Vec<CraftingReducerOutput>,
 }
 
+/// 2168 材料分解输出（数字物品 id + 数量）。
+///
 /// 2168 material-reducer output (numeric item id + count).
 #[derive(Clone, Debug)]
 pub struct CraftingReducerOutput {
@@ -748,6 +1034,9 @@ pub struct CraftingReducerOutput {
     pub count: i32,
 }
 
+/// 一个线格式原料：精确物品或标签。这是 `IngredientChoice` 的线格式形式，
+/// 不是内部规格本身。
+///
 /// One wire ingredient: exact item or tag. This is the wire form of
 /// `IngredientChoice`, not the internal spec itself.
 #[derive(Clone, Debug)]
@@ -764,6 +1053,8 @@ pub enum CraftingIngredientWire {
     },
 }
 
+/// 一个线格式产出（实例物品描述符字段）。
+///
 /// One wire result (instance-item descriptor fields).
 #[derive(Clone, Debug)]
 pub struct CraftingResultWire {
@@ -774,6 +1065,8 @@ pub struct CraftingResultWire {
 }
 
 impl CraftingData {
+    /// 空的 CraftingData 包（清除客户端配方）。
+    ///
     /// Empty CraftingData packet (clears client recipes).
     pub fn empty() -> Self {
         Self {
@@ -787,6 +1080,14 @@ impl CraftingData {
         }
     }
 
+    /// 由配方注册表快照构造。仅纳入可在线表达的配方；返回的 disabled 列表
+    /// 解释每一处遗漏。
+    ///
+    /// - `item_runtime`：将物品标识解析为 `(runtime_id, block_runtime_id)`；
+    ///   未知物品会使该配方被禁用。
+    /// - `brewing_id`：将酿造/容器标识解析为数字 `(id, meta)`；无法解析的酿造
+    ///   条目被禁用，绝不以猜测 id 发送。
+    ///
     /// Build from a registry snapshot. Only wire-expressible recipes are
     /// included; the returned disabled list explains every omission.
     ///
@@ -1158,6 +1459,9 @@ fn choice_to_numeric(
     }
 }
 
+/// `minecraft:potion_type:X`（X 转小写）对应的 Bedrock 药水 damage id。
+/// 稳定协议药水 id 0-46（名称、字符串 id、damage）。
+///
 /// Bedrock potion damage id for `minecraft:potion_type:X` (X lowercased).
 /// Stable protocol potion ids 0-46 (name, string id, damage).
 pub(crate) fn potion_damage(name: &str) -> Option<i32> {
@@ -1213,9 +1517,9 @@ pub(crate) fn potion_damage(name: &str) -> Option<i32> {
     })
 }
 
-/// Legacy reducer `id:data` inputs → modern item names. Each mapping is
-/// pack-self-validated: the legacy and modern twin files carry identical
-/// outputs (checked offline; see the audit probe). `:0` is the vanilla
+/// 旧版分解器 `id:data` 输入 → 现代物品名。`:0` 是原版默认变体（同一物品）。
+///
+/// Legacy reducer `id:data` inputs → modern item names. `:0` is the vanilla
 /// default variant (same item).
 pub(crate) fn legacy_reducer_item(identifier: &str, data: i32) -> Option<&'static str> {
     Some(match (identifier, data) {
@@ -1246,6 +1550,10 @@ pub(crate) fn legacy_reducer_item(identifier: &str, data: i32) -> Option<&'stati
     })
 }
 
+/// 分解器输入 → 线格式 key（输入物品 runtime id）。现代名直接解析；旧版
+/// `id:data` 形式经由 [`legacy_reducer_item`]。字典形式 `{"item", "data": 0}`
+/// 输入是同一物品。
+///
 /// Reducer input → wire key (input item runtime id). Modern names resolve
 /// directly; legacy `id:data` forms go through [`legacy_reducer_item`].
 /// Dict-form `{"item", "data": 0}` inputs are the same item.
@@ -1267,17 +1575,22 @@ fn reducer_input_id(
     }
 }
 
+/// 配方原料线格式类型 id（v2168 布尔式 switch）。
+///
 /// Recipe ingredient wire type ids (v2168 boolean-style switch).
 mod ingredient_kind {
     pub const EMPTY: u32 = 0;
     pub const PRESENT: u32 = 1;
 }
 
-/// v2168 recipe ingredient bodies (wire-verified against real 1.26.40 clients):
-/// empty = switch 0 + varint aux + varint count; otherwise switch 1 +
-/// type-id string (`name` / `item_tag`) + body + varint count. There is NO
-/// u8 descriptor tag on this protocol (Mojang's 2225 docs describe the
-/// newer cereal layout; writing it here desyncs 2168 clients on sight).
+/// v2168 配方原料载荷体：空 = switch 0 + varint aux + varint count；否则
+/// switch 1 + 类型 ID 字符串（`name` / `item_tag`）+ 体 + varint count。
+/// 本协议没有 u8 描述符标签（写出 2225 的 cereal 布局会导致 2168 客户端不同步）。
+///
+/// v2168 recipe ingredient bodies: empty = switch 0 + varint aux + varint count;
+/// otherwise switch 1 + type-id string (`name` / `item_tag`) + body + varint
+/// count. There is NO u8 descriptor tag on this protocol (writing the 2225
+/// cereal layout here desyncs 2168 clients).
 fn write_ingredient(
     buf: &mut ByteWriter,
     ingredient: &CraftingIngredientWire,
@@ -1454,6 +1767,9 @@ impl Reader<CraftingData> for CraftingData {
     }
 }
 
+/// AvailableCommandsPacket（0x4c）：向客户端提供可用命令数据。
+/// 空变体：所有集合都为空。
+///
 /// AvailableCommandsPacket (0x4c)
 /// Available command data for the client.
 /// Empty variant: all collections are empty.
@@ -1463,6 +1779,8 @@ pub struct AvailableCommands {
 }
 
 impl AvailableCommands {
+    /// 空的 AvailableCommands 包（无命令）。
+    ///
     /// Empty AvailableCommands packet (no commands).
     pub fn empty() -> Self {
         Self {
@@ -1482,6 +1800,8 @@ pub struct CommandData {
     pub name: String,
     pub description: String,
     pub flags: u16,
+    /// 权限名字符串（any/gamedirectors/admin/host/owner）。
+    ///
     /// Permission name string (any/gamedirectors/admin/host/owner).
     pub permission: u8,
 }
@@ -1557,11 +1877,14 @@ mod tests {
         assert_eq!(consistent_image(0, 0, &[]), (0, 0, [].as_slice()));
     }
 
-    /// Full persona-style ADD entry walks clean under the v2168 layout
-    /// (header, entry
-    /// fields, skin block, tail flags, zero trailing bytes. A structural
-    /// deviation here desyncs the client into a disconnect, so the walk
-    /// asserts every field, not just the framing.
+    /// 完整 persona 风格的 ADD 条目在 v2168 布局下可完整解析（头部、条目字段、
+    /// 皮肤块、尾部标志、零尾随字节）。此处任何结构偏差都会使客户端不同步而断开，
+    /// 因此遍历断言每个字段而非仅帧结构。
+    ///
+    /// Full persona-style ADD entry walks clean under the v2168 layout (header,
+    /// entry fields, skin block, tail flags, zero trailing bytes). A structural
+    /// deviation here desyncs the client into a disconnect, so the walk asserts
+    /// every field, not just the framing.
     #[test]
     fn player_list_add_persona_entry_walks_clean_under_v2168_layout() {
         use super::PlayerList;
@@ -1921,82 +2244,8 @@ mod tests {
         assert_eq!(disabled.len(), 1);
     }
 
-    #[test]
-    fn complete_version_pack_builds_a_nonempty_crafting_table() {
-        let Some(mut source) = sc_packloader::test_pack::open_test_pack() else {
-            eprintln!("[skip] 版本包缺失，跳过测试");
-            return;
-        };
-        let mut version =
-            sc_packloader::version_control::loader::ZippedVersionPack::get_version(&mut source)
-                .unwrap();
-        let runtime = version.take_runtime_id();
-        let mut packs = version.take_behavior_packs();
-        packs.sort_by(|a, b| a.0.cmp(&b.0));
-        let mut sources = Vec::new();
-        for (order, (_, pack)) in packs.iter().enumerate() {
-            let (files, _) = sc_packloader::recipe_source::read_recipes_from_resource_pack(
-                pack,
-                order,
-                &sc_packloader::recipe_source::RecipeSourceBudgets::default(),
-            );
-            for file in files {
-                sources.push(sc_recipe::SourceRecipe::from_parts(
-                    file.pack_name,
-                    file.pack_order,
-                    file.relative_path,
-                    file.format_version,
-                    file.raw,
-                    file.fingerprint,
-                    file.raw_bytes,
-                ));
-            }
-        }
-        assert!(
-            sources.len() > 800,
-            "the complete pack stack must be inspected"
-        );
-        let (snapshot, _) = sc_recipe::RecipeRegistrySnapshot::compile(
-            &sources,
-            &sc_recipe::CompileBudgets::default(),
-            false,
-        )
-        .unwrap();
-        let resolver = |name: &str| {
-            runtime
-                .iter()
-                .find(|item| item.name == name)
-                .map(|item| (item.id as u16, 0))
-        };
-        let (wire, disabled) = CraftingData::from_snapshot(&snapshot, &resolver, &|_| None);
-        assert!(
-            wire.shaped.len() + wire.shapeless.len() > 100,
-            "empty crafting table: {disabled:?}"
-        );
-        for entry in &wire.shaped {
-            assert_eq!(
-                entry.network_id,
-                snapshot.network_index(&entry.recipe_id).unwrap() + 2
-            );
-        }
-        for entry in &wire.shapeless {
-            assert_eq!(
-                entry.network_id,
-                snapshot.network_index(&entry.recipe_id).unwrap() + 2
-            );
-        }
-        let mut writer = ByteWriter::new();
-        wire.write(&mut writer).unwrap();
-        eprintln!(
-            "Complete recipe stack: {} source files, {} active, {} shaped, {} shapeless, {} bytes",
-            sources.len(),
-            snapshot.len(),
-            wire.shaped.len(),
-            wire.shapeless.len(),
-            writer.as_slice().len()
-        );
-    }
-
+    /// 2225 下省略 PlayFab ID，且 CoCo 会改变 piece 枚举。
+    ///
     /// PlayFab ID is omitted and CoCo shifts the piece enum on 2225.
     #[test]
     fn player_list_skin_follows_2225_layout() {
@@ -2031,130 +2280,6 @@ mod tests {
         // PlayFab ID string ("pf" = length prefix + 2 bytes) is gone on 2225.
         assert_eq!(old_bytes.len(), new_bytes.len() + 3);
     }
-    /// Live-pack audit: every compiled recipe must reach the wire.
-    /// Compile-disabled entries must all be Mojang-removed (`deprecated`
-    /// tags); wire-disabled must be empty (the trim recipe rides the
-    /// hardcoded id-1 entry). Skips when no version pack is vendored
-    /// next to the checkout (same pattern as the palette tests).
-    #[test]
-    fn live_pack_recipes_all_reach_the_wire() {
-        let Some(mut source) = sc_packloader::test_pack::open_test_pack() else {
-            eprintln!("[skip] 版本包缺失，跳过配方审计");
-            return;
-        };
-        let mut pack =
-            sc_packloader::version_control::loader::ZippedVersionPack::get_version(&mut source)
-                .expect("pack parses");
-        let budgets = sc_packloader::recipe_source::RecipeSourceBudgets::default();
-        let mut behavior = pack.take_behavior_packs();
-        behavior.sort_by(|(a, _), (b, _)| a.cmp(b));
-        let mut files = Vec::new();
-        for (order, (_, rp)) in behavior.iter().enumerate() {
-            let (mut part, _) =
-                sc_packloader::recipe_source::read_recipes_from_resource_pack(rp, order, &budgets);
-            files.append(&mut part);
-        }
-        let inputs: Vec<sc_recipe::SourceRecipe> = files
-            .iter()
-            .map(|file| {
-                sc_recipe::SourceRecipe::from_parts(
-                    file.pack_name.clone(),
-                    file.pack_order,
-                    file.relative_path.clone(),
-                    file.format_version.clone(),
-                    file.raw.clone(),
-                    file.fingerprint,
-                    file.raw_bytes,
-                )
-            })
-            .collect();
-        let (snapshot, diagnostics) = sc_recipe::RecipeRegistrySnapshot::compile(
-            &inputs,
-            &sc_recipe::CompileBudgets::default(),
-            false,
-        )
-        .expect("compile ok");
-        for entry in &diagnostics.disabled {
-            assert!(
-                entry.reason.contains("deprecated"),
-                "compile-disabled non-deprecated recipe {}: {}",
-                entry.identifier,
-                entry.reason
-            );
-        }
-        let runtime = pack.take_runtime_id();
-        let registry = sc_item::ItemRegistry::new();
-        for (index, entry) in runtime.iter().enumerate() {
-            registry.upsert(sc_item::ItemDefinition::new(
-                (index + 1) as u16,
-                entry.name.clone(),
-            ));
-        }
-        let names: std::collections::HashSet<String> =
-            runtime.iter().map(|entry| entry.name.clone()).collect();
-        let groups: std::collections::HashMap<String, Vec<String>> = pack
-            .take_recipe_groups()
-            .into_iter()
-            .map(|(key, members)| {
-                (
-                    key,
-                    members
-                        .into_iter()
-                        .filter(|member| names.contains(member))
-                        .collect(),
-                )
-            })
-            .filter(|(_, members): &(String, Vec<String>)| !members.is_empty())
-            .collect();
-        let tags = sc_recipe::MapTagResolver::new(groups);
-        let item_runtime = |id: &str| {
-            let runtime = registry.runtime_id_by_name(id).or_else(|| {
-                sc_recipe::rename_alias(&tags, id)
-                    .and_then(|alias| registry.runtime_id_by_name(&alias))
-            })?;
-            let def = registry.get(runtime)?;
-            Some((runtime, def.default_block_runtime_id.unwrap_or(0)))
-        };
-        let brewing_id = |id: &str| {
-            if let Some(rest) = id.strip_prefix("minecraft:potion_type:") {
-                let damage = super::potion_damage(&rest.to_lowercase())?;
-                let runtime = registry.runtime_id_by_name("minecraft:potion")?;
-                return Some((runtime as i32, damage));
-            }
-            let (runtime, _) = item_runtime(id)?;
-            Some((runtime as i32, 0))
-        };
-        let (data, disabled) = CraftingData::from_snapshot(&snapshot, &item_runtime, &brewing_id);
-        // Compile-disabled (Mojang-removed, asserted above) flow through
-        // with a prefix, as does the trim recipe absorbed by the hardcoded
-        // id-1 wire entry the writer always emits; only genuine wire
-        // omissions must be empty.
-        let absorbed = disabled
-            .iter()
-            .filter(|(_, reason)| reason.starts_with("absorbed by hardcoded"))
-            .count();
-        let wire_only: Vec<_> = disabled
-            .into_iter()
-            .filter(|(_, reason)| {
-                !reason.starts_with("compile disabled:")
-                    && !reason.starts_with("absorbed by hardcoded")
-            })
-            .collect();
-        assert!(wire_only.is_empty(), "wire-disabled recipes: {wire_only:?}");
-        let sent = data.shaped.len()
-            + data.shapeless.len()
-            + data.smithing_transform.len()
-            + data.brewing.len()
-            + data.containers.len()
-            + data.reducers.len();
-        // The trim recipe rides the hardcoded id-1 wire entry instead of a
-        // vec; everything else must be sent through the segments.
-        assert_eq!(
-            sent + absorbed,
-            diagnostics.recipe_count,
-            "every recipe sent"
-        );
-    }
 }
 
 #[cfg(test)]
@@ -2162,11 +2287,13 @@ mod ingredient_wire_tests {
     use super::{write_ingredient, CraftingIngredientWire};
     use sc_binary::{ByteReader, ByteWriter};
 
-    /// v2168 recipe ingredient layout (wire-verified against real 1.26.40
-    /// clients): uvarint switch (0 = empty, 1 = present) + optional type-id
-    /// string + body + varint count. There is
-    /// NO u8 descriptor tag on this protocol (Mojang's 2225 docs describe
-    /// the newer cereal layout; that shape desyncs 2168 clients on sight).
+    /// v2168 配方原料布局：uvarint switch（0 = 空，1 = 有）+ 可选类型 ID
+    /// 字符串 + 体 + varint count。本协议没有 u8 描述符标签（写出 2225 的
+    /// cereal 布局会导致 2168 客户端不同步）。
+    ///
+    /// v2168 recipe ingredient layout: uvarint switch (0 = empty, 1 = present) +
+    /// optional type-id string + body + varint count. There is NO u8 descriptor
+    /// tag on this protocol (the 2225 cereal shape desyncs 2168 clients).
     #[test]
     fn ingredient_descriptors_match_official_layout() {
         // Empty: switch 0 + varint aux + varint count.

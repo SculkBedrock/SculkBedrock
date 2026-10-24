@@ -1,11 +1,6 @@
-//! Aquifer sampling: groundwater/lava levels, barriers, and fluid updates.
+//! 含水层采样：地下水与岩浆液面、屏障判定及流体状态查询。
 //!
-//! Notes:
-//! - Block states are `BlockRuntimeId`s injected via [`MaterialBlocks`].
-//! - The constructor takes plain scalars (chunk position/level seed).
-//! - Per-use RNG state is a local instance reseeded before each use.
-//! - The preliminary-surface cache is a bounded 64-entry LRU keyed by packed
-//!   coordinates, missing as `i32::MIN`.
+//! Aquifer sampling: ground water and lava levels, barrier checks, and fluid status queries.
 
 use crate::worldgen::densityfunction::function::{
     ChunkCache, ChunkCacheContext, DensityFunction, FunctionContext,
@@ -53,13 +48,17 @@ const SURFACE_SAMPLING_OFFSETS_IN_CHUNKS: [[i32; 2]; 13] = [
 // FluidPicker / FluidStatus
 // ---------------------------------------------------------------------------
 
-/// Per-position fluid lookup.
+/// 按方块坐标返回该位置流体状态的接口。
+///
+/// Interface returning the fluid status at a block position.
 pub trait FluidPicker {
     /// Returns the fluid status at a block position.
     fn compute_fluid(&self, block_x: i32, block_y: i32, block_z: i32) -> FluidStatus;
 }
 
-/// Fluid level plus fluid block type at one aquifer cell.
+/// 含水层单元格的液面高度与流体方块类型。
+///
+/// Fluid level and fluid block type of one aquifer cell.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FluidStatus {
     pub fluid_level: i32,
@@ -77,7 +76,9 @@ impl FluidStatus {
     }
 }
 
-/// Overworld fluid picker: lava below the lava threshold, water otherwise.
+/// 主世界流体判定：低于岩浆阈值返回岩浆，否则返回水。
+///
+/// Overworld fluid picker returning lava below the lava threshold and water otherwise.
 pub struct OverworldFluidPicker {
     lava_level: i32,
     lava_threshold: i32,
@@ -119,7 +120,9 @@ impl FluidPicker for OverworldFluidPicker {
 // Bounded LRU map for the preliminary-surface cache
 // ---------------------------------------------------------------------------
 
-/// Bounded LRU map from packed coordinates to surface levels (miss = `i32::MIN`).
+/// 有界 LRU 表：以打包坐标索引表面高度，未命中返回 i32::MIN。
+///
+/// Bounded LRU map from packed coordinates to surface levels, returning i32::MIN on a miss.
 struct LruLongIntMap {
     /// Front is oldest, back is newest.
     entries: VecDeque<(i64, i32)>,
@@ -170,7 +173,9 @@ impl LruLongIntMap {
 // CachedPointContext
 // ---------------------------------------------------------------------------
 
-/// Java: `private static final class CachedPointContext implements ChunkCacheContext`(L637-673).
+/// 携带 ChunkCache 的可变点采样上下文。
+///
+/// Mutable point-sampling context carrying a ChunkCache.
 struct CachedPointContext {
     chunk_cache: Rc<ChunkCache>,
     block_x: Cell<i32>,
@@ -226,7 +231,9 @@ impl ChunkCacheContext for CachedPointContext {
 // Aquifer
 // ---------------------------------------------------------------------------
 
-/// Java: `public final class Aquifer`(L20-674).
+/// 含水层采样器：按密度函数与噪声决定每个位置的空气、水或岩浆。
+///
+/// Aquifer sampler deciding air, water, or lava at each position from density functions and noise.
 pub struct Aquifer {
     barrier_noise: Arc<dyn DensityFunction>,
     fluid_level_floodedness_noise: Arc<dyn DensityFunction>,

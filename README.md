@@ -87,14 +87,14 @@ Settings live in `server_properties.toml` (ports, MOTD, view distance, per-tick 
 
 - [x] Item recipe crafting **(partially complete)**
 - [x] Entity fall damage calculation / hunger **(partially complete)**
-- [ ] ⏸️ **(in progress)** Crafting table / furnace / stonecutter block functions
-- [ ] ⏸️ **(in progress)** Item durability
-- [ ] ⏸️ **(in progress)** Ender chest / chest / dispenser / dropper container block functions
+- [x] ⏸️ **(in progress)** Crafting table / furnace / stonecutter block functions
+- [x] ⏸️ **(in progress)** Item durability
+- [x] ⏸️ **(in progress)** Ender chest / chest / dispenser / dropper container block functions
 - [ ] ⏸️ **(in progress)** Item drop collision
 - [ ] Item enchantments / values
 
 ### Blocks:
-- [ ] ⏸️ **(in progress)** Block Entity support
+- [x] ⏸️ **(in progress)** Block Entity support
 - [ ] Functional blocks
 
 ### Other features:

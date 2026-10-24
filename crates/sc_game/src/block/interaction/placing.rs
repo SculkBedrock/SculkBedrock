@@ -51,6 +51,40 @@ fn target_intersects_player(world: &World, entity: &EntityId, target: &BlockPosi
     player_aabb.intersects(&block_aabb)
 }
 
+/// 尝试与目标方块交互（如打开箱子、工作台、熔炉等容器/操作台）。
+///
+/// 若成功触发交互或条件不满足但已吞掉该事件，返回 `true`；
+/// 若目标方块非可交互方块，返回 `false`。
+///
+/// Tries to interact with the target block (opening a chest, crafting table,
+/// furnace or other container/workstation). Returns `true` when the
+/// interaction fired or the event was consumed despite unmet conditions;
+/// returns `false` when the block is not interactive.
+pub fn try_interact_block(
+    world: &World,
+    entity: EntityId,
+    position: BlockPosition,
+    outbox: &mut NetworkOutbox,
+) -> bool {
+    if crate::inventory::chest::open_chest_container(
+        world,
+        entity,
+        position,
+        outbox,
+    ) {
+        return true;
+    }
+    if crate::inventory::crafting::open_crafting_station(
+        world,
+        entity,
+        position,
+        outbox,
+    ) {
+        return true;
+    }
+    false
+}
+
 // Placement systems.
 
 /// Placement: face offset, item-to-block mapping (ItemRegistry), inventory spend, then enqueue (branch A).
@@ -70,15 +104,16 @@ pub fn handle_place_block(
             "[interaction] PlaceBlockRequest: click={} face={} hotbar={} item_id={}",
             request.position, request.face, request.hotbar_slot, request.item_id
         );
-        // Empty hands cannot place (clients never predict empty-hand placement, no resync needed).
-        if crate::inventory::crafting::open_crafting_station(
-            &world,
-            request.entity,
-            request.position,
-            &mut outbox,
-        ) {
-            continue;
+        // When sneaking, skip block interaction (chests/crafting tables/furnaces
+        // are not opened) and place the held item against the block directly;
+        // sneaking with an empty hand triggers nothing.
+        let is_sneaking = crate::movement::is_player_sneaking(&world, &request.entity);
+        if !is_sneaking {
+            if try_interact_block(&world, request.entity, request.position, &mut outbox) {
+                continue;
+            }
         }
+        // Empty hands cannot place (clients never predict empty-hand placement, no resync needed).
         if request.item_id == 0 {
             continue;
         }
@@ -242,18 +277,17 @@ fn resolve_placement_state(
     } else {
         None
     };
-    crate::block::facing::orient_state(
-        &registry,
-        base_hash,
-        face,
-        data.rotation.yaw,
+    let clicked_face = crate::block::facing::BlockFace::from_index(face)
+        .unwrap_or(crate::block::facing::BlockFace::Up);
+    let ctx = crate::block::facing::PlacementContext::new(
+        clicked_face,
         data.position,
-        target.x,
-        target.y,
-        target.z,
+        *target,
         eye_height,
+        data.rotation.yaw,
         click_frac,
-    )
+    );
+    crate::block::facing::orient_state(&registry, base_hash, &ctx)
 }
 
 /// Consume authoritative block-write results and roll back only rejected

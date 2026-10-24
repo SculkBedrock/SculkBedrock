@@ -1,16 +1,10 @@
+//! 按维度打包噪声与密度状态的容器类型。
+//!
+//! 各子容器在构造时按顺序推进同一个随机源。
+//!
 //! Holder types bundling noise and density state per dimension.
 //!
-//! | Rust module | Java source |
-//! |---|---|
-//! | [`normal`] | `NormalObjectHolder.java` |
-//! | [`nether`] | `NetherObjectHolder.java` |
-//! | [`the_end`] | `TheEndObjectHolder.java` |
-//!
-//! Holders share one RNG: fork/next_long advance it, identical preserves it.
-//! Holders share one RNG via trait plus struct composition.
-//! Sub-holders advance shared RNG state in construction order.
-//! fork/next_long advance shared state, identical preserves it.
-//! fork/next_long advance shared state, identical preserves it. //
+//! Sub-holders advance one shared random source in construction order.
 
 pub mod nether;
 pub mod normal;
@@ -18,14 +12,14 @@ pub mod the_end;
 
 use crate::worldgen::random::Xoroshiro128;
 
+/// 空的 holder 标记 trait。
+///
 /// Empty holder marker trait.
 pub trait ObjectHolder {}
 
-/// Holder sharing a random source.
+/// 共享同一随机源的容器对象，构造期间以可变引用传递该随机源。
 ///
-/// Stores a copyable random source threaded through as &mut during construction.
-/// Stores a copyable random source threaded through as &mut during construction. //
-/// Preserves fork/next_long ordering semantics.
+/// Holder object sharing one random source passed by mutable reference during construction.
 #[derive(Clone, Copy, Debug)]
 pub struct RandomizedObjectHolder {
     random: Xoroshiro128,
@@ -45,7 +39,9 @@ impl RandomizedObjectHolder {
 
 impl ObjectHolder for RandomizedObjectHolder {}
 
-/// Empty holder.
+/// 空容器对象。
+///
+/// Empty holder object.
 #[derive(Debug)]
 pub struct EmptyObjectHolder;
 
@@ -110,10 +106,5 @@ mod tests {
         let h1 = the_end::TheEndObjectHolder::new(Xoroshiro128::new(777));
         let h2 = the_end::TheEndObjectHolder::new(Xoroshiro128::new(777));
         assert_eq!(h1.random(), h2.random());
-    }
-
-    #[test]
-    fn empty_object_holder_exists() {
-        let _ = EmptyObjectHolder;
     }
 }

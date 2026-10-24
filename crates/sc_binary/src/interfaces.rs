@@ -1,9 +1,14 @@
-//! `Reader` / `Writer`: serialization interfaces (the `BinaryIo` derive target).
+//! `Reader` / `Writer`：自定义类型的二进制读写接口（`BinaryIo` 派生宏的目标）。
 //!
-//! `read(buf) -> Result<Self>` / `write(&self, buf)`; protocol packets implementing
-//! both traits plug into the `MinecraftPackets` enum for unified encode/decode.
+//! 实现 `read(buf) -> Result<Self>` 与 `write(&self, buf)` 即可获得序列化能力。
+//!
+//! `Reader` / `Writer`: binary read/write interfaces for custom types (the
+//! target of the `BinaryIo` derive macro).
+//!
+//! Implementing `read(buf) -> Result<Self>` and `write(&self, buf)` provides
+//! serialization for the type.
 
-// todo: remove this in 4.0.0
+// Keeps the deprecated `Streamable` API compilable.
 #![allow(deprecated)]
 
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
@@ -117,24 +122,9 @@ macro_rules! impl_streamable {
     };
 }
 
-/// Allows you to read from a `ByteReader` without needing to know the type.
+/// 从 `ByteReader` 反序列化的接口。
 ///
-/// ```ignore
-/// use sc_binary::io::{ByteReader, Reader};
-///
-/// pub struct MyStruct {
-///    pub a: u8,
-///    pub b: u8
-/// }
-///
-/// impl Reader for MyStruct {
-///     fn read(&self, buf: &mut ByteReader) -> Result<Self, std::io::Error> {
-///        let a = buf.read_u8()?;
-///        let b = buf.read_u8()?;
-///        Ok(Self { a, b })
-///     }
-/// }
-/// ```
+/// Deserialization interface from a `ByteReader`.
 pub trait Reader<Output> {
     /// Reads `Self` from a `ByteReader`.
     ///
@@ -342,28 +332,17 @@ impl_reader!(newtype_le LE<u24>, read_u24, LE<i24>, read_i24);
 
 impl_reader!(newtype_be BE<u24>, read_u24, BE<i24>, read_i24);
 
-/// Allows you to write to a `ByteWriter` without needing to know the type.
+/// 向 `ByteWriter` 序列化的接口。
 ///
-/// ```ignore
-/// use sc_binary::io::{ByteWriter, Writer};
-///
-/// pub struct MyStruct {
-///   pub a: u8,
-///   pub b: u8
-/// }
-///
-/// impl Writer for MyStruct {
-///     fn write(&self, buf: &mut ByteWriter) -> Result<(), std::io::Error> {
-///         buf.write_u8(self.a)?;
-///         buf.write_u8(self.b)?;
-///         Ok(());
-///     }
-/// }
-/// ```
+/// Serialization interface to a `ByteWriter`.
 pub trait Writer {
+    /// 将 `Self` 写入 `ByteWriter`。
+    ///
     /// Writes `Self` to a `ByteWriter`.
     ///
-    /// For automatic implementations, use `#[derive(BinaryEncoder]` macro.
+    /// 使用 `#[derive(BinaryIo)]` 自动实现。
+    ///
+    /// Use `#[derive(BinaryIo)]` for automatic implementations.
     fn write(&self, buf: &mut ByteWriter) -> Result<(), std::io::Error>;
 
     /// This is a utility function to write `Self` to a `ByteWriter` without
@@ -546,54 +525,10 @@ impl Writer for SocketAddr {
     }
 }
 
-/// __**This trait exists only for backwards compatibility.**__
+/// 遗留读写 trait（已弃用），保留仅为向后兼容；请实现 `Reader` 与 `Writer`。
 ///
-/// If you wish to read and write from a `ByteReader` or `ByteWriter`,
-/// use the `Reader` and `Writer` traits.
-///
-/// ### New Implementation Example
-/// ```ignore
-/// use sc_binary::io::{ByteReader, ByteWriter};
-/// use sc_binary::interfaces::{Reader, Writer};
-///
-/// pub struct MyStruct;
-///
-/// impl Reader for MyStruct;
-/// impl Writer for MyStruct;
-/// ```
-///
-/// ## `Streamable`
-/// A trait to parse and unparse header structs from a given buffer.
-///
-/// ```ignore
-/// use sc_binary::{Streamable, error::BinaryError};
-///
-/// struct Foo {
-///     bar: u8,
-///     foo_bar: u16
-/// }
-/// impl Streamable for Foo {
-///     fn parse(&self) -> Result<Vec<u8>, BinaryError> {
-///         use std::io::Write;
-///         let mut stream = Vec::<u8>::new();
-///         stream.write_all(&self.bar.parse()?[..])?;
-///         stream.write_all(&self.bar.parse()?[..])?;
-///         Ok(stream)
-///     }
-///
-///     fn compose(source: &[u8], position: &mut usize) -> Result<Self, BinaryError> {
-///         // Streamable is implemented for all primitives, so we can
-///         // just use this implementation to read our properties.
-///         Ok(Self {
-///             bar: u8::compose(&source, position)?,
-///             foo_bar: u16::compose(&source, position)?
-///         })
-///     }
-/// }
-/// ```
-/// <p style="background:rgba(255,181,77,0.16);padding:0.75em;border-left: 2px solid orange;">
-///     <strong>Warning:</strong> This module is deprecated and will be removed in <strong>v0.4.0</strong>.
-/// </p>
+/// Legacy read/write trait (deprecated), kept for backwards compatibility;
+/// implement `Reader` and `Writer` instead.
 #[deprecated(
     since = "0.3.0",
     note = "This module is deprecated and will be removed in v0.4.0. Use the `Reader` and `Writer` traits instead."

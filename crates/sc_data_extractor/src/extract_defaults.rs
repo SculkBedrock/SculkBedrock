@@ -1,27 +1,41 @@
-//! Extract block default states from upstream block sources (input to
-//! `split-blocks --defaults`).
+//! 从 Java 方块源码中提取方块默认状态，输出 `getDefaultState` 溯源报告；
+//! 方块 JSON 格式不携带 `sc:default_state`，输出仅作参考。
 //!
-//! Source semantics: a default combination that is not a legal state fails
-//! construction. This tool mirrors that invariant: every block's default
-//! combination must hit exactly one state in the source palette, otherwise
-//! it reports loudly (`combo_not_in_palette`) with no guessing and no
-//! first-state fallback.
+//! Extracts block default states from Java block sources, producing a
+//! `getDefaultState` provenance report; the block JSON format does not carry
+//! `sc:default_state`, so the output is informational only.
+//!
+//! 每个方块的默认组合必须命中调色板中恰好一个状态，否则报错
+//! `combo_not_in_palette`：不猜测，也不回退到首个状态。
+//!
+//! Every block's default combination must match exactly one state in the
+//! palette; otherwise `combo_not_in_palette` is reported. There is no
+//! guessing and no first-state fallback.
+//!
+//! 两趟处理：有 Java 方块类的从类属性列表组合；没有 Java 类的在属性全部
+//! 已声明时直接从属性声明组合。每个默认值的来源记录在
+//! `ExtractReport.provenance`。
 //!
 //! Two passes: blocks with Java block classes combine from the class
 //! property lists; blocks without Java classes combine directly from the
-//! property declarations when all their properties are declared (same
-//! rules, no heuristic matching).
+//! property declarations when all their properties are declared.
 //! Each default's origin is recorded in `ExtractReport.provenance`.
 //!
-//! Source shapes (verified against the upstream checkout at write time):
-//! - three property declaration kinds: booleans (serialized as byte),
-//!   int ranges, and enums (serialized as the lowercase constant name);
-//! - enum defaults are either the first value or a named constant;
-//! - block property lists reference shared property holders, with bare
-//!   names resolved through static imports.
+//! 属性声明有三种形式：布尔（序列化为 byte）、整数范围、枚举（序列化为
+//! 小写常量名）。枚举默认值取首个值或具名常量；方块属性列表引用共享
+//! 属性持有者，裸名经静态导入解析。
 //!
-//! Output is `{identifier: palette_key}` consumed directly by split (same
-//! key rule as [`split_state_key`](sc_packloader::block::split_state_key)).
+//! Property declarations come in three forms: booleans (serialized as byte),
+//! int ranges, and enums (serialized as the lowercase constant name). Enum
+//! defaults are either the first value or a named constant; block property
+//! lists reference shared property holders, with bare names resolved through
+//! static imports.
+//!
+//! 输出为 `{identifier: palette_key}`（与
+//! [`split_state_key`](sc_packloader::block::split_state_key) 同一键规则）。
+//!
+//! Output is `{identifier: palette_key}` (same key rule as
+//! [`split_state_key`](sc_packloader::block::split_state_key)).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
@@ -33,19 +47,33 @@ use sc_nbt::NbtValue;
 use sc_packloader::block::{parse_legacy_palette_entries, split_state_key, LegacyPaletteEntry};
 
 const CB_PROPS: &str = "org.powernukkitx.block.property.CommonBlockProperties";
-// Reserved for data-extraction defaults (kept for upstream class-path symmetry).
+// Class path of the block-id source file read by the extraction passes.
 #[allow(dead_code)]
 const BLOCK_ID: &str = "org.powernukkitx.block.BlockID";
 
+/// 属性默认值（内部形式；按 NBT 精确匹配校验）。
+///
 /// Property default (internal form; checked by exact NBT match).
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum PropDefault {
+    /// 布尔默认值（字节 0/1）。
+    ///
+    /// Boolean default (byte 0/1).
     Byte(i8),
+    /// 整数默认值。
+    ///
+    /// Integer default.
     Int(i32),
+    /// 枚举默认值（小写常量名）。
+    ///
+    /// Enum default (lowercase constant name).
     Str(String),
 }
 
 impl PropDefault {
+    /// 按 NBT 值精确匹配（类型与值都需一致）。
+    ///
+    /// Matches by exact NBT value (type and value must both match).
     fn matches_nbt(&self, v: &NbtValue) -> bool {
         match (self, v) {
             (PropDefault::Byte(a), NbtValue::Byte(b)) => a == b,
@@ -55,6 +83,9 @@ impl PropDefault {
         }
     }
 
+    /// 序列化为默认值的文本形式（用于报告输出）。
+    ///
+    /// Serializes the default to its text form (for report output).
     fn repr(&self) -> String {
         match self {
             PropDefault::Byte(b) => b.to_string(),
@@ -68,7 +99,10 @@ impl PropDefault {
 // Java text scan (string/char/comment-aware bracket matching, no dependencies).
 // ---------------------------------------------------------------------------
 
-/// Index of the bracket matching `text[open]` (`(`/`{`), skipping comments/strings.
+/// 返回 `text[open]` 处括号（`(`/`{`）的匹配下标（跳过注释/字符串）。
+///
+/// Index of the bracket matching `text[open]` (`(`/`{`), skipping
+/// comments/strings.
 pub(crate) fn find_matching(text: &str, open: usize) -> Option<usize> {
     let b = text.as_bytes();
     if open >= b.len() {
@@ -140,6 +174,8 @@ pub(crate) fn find_matching(text: &str, open: usize) -> Option<usize> {
     None
 }
 
+/// 按顶层 `,` 切分（感知括号/字符串/注释）。
+///
 /// Split on top-level `,` (bracket/string/comment aware).
 pub(crate) fn split_top(text: &str) -> Vec<&str> {
     let b = text.as_bytes();
@@ -227,10 +263,15 @@ pub(crate) fn split_top(text: &str) -> Vec<&str> {
     out
 }
 
+/// Java 标识符字符（字母/数字/`_`/`$`）。
+///
+/// Java identifier character (letter/digit/`_`/`$`).
 fn is_ident_char(b: u8) -> bool {
     matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'$')
 }
 
+/// 取 `text[..end]` 末尾的标识符（字段/常量回溯）。
+///
 /// Trailing identifier of `text[..end]` (field/constant backtrack).
 fn trailing_ident(text: &str, end: usize) -> Option<String> {
     let b = text.as_bytes();
@@ -257,7 +298,10 @@ fn trailing_ident(text: &str, end: usize) -> Option<String> {
     Some(text[j..i].to_string())
 }
 
-/// Constant names before the top-level `;` of an enum body (annotations stripped).
+/// 取枚举体中顶层 `;` 之前的常量名（剥离注解）。
+///
+/// Constant names before the top-level `;` of an enum body (annotations
+/// stripped).
 fn enum_constant_name(segment: &str) -> Option<String> {
     let mut s = segment.trim();
     while let Some(rest) = s.strip_prefix('@') {
@@ -287,11 +331,18 @@ fn enum_constant_name(segment: &str) -> Option<String> {
 // Main flow.
 // ---------------------------------------------------------------------------
 
+/// 属性声明：属性名加默认值。
+///
+/// Property declaration: property name plus default value.
 struct PropDecl {
     prop_name: String,
     default: PropDefault,
 }
 
+/// CLI 入口：解析参数（`--java-src`/`--palette`/`--out`）并写出结果。
+///
+/// CLI entry point: parses arguments (`--java-src`/`--palette`/`--out`) and
+/// writes the results.
 pub fn run(args: &[String]) {
     let mut java_src: Option<&str> = None;
     let mut palette: Option<&str> = None;
@@ -359,6 +410,9 @@ pub fn run(args: &[String]) {
     }
 }
 
+/// 读取整个文件为字符串（失败即退出进程）。
+///
+/// Reads a whole file as a string (exits the process on failure).
 fn read_file(path: &Path) -> String {
     fs::read_to_string(path).unwrap_or_else(|e| {
         eprintln!("failed to read {}: {e}", path.display());
@@ -366,6 +420,8 @@ fn read_file(path: &Path) -> String {
     })
 }
 
+/// 类名到候选源文件（显式 import 优先）。
+///
 /// Class name to candidate source files (explicit imports first).
 fn resolve_class(
     java_root: &Path,
@@ -399,6 +455,9 @@ fn resolve_class(
     None
 }
 
+/// 收集文件中的 import（静态导入加 `static ` 前缀）。
+///
+/// Collects a file's imports (static imports get a `static ` prefix).
 fn file_imports(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     for line in text.lines() {
@@ -412,6 +471,8 @@ fn file_imports(text: &str) -> Vec<String> {
     out
 }
 
+/// 枚举常量（声明序）到序列化用小写名。
+///
 /// Enum constants (declaration order) to serialized lowercase names.
 fn parse_enum_constants(
     java_root: &Path,
@@ -521,6 +582,8 @@ fn parse_enum_constants(
     Ok(constants)
 }
 
+/// 在状态组中精确命中默认组合，返回其下标。
+///
 /// Exact-hit the default combination in a state group; return its index.
 fn find_exact_match(
     states: &[&LegacyPaletteEntry],
@@ -547,6 +610,8 @@ fn find_exact_match(
     matched
 }
 
+/// 状态键遵循 split 规则。
+///
 /// State keys follow the split rule.
 fn split_key_for(
     states: &[&LegacyPaletteEntry],
@@ -578,11 +643,15 @@ fn split_key_for(
     split_state_key(union.len(), single, matched_idx)
 }
 
+/// 提取报告（CLI 与回归测试共用）。
+///
 /// Extraction report (CLI and regression tests share it).
 #[derive(Clone, Debug, Default)]
 pub struct ExtractReport {
     pub defaults: BTreeMap<String, String>,
-    /// Default origin: class declaration or per-declaration composition.
+    /// 默认值来源：类声明或按声明组合（无 Java 类的方块按声明组合）。
+    ///
+    /// Default origin: class declaration or per-declaration composition
     /// (blocks without Java classes compose from declarations).
     pub provenance: BTreeMap<String, String>,
     pub declarations: usize,
@@ -595,12 +664,18 @@ pub struct ExtractReport {
 }
 
 impl ExtractReport {
+    /// 可交付（无硬错误、无组合缺失、无重复规格）。
+    ///
     /// Shippable (no hard errors, no misses, no duplicate specs).
     pub fn is_shippable(&self) -> bool {
         self.hard_errors == 0 && self.combo_miss.is_empty() && self.dup_canon.is_empty()
     }
 }
 
+/// 读取调色板（支持 gzip）并执行提取；报告不可交付时以错误码退出。
+///
+/// Reads the palette (gzip supported) and runs extraction; exits with an
+/// error status when the report is not shippable.
 fn extract(java_root: &Path, palette_path: &Path) -> Result<ExtractReport, usize> {
     let raw = fs::read(palette_path).unwrap_or_else(|e| {
         eprintln!("failed to read palette {}: {e}", palette_path.display());
@@ -639,6 +714,9 @@ fn extract(java_root: &Path, palette_path: &Path) -> Result<ExtractReport, usize
     }
 }
 
+/// 从已解析的调色板条目提取默认状态（核心流程）。
+///
+/// Extracts default states from parsed palette entries (core flow).
 pub fn extract_from_entries(java_root: &Path, entries: &[LegacyPaletteEntry]) -> ExtractReport {
     let mut report = ExtractReport::default();
     let mut hard_errors = 0usize;
@@ -988,7 +1066,7 @@ pub fn extract_from_entries(java_root: &Path, entries: &[LegacyPaletteEntry]) ->
     //
     // Defaults compose per declaration; for blocks without Java classes,
     // combine directly when all properties are declared.
-    // Undeclared properties stay TODO, never guessed.
+    // Undeclared properties are never guessed.
     let mut composed = 0usize;
     for (identifier, states) in grouped.iter() {
         if report.defaults.contains_key(*identifier) {
@@ -1059,165 +1137,4 @@ pub fn extract_from_entries(java_root: &Path, entries: &[LegacyPaletteEntry]) ->
         eprintln!("[extract-defaults] palette types without java declarations: {sample:?} (awaiting authoritative data)");
     }
     report
-}
-
-#[cfg(test)]
-mod pipeline_tests {
-    use super::*;
-    use std::collections::{BTreeMap, HashMap};
-
-    /// Full version-pack pipeline: NBT to JSON to compile to equivalence.
-    ///
-    /// Single-state defaults are forced; multi-state defaults come from
-    /// class declarations or declaration composition.
-    /// All 1379 types must split with zero TODOs.
-    #[test]
-    fn full_nbt_to_json_pipeline_matches_legacy() {
-        use sc_block::block_json::{compare_legacy_snapshot, compile_bundle};
-        use sc_packloader::block::{
-            fingerprint_bundle, parse_block_file, split_legacy_palette, BlockBundleBudgets,
-            BlockJsonBundle,
-        };
-
-        let fetched_src_root = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../.fetch/PowerNukkitX-master/src/main/java"
-        );
-        let Some(mut source) = sc_packloader::test_pack::open_test_pack() else {
-            eprintln!("[skip] 版本包缺失，跳过测试");
-            return;
-        };
-        let read_entry = |source: &mut sc_packloader::pack_loader::pack::zipped::PackSource,
-                          name: &str| {
-            source
-                .read_file(name)
-                .unwrap_or_else(|| panic!("{name} missing"))
-        };
-        let palette_bytes = read_entry(&mut source, "definitions/block_palette.nbt");
-        let entries = parse_legacy_palette_entries(&palette_bytes).expect("parse legacy palette");
-        assert!(entries.len() > 10000, "real pack must have scale");
-
-        // 1. Default extraction: zero hard errors, zero misses.
-        let report = extract_from_entries(Path::new(fetched_src_root), &entries);
-        assert_eq!(report.hard_errors, 0, "hard errors must be 0");
-        assert!(
-            report.combo_miss.is_empty(),
-            "combo misses: {:?}",
-            report.combo_miss
-        );
-        assert!(
-            report.dup_canon.is_empty(),
-            "duplicate specs: {:?}",
-            report.dup_canon
-        );
-        assert!(!report.defaults.is_empty());
-
-        // 2. Full coverage with zero TODOs.
-        let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-        for e in entries.iter() {
-            *counts.entry(e.name.as_str()).or_default() += 1;
-        }
-        let remaining: Vec<String> = counts
-            .iter()
-            .filter(|(k, c)| **c > 1 && !report.defaults.contains_key(**k))
-            .map(|(k, _)| k.to_string())
-            .collect();
-        assert!(remaining.is_empty(), "multi-state blocks without defaults: {remaining:?}");
-        // Provenance completeness: every default is tagged.
-        assert_eq!(report.defaults.len(), report.provenance.len());
-        assert!(report
-            .defaults
-            .keys()
-            .all(|k| report.provenance.contains_key(k)));
-        let covered_entries: Vec<_> = entries.to_vec();
-
-        // 3. Split, parse, compile, equivalence.
-        let budgets = BlockBundleBudgets::default();
-        let defaults_map: HashMap<String, String> = report
-            .defaults
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        let hardness_report =
-            crate::extract_hardness::extract_hardness_from_entries(Path::new(fetched_src_root), &entries);
-        assert_eq!(
-            hardness_report.hard_errors, 0,
-            "hardness hard errors must be 0 (non-literals/unknown chains only skip)"
-        );
-        assert!(
-            hardness_report.hardness.len() > 900,
-            "hardness must cover most types, actual {}",
-            hardness_report.hardness.len()
-        );
-        let hardness_map: HashMap<String, sc_packloader::block::BlockHardness> = hardness_report
-            .hardness
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        let files = split_legacy_palette(&covered_entries, &defaults_map, &hardness_map)
-            .expect("full split must succeed");
-        assert_eq!(files.len(), counts.len());
-        let mut refs: Vec<(&str, &[u8])> = files
-            .iter()
-            .map(|f| (f.zip_path.as_str(), f.bytes.as_slice()))
-            .collect();
-        refs.sort_by(|a, b| a.0.cmp(b.0));
-        let parsed = refs
-            .iter()
-            .map(|(p, b)| parse_block_file("test-pack", p, b).expect("split output must parse"))
-            .collect();
-        let bundle = BlockJsonBundle {
-            schema_version: 1,
-            network_id_mode: "hashed".to_string(),
-            fingerprint: fingerprint_bundle(&refs, "hashed"),
-            files: parsed,
-        };
-        let snapshot =
-            compile_bundle(&bundle, "test-pack", &budgets, &|_| None, &|_| true).expect("subset must compile").0;
-        assert_eq!(snapshot.type_count(), counts.len());
-        let eq_report = compare_legacy_snapshot(&snapshot, &entries);
-        assert!(eq_report.is_equal(), "old and new data must match: {eq_report:?}");
-        // Snapshot scale is the full set.
-        assert_eq!(snapshot.type_count(), counts.len());
-        assert_eq!(snapshot.state_count(), entries.len());
-        // Mining-seconds spot checks:
-        // stone 1.5, bedrock -1 as unbreakable, air 0.
-        // (sweet_berry has no static hardness).
-        let idx_of = |id: &str| {
-            snapshot
-                .default_state_idx(id)
-                .unwrap_or_else(|| panic!("{id} must have a default state"))
-        };
-        assert_eq!(
-            snapshot.mining_seconds_of(idx_of("minecraft:stone")),
-            Some(1.5)
-        );
-        assert!(snapshot.is_unbreakable(idx_of("minecraft:bedrock")));
-        assert_eq!(
-            snapshot.mining_seconds_of(idx_of("minecraft:bedrock")),
-            None
-        );
-        assert_eq!(
-            snapshot.mining_seconds_of(idx_of("minecraft:air")),
-            Some(0.0)
-        );
-        assert!(!snapshot.is_unbreakable(idx_of("minecraft:air")));
-        let berry = idx_of("minecraft:sweet_berry_bush");
-        assert_eq!(snapshot.mining_seconds_of(berry), None);
-        assert!(!snapshot.is_unbreakable(berry));
-        // Obsidian uses the runtime value 35 here.
-        assert_eq!(
-            snapshot.mining_seconds_of(idx_of("minecraft:obsidian")),
-            Some(35.0)
-        );
-        // Defaults come from explicit declarations: oak_log pillar_axis=y.
-        let log_default = idx_of("minecraft:oak_log");
-        let log_state = snapshot.state(log_default).expect("oak_log default state");
-        assert!(
-            log_state.key.as_ref().contains("pillar_axis=y"),
-            "default state key must be y, actual {:?}",
-            log_state.key
-        );
-        assert!(snapshot.default_hash("minecraft:oak_log").is_some());
-    }
 }

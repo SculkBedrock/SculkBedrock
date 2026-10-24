@@ -117,6 +117,8 @@ impl Display for SCSocketAddr<'_> {
     }
 }
 
+/// 监听端口绑定失败。
+///
 /// Listener bind failure.
 #[derive(Debug, ScError)]
 pub enum ListenerError {
@@ -184,6 +186,8 @@ impl Error for ListenerError {
 }
 
 
+/// 服务器生命周期操作失败。
+///
 /// Server lifecycle failure.
 #[derive(Debug, ScError)]
 pub enum ServerError {

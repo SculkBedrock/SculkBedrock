@@ -1,22 +1,10 @@
+//! Bedrock LevelDB 后端的持久化磁盘环境。
+//!
+//! 在预写日志 flush 时调用 File::sync_data，确保已确认的写入批次落盘。
+//!
 //! Durable disk environment for the Bedrock LevelDB backend.
 //!
-//! `rusty-leveldb 3.0.3` routes a *synced* write through
-//! `DB::write(batch, true)` → `LogWriter::flush()` → `std::io::Write::flush()`.
-//! On a `std::fs::File` that call is a no-op: it pushes the bytes out of the
-//! process but never asks the OS to write them to stable storage. A power loss
-//! can therefore drop writes this backend already reported as persisted.
-//!
-//! This module wraps [`PosixDiskEnv`] and only changes the write-ahead log
-//! writer: every `flush()` first issues `File::sync_data()`, so a synced batch
-//! really is on the device before the storage reply is sent. Everything else
-//! (sstable writes, MANIFEST handling, locking, directory listing) keeps the
-//! upstream behaviour on purpose — sstable builders flush per block and paying
-//! an fsync there would throttle compaction.
-//!
-//! Scope: this makes the *acknowledged* WAL durable. It is not a full
-//! power-loss audit — the database directory itself is fsynced by
-//! [`fsync_dir`] after close, and MANIFEST/CURRENT renames are only as durable
-//! as the previous checkpoint (LevelDB tolerates replaying an older CURRENT).
+//! Calls File::sync_data on write-ahead-log flush so acknowledged batches reach stable storage.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -27,6 +15,8 @@ use rusty_leveldb::env::{Env, FileLock, Logger, RandomAccess};
 use rusty_leveldb::{PosixDiskEnv, Result, Status, StatusCode};
 use sc_log::t_log;
 
+/// 包装 writer，使 `flush()` 同时执行 `sync_data()`。
+///
 /// Wrap a writer so that `flush()` also issues `sync_data()`.
 struct DurableLogWriter {
     file: File,
@@ -60,6 +50,8 @@ impl Write for DurableLogWriter {
     }
 }
 
+/// 带持久 write-ahead log logger 的默认 [`Env`]。
+///
 /// Default [`Env`] with a durable write-ahead log logger.
 pub struct DurableDiskEnv {
     inner: PosixDiskEnv,
@@ -78,6 +70,8 @@ impl DurableDiskEnv {
         }
     }
 
+    /// [`Options::env`](rusty_leveldb::Options::env) 的共享句柄。
+    ///
     /// Shared handle for [`Options::env`](rusty_leveldb::Options::env).
     pub fn shared() -> Rc<Box<dyn Env>> {
         Rc::new(Box::new(Self::new()))
@@ -163,15 +157,24 @@ impl Env for DurableDiskEnv {
     }
 }
 
+/// 对目录 fsync，使目录内的创建/重命名在断电后仍然存活。
+/// 尽力而为：不支持目录 fsync 的平台直接跳过。
+///
 /// fsync a directory so that creates/renames inside it survive a power loss.
 ///
 /// Best effort: platforms without directory fsync simply skip it.
+///
+/// - `path`: 目录路径
 pub fn fsync_dir(path: &Path) -> io::Result<()> {
     let directory = File::open(path)?;
     directory.sync_all()
 }
 
+/// 数据库关闭后使用的尽力而为目录 fsync。
+///
 /// Best-effort directory fsync used after the database is closed.
+///
+/// - `path`: 目录路径
 pub fn fsync_dir_best_effort(path: &Path) {
     if let Err(error) = fsync_dir(path) {
         log::warn!(
@@ -185,16 +188,26 @@ pub fn fsync_dir_best_effort(path: &Path) {
     }
 }
 
+/// 路径是否属于 write-ahead log：本环境中唯一 flush 会转为 `fsync` 的文件。
+///
 /// Whether a path belongs to the write-ahead log: the only file whose flush
 /// this environment turns into an `fsync`.
+///
+/// - `path`: 待检查路径
 fn is_write_ahead_log(path: &Path) -> bool {
     path.extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("log"))
 }
 
+/// 只向上层恢复流程暴露完整、带校验和的逻辑记录。最后一条撕裂记录
+/// 可恢复；中间畸形记录导致打开数据库失败，而不是发布混合的
+/// WriteBatch 内容。
+///
 /// Only expose complete, checksummed logical records to upstream recovery.
 /// A torn final record is recoverable; malformed records in the middle fail
 /// opening the database rather than publishing mixed WriteBatch contents.
+///
+/// - `source`: WAL 读取源
 fn complete_wal_prefix(mut source: impl Read) -> Result<u64> {
     const BLOCK: usize = 32768;
     const HEADER: usize = 7;
@@ -442,6 +455,9 @@ mod tests {
         }
     }
 
+    /// 按文件名统计 `Write::flush` 调用次数，用于测试证明已同步的
+    /// batch 确实到达持久化路径。
+    ///
     /// Counts `Write::flush` calls per file name so a test can prove that a
     /// synced batch really reaches the durability path.
     struct CountingEnv {

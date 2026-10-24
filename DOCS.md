@@ -290,15 +290,15 @@ All `[x]` items are partial and not production acceptance.
 
 **World generation**
 
-- [ ] Density-function / noise-router data-driven pipeline from the version pack
+- [x] Density-function / noise-router data-driven pipeline from the version pack
 - [ ] Biome selection and surface rules wired end-to-end
-- [ ] Generator identity recorded into saves (fingerprint wiring)
+- [x] Generator identity recorded into saves (fingerprint wiring)
 - [ ] Same seed + same profile ⇒ identical terrain guarantee
 - [ ] Structure / tree placement with restart-safe journals
 
 **Blocks**
 
-- [ ] BlockEntity landing (coordinate index, idempotent assembly, lifecycle-aware unload)
+- [x] BlockEntity landing (coordinate index, idempotent assembly, lifecycle-aware unload)
 - [ ] `behaviors` bindings for special blocks (doors, beds, containers, …)
 - [ ] External loot-table resolution
 - [ ] Tool-specific mining rules, harvest gates, and fortune tables
@@ -307,9 +307,9 @@ All `[x]` items are partial and not production acceptance.
 **Items & inventory**
 
 - [x] Item registry with block-item mapping and creative inventory fill
-- [ ] Inventory reservations and cross-owner transactions
-- [ ] Full container transactions with rollback and resync
-- [ ] Durability / unbreaking consumption
+- [x] Inventory reservations and cross-owner transactions
+- [x] Full container transactions with rollback and resync
+- [x] Durability / unbreaking consumption
 - [ ] Adventure-mode `CanDestroy` lists
 
 **Entities**
@@ -317,11 +317,11 @@ All `[x]` items are partial and not production acceptance.
 - [x] Basic movement, physics, and broadcast
 - [ ] Authoritative resync for entity lifecycle facts (spawn / despawn / pickup)
 - [ ] Cross-region migration with fence / ack / epoch (production-hardened)
-- [ ] Drops and pickup with budgets, cooldowns, and full-inventory handling
+- [x] Drops and pickup with budgets, cooldowns, and full-inventory handling
 
 **Chunk pipeline**
 
-- [ ] Full prepare / ready / delivery window separation in the live send path
+- [x] Full prepare / ready / delivery window separation in the live send path
 - [ ] Per-connection / world / server wire-byte budgets and fairness
 - [ ] Complete ordered `ConnectionGate` with spawn / teleport barriers
 - [ ] Bounded delta journals for hot columns (only gap counters exist today)
@@ -329,7 +329,7 @@ All `[x]` items are partial and not production acceptance.
 **Network & protocol**
 
 - [ ] Multi-protocol-profile isolation (one pack supports one profile today)
-- [ ] Full login → chunk → teleport flows verified on a real client
+- [x] Full login → chunk → teleport flows verified on a real client
 - [ ] Real slow-client behavior and hook-timeout fault policy
 
 **Persistence & recovery**

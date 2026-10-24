@@ -1,33 +1,6 @@
-//! Port of the `object/legacytree/` series (`LegacyTreeGenerator` plus 13 kinds),
-//! `feature/LegacyTreeGeneratorFeature.java`, and `object/BeeNestGenerator.java`
-//! (block subset).
+//! 旧版树木生成器及其特征接口：橡木、桦木、云杉、丛林、深色橡木、大型云杉、下界树与紫颂树。
 //!
-//! | Rust item | Upstream source |
-//! |---|---|
-//! | [`LegacyTreeGenerator`] (kind dispatch) | `legacytree/LegacyTreeGenerator.java` |
-//! | `LegacyTreeKind::Oak` | `legacytree/LegacyOakTree.java` |
-//! | `LegacyTreeKind::Birch` | `legacytree/LegacyBirchTree.java` |
-//! | `LegacyTreeKind::TallBirch` | `legacytree/LegacyTallBirchTree.java` |
-//! | `LegacyTreeKind::Spruce` | `legacytree/LegacySpruceTree.java` |
-//! | `LegacyTreeKind::Jungle` | `legacytree/LegacyJungleTree.java` |
-//! | `LegacyTreeKind::DarkOak` | `legacytree/LegacyDarkOakTree.java` |
-//! | `LegacyTreeKind::BigSpruce` | `legacytree/LegacyBigSpruceTree.java` |
-//! | `LegacyTreeKind::Crimson`/`Warped` | `legacytree/LegacyNetherTree.java` + `LegacyCrimsonTree.java`/`LegacyWarpedTree.java` |
-//! | `LegacyTreeKind::Chorus` | `legacytree/LegacyChorusTree.java` |
-//! | [`grow_grass`] | `legacytree/LegacyTallGrass.java` |
-//! | [`grow_tree`] | `LegacyTreeGenerator.growTree` (static dispatch) |
-//! | [`place_bee_nest`] | `object/BeeNestGenerator.java` (bee populate needs entity infrastructure) |
-//! | [`LegacyTreeGeneratorFeature`] | `feature/LegacyTreeGeneratorFeature.java` |
-//!
-//! The inheritance tree (mutable base state plus subclass overrides) becomes
-//! one struct dispatched by [`LegacyTreeKind`]: match arms equal virtual dispatch,
-//! and its fields carry the base instance state.
-//!
-//! Known upstream quirks (faithfully kept):
-//! - `growTree` builds `LegacyDarkOakTree(6, 3)`: multiplier=6 keeps
-//!   `topSize = h - 6h` negative, so `placeLeaves` never runs (2x2 trunk only);
-//! - `LegacyDarkOakTree.placeTrunk` checks overridable at `(x, y+yy, z)`
-//!   but places at `(x+xx, y+yy, z+zz)` (big spruce checks per cell).
+//! Legacy tree generators and their feature interface: oak, birch, spruce, jungle, dark oak, big spruce, nether trees, and chorus trees.
 
 use std::sync::Arc;
 
@@ -49,7 +22,9 @@ use crate::worldgen::stages::chunk_hash;
 // LegacyTreeGenerator plus 13 subclasses.
 // ---------------------------------------------------------------------------
 
-/// Kind dispatch for the 13 legacy trees.
+/// 13 种旧版树木的种类标识。
+///
+/// Kind identifier for the 13 legacy tree types.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LegacyTreeKind {
     /// `LegacyOakTree` (fancy brace diverts to `ObjectFancyOakTree`).
@@ -80,10 +55,9 @@ pub enum LegacyTreeKind {
     Chorus,
 }
 
-/// Java: `abstract class LegacyTreeGenerator extends TreeGenerator`.
+/// 按 LegacyTreeKind 分派、携带可变生成状态的旧版树木生成器。
 ///
-/// One struct carries the mutable base state; methods dispatch
-/// by [`LegacyTreeKind`] like virtual overrides.
+/// Legacy tree generator dispatching on LegacyTreeKind and carrying mutable generation state.
 pub struct LegacyTreeGenerator {
     kind: LegacyTreeKind,
     table: Arc<TreeBlockTable>,
@@ -916,10 +890,9 @@ pub fn place_bee_nest(
 // LegacyObjectWrapper(object/ObjectLegacyObjectWrapper.java)
 // ---------------------------------------------------------------------------
 
-/// Java: `class ObjectLegacyObjectWrapper extends TreeGenerator`.
+/// 将 LegacyTreeGenerator 适配为 ObjectGenerator 的包装器。
 ///
-/// Adapt [`LegacyTreeGenerator`] as an [`ObjectGenerator`]
-/// (always true); SavannaTreeFeature mixes in legacy oaks through it.
+/// Wrapper adapting LegacyTreeGenerator to ObjectGenerator.
 pub struct LegacyObjectWrapper {
     generator: LegacyTreeGenerator,
 }
@@ -949,15 +922,9 @@ impl ObjectGenerator for LegacyObjectWrapper {
 // LegacyTreeGeneratorFeature(feature/LegacyTreeGeneratorFeature.java)
 // ---------------------------------------------------------------------------
 
-/// Java: `abstract class LegacyTreeGeneratorFeature extends GenerateFeature
-/// implements Supportable`(L21-74).
+/// 使用旧版树木生成器、按生物群系标签过滤的生成特征接口。
 ///
-/// Differences from `ObjectGeneratorFeature`:
-/// - No checkBlock downward scan (heightmap top decides support);
-/// - Biome filtering uses `getRequiredTag`;
-///   tag ids come from the hardcoded [`biome_id_matches_tag`] set;
-/// - One BlockManager per tree, merged after generation;
-/// - Legacy oak/birch carry beehive chances.
+/// Generation feature interface using legacy tree generators and filtering by biome tag.
 pub trait LegacyTreeGeneratorFeature: GenerateFeature {
     /// Java: `abstract TreeGenerator getGenerator(RandomSourceProvider)`(L23).
     ///
@@ -1057,7 +1024,7 @@ pub trait LegacyTreeGeneratorFeature: GenerateFeature {
             }
         }
 
-        // Java L73: queueObject(chunk, manager) → root.merge——
+        // Java L73: queueObject(chunk, manager) -> root.merge;
         // Buffer until stage end, then submit once.
         let places = manager.into_places();
         ctx.queue_object(places);

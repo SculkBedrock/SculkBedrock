@@ -13,6 +13,8 @@ sc_nbt = { path = "../sc_nbt" }
 sc_utils = { path = "../sc_utils" }
 sc_log = { path = "../sc_log" }
 sc_binary = { path = "../sc_binary" }
+flume = "=0.12.0"
+libc.workspace = true
 zip = "=8.6.0"
 serde.workspace = true
 serde-inline-default = "0.2"

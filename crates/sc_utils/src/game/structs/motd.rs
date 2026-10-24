@@ -34,6 +34,8 @@ impl Motd {
         }
     }
 
+    /// 取 Motd 并解析成合法的 MCPE
+    ///
     /// Takes the Motd and parses it into a valid MCPE
     /// MOTD buffer.
     pub fn write(&self) -> String {

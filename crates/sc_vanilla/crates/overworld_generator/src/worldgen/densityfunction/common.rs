@@ -1,17 +1,10 @@
-//! Density-function combinators (`DensityCommon`).
+//! 密度函数组合器。
 //!
-//! Port notes:
-//! - Static factories become free functions (`add`/`mul`/`constant`/...); interface
-//!   defaults (`clamp`/`abs`/...) are free functions too.
-//! - Per-chunk `Marker` state keys off the marker global id
-//!   inside [`ChunkCache`] (see function.rs).
-//! - Fallback state (non-ChunkCacheContext) lives in the marker
-//!   instance `RefCell` (single-threaded semantics).
-//! - Java `ChunkCacheContext`/`CellFunctionContext`/`MutableChunkCacheContext`
-//!   [`ChunkCache`]/[`ChunkCacheContext`] live in function.rs;
-//!   this module implements them.
-//! - `chunkCache`/`releaseChunkCache` couple to chunk infrastructure and land
-//!   with the chunk adapter layer.
+//! 提供常量、噪声、坐标偏移、样条、映射与缓存标记等组合节点的构造函数。
+//!
+//! Density function combinators.
+//!
+//! Provides constructors for constant, noise, coordinate-shift, spline, mapping, and cache-marker nodes.
 
 use super::cubic_spline::{CubicSpline, CubicValue};
 use super::function::{
@@ -68,7 +61,13 @@ where
 // CellFunctionContext / MutableChunkCacheContext(Java L36-72, L1024-1061)
 // ---------------------------------------------------------------------------
 
-/// Java: `final class CellFunctionContext implements ChunkCacheContext`(L36-72).
+/// 基于 ChunkCache 的密度函数采样上下文，携带可变的方块坐标。
+///
+/// 每个实例保存缓存引用与当前采样坐标。
+///
+/// Density-function sampling context backed by a ChunkCache, carrying mutable block coordinates.
+///
+/// Each instance holds the cache reference and the current sample position.
 pub struct CellFunctionContext {
     cache: Rc<ChunkCache>,
     world_x: Cell<i32>,
@@ -184,7 +183,13 @@ impl ChunkCacheContext for MutableChunkCacheContext {
 // Constant(Java L240-262)
 // ---------------------------------------------------------------------------
 
-/// Java: `record Constant(double value) implements SimpleFunction`(L240-262).
+/// 返回固定值的密度函数。
+///
+/// value 为每次采样返回的常量。
+///
+/// Density function returning a fixed value.
+///
+/// value is the constant returned for every sample.
 pub struct Constant {
     pub value: f64,
 }
@@ -230,7 +235,9 @@ pub fn constant(value: f64) -> Arc<dyn DensityFunction> {
 // merge into one here).
 // ---------------------------------------------------------------------------
 
-/// Java: `private static final DensityFunction Y = new SimpleFunction() {...}`.
+/// 返回采样点方块 Y 坐标的密度函数。
+///
+/// Density function returning the block Y coordinate of the sample.
 pub struct YFunction;
 
 impl DensityFunction for YFunction {
@@ -264,7 +271,9 @@ pub fn y() -> Arc<dyn DensityFunction> {
 // Clamp.
 // ---------------------------------------------------------------------------
 
-/// Java: `record Clamp(DensityFunction input, double min, double max)`(L264-279).
+/// 将输入密度值限制在闭区间 [min, max] 内的密度函数。
+///
+/// Density function clamping its input to the closed range [min, max].
 pub struct Clamp {
     pub input: Arc<dyn DensityFunction>,
     pub min: f64,
@@ -306,7 +315,11 @@ pub fn clamp(input: Arc<dyn DensityFunction>, min: f64, max: f64) -> Arc<dyn Den
 // Noise(Java L281-301)
 // ---------------------------------------------------------------------------
 
-/// Java: `record Noise(NoiseHolder noise, double xzScale, double yScale)`(L281-301).
+/// 按 XZ 与 Y 缩放采样坐标后读取噪声值的密度函数。
+///
+/// xz_scale 作用于 X/Z，y_scale 作用于 Y。
+///
+/// Density function sampling noise at coordinates scaled by xz_scale on X/Z and y_scale on Y.
 pub struct Noise {
     pub noise: NoiseHolder,
     pub xz_scale: f64,
@@ -397,7 +410,9 @@ pub fn mapped_noise_scaled(
 // RangeChoice(Java L303-338)
 // ---------------------------------------------------------------------------
 
-/// Java: `record RangeChoice(...)`(L303-338).
+/// 按输入密度值是否落在 [min_inclusive, max_exclusive) 内选择两个分支之一的密度函数。
+///
+/// Density function choosing between two branches based on whether the input lies in [min_inclusive, max_exclusive).
 pub struct RangeChoice {
     pub input: Arc<dyn DensityFunction>,
     pub min_inclusive: f64,
@@ -468,7 +483,9 @@ pub fn range_choice(
 // WeirdScaledSampler(Java L340-408)
 // ---------------------------------------------------------------------------
 
-/// Java: `enum RarityValueMapper`(L365-376).
+/// 稀有度映射器：由输入值选择坐标缩放比率的两种模式。
+///
+/// Rarity mapper with two modes that choose a coordinate scale ratio from the input value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RarityValueMapper {
     /// Java: `TYPE1(getSpaghettiRarity3D, 2.0)`.
@@ -523,7 +540,9 @@ impl RarityValueMapper {
     }
 }
 
-/// Java: `record WeirdScaledSampler(...)`(L340-408).
+/// 按输入值映射出的稀有度缩放采样坐标并采样噪声，返回 rarity × |noise|。
+///
+/// Density function sampling noise at coordinates divided by a rarity ratio derived from the input, returning rarity * |noise|.
 pub struct WeirdScaledSampler {
     pub input: Arc<dyn DensityFunction>,
     pub noise: NoiseHolder,
@@ -589,7 +608,9 @@ pub fn weird_scaled_sampler(
 // YClampedGradient(Java L410-425)
 // ---------------------------------------------------------------------------
 
-/// Java: `record YClampedGradient(int fromY, int toY, double fromValue, double toValue)`(L410-425).
+/// 按 Y 坐标在 from_y 到 to_y 之间做线性插值并在端点钳制，映射到 from_value..to_value。
+///
+/// Density function mapping the block Y coordinate through a clamped linear gradient from from_value at from_y to to_value at to_y.
 pub struct YClampedGradient {
     pub from_y: i32,
     pub to_y: i32,
@@ -644,7 +665,9 @@ pub fn y_clamped_gradient(
 // BlendAlpha / BlendOffset(Java L427-473)
 // ---------------------------------------------------------------------------
 
-/// `BlendAlpha`: constant 1.0 singleton.
+/// 恒为 1.0 的密度函数，用作混合权重。
+///
+/// Constant 1.0 density function used as a blend weight.
 pub struct BlendAlpha;
 
 impl DensityFunction for BlendAlpha {
@@ -669,7 +692,9 @@ impl DensityFunction for BlendAlpha {
     }
 }
 
-/// `BlendOffset`: constant 0.0 singleton.
+/// 恒为 0.0 的密度函数，用作混合偏移。
+///
+/// Constant 0.0 density function used as a blend offset.
 pub struct BlendOffset;
 
 impl DensityFunction for BlendOffset {
@@ -713,16 +738,18 @@ pub fn blend_density(input: Arc<dyn DensityFunction>) -> Arc<dyn DensityFunction
 // Spline(Java L475-532)
 // ---------------------------------------------------------------------------
 
-/// Java: `record SplinePoint(double location, Object value, double derivative)`(L531-532).
+/// 样条控制点：位置、取值（常量或密度函数）与导数。
 ///
-/// `Object value` (Number or DensityFunction) as an explicit enum.
+/// A spline control point: location, value (constant or density function), and derivative.
 pub struct SplinePoint {
     pub location: f64,
     pub value: SplineValue,
     pub derivative: f64,
 }
 
-/// The two shapes of a spline point value.
+/// 样条控制点取值的两种形式：常量或密度函数。
+///
+/// The two forms of a spline point value: constant or density function.
 pub enum SplineValue {
     Constant(f64),
     Function(Arc<dyn DensityFunction>),
@@ -746,9 +773,9 @@ pub fn p_fn(location: f64, value: Arc<dyn DensityFunction>, derivative: f64) -> 
     }
 }
 
-/// Java: `record Spline(CubicSpline<Point> spline) implements DensityFunction`(L475-529).
+/// 对密度函数坐标做三次样条分段插值的密度函数。
 ///
-/// Context references pass directly to CubicSpline; no Point wrapper needed.
+/// Density function interpolating a cubic spline over a density-function coordinate.
 pub struct Spline {
     pub(crate) spline: CubicSpline,
 }
@@ -775,7 +802,9 @@ impl DensityFunction for Spline {
     }
 }
 
-/// Adapts a DensityFunction as a CubicSpline value.
+/// 将密度函数适配为三次样条取值。
+///
+/// Adapts a density function as a cubic-spline value.
 struct SplineCoordinate {
     function: Arc<dyn DensityFunction>,
 }
@@ -830,7 +859,9 @@ pub fn spline_from_points(
 // Mapped wrappers.
 // ---------------------------------------------------------------------------
 
-/// Java: `enum Mapped.Type`(L564-610).
+/// 密度值变换类型：绝对值、平方、立方、半负、四分之一负、取反与压缩。
+///
+/// Density value transform: absolute value, square, cube, half-negative, quarter-negative, inversion, or squeeze.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MappedType {
     Abs,
@@ -878,7 +909,13 @@ impl MappedType {
     }
 }
 
-/// Java: `record Mapped(Type type, DensityFunction input, double minValue, double maxValue)`(L534-611).
+/// 对输入密度值施加固定变换（绝对值、平方、立方、取反、缩放等）的密度函数。
+///
+/// 变换种类由 type_ 选择，值域由构造时预计算。
+///
+/// Density function applying a fixed transform (absolute value, square, cube, inversion, squeeze, and related) to its input.
+///
+/// The transform is selected by type_; the value bounds are precomputed at construction.
 pub struct Mapped {
     pub type_: MappedType,
     pub input: Arc<dyn DensityFunction>,
@@ -997,7 +1034,9 @@ pub fn squeeze(function: Arc<dyn DensityFunction>) -> Arc<dyn DensityFunction> {
 // Marker family.
 // ---------------------------------------------------------------------------
 
-/// Java: `Marker.Type`(L614-620).
+/// 缓存标记的类型。
+///
+/// Kind of cache marker.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MarkerType {
     Interpolated,
@@ -1034,14 +1073,18 @@ pub fn cache_all_in_cell(function: Arc<dyn DensityFunction>) -> Arc<dyn DensityF
 
 // --- Cache2DMarker(Java L659-684, L1012-1015) ------------------------------
 
-/// Java: `private static final class Cache2DState`(L1012-1015).
+/// 二维缓存状态：最近一次 (X, Z) 键与对应值。
+///
+/// 2D cache state holding the latest (X, Z) key and its value.
 #[derive(Default)]
 struct Cache2DState {
     last_pos_2d: i64,
     last_value: f64,
 }
 
-/// Java: `private static final class Cache2DMarker extends Marker`(L659-684).
+/// 按 (X, Z) 缓存输入密度值、忽略 Y 的缓存标记。
+///
+/// Cache marker storing the wrapped value per (X, Z) pair while ignoring Y.
 struct Cache2DMarker {
     id: u64,
     wrapped: Arc<dyn DensityFunction>,
@@ -1097,7 +1140,9 @@ impl DensityFunction for Cache2DMarker {
 /// Java: `private static final int CHUNK_SIZE_BLOCKS = 16`(L687).
 const CHUNK_SIZE_BLOCKS: i32 = 16;
 
-/// Java: `private record FlatCacheCell(...)`(L756-757).
+/// 单个区块的平面缓存单元：16×16 的密度值与填充位图。
+///
+/// Flat-cache cell for one chunk: 16×16 density values plus a filled-slot bitmap.
 struct FlatCacheCell {
     first_block_x: i32,
     first_block_z: i32,
@@ -1116,10 +1161,9 @@ impl FlatCacheCell {
     }
 }
 
-/// Java: `private static final class FlatCacheState`(L727-754).
+/// 平面缓存的按区块单元表及复用的采样上下文。
 ///
-/// The recent-cell fast path is a pure optimization; HashMap lookup
-/// is equivalent, so the fast path is omitted.
+/// Per-chunk flat-cache cell table and the reusable sampling context.
 struct FlatCacheState {
     context: MutableFunctionContext,
     cells: HashMap<i64, FlatCacheCell>,
@@ -1134,7 +1178,9 @@ impl Default for FlatCacheState {
     }
 }
 
-/// Java: `private static final class FlatCacheMarker extends Marker`(L686-725).
+/// 按区块缓存密度值、采样时将 Y 固定为 0 的缓存标记。
+///
+/// Cache marker storing density values per chunk and sampling the wrapped function with Y fixed to 0.
 struct FlatCacheMarker {
     id: u64,
     wrapped: Arc<dyn DensityFunction>,
@@ -1209,9 +1255,9 @@ impl DensityFunction for FlatCacheMarker {
 
 // --- CacheOnceMarker(Java L759-786, L1017-1022) -----------------------------
 
-/// Java: `private static final class Cache3DState`(L1017-1022).
+/// 单点缓存状态：最近一次 (X, Y, Z) 坐标与对应值。
 ///
-/// Fields default to 0 (a first query at (0,0,0) hits all-zero state).
+/// Single-point cache state holding the latest (X, Y, Z) coordinate and its value.
 #[derive(Default)]
 struct Cache3DState {
     block_x: i32,
@@ -1220,7 +1266,9 @@ struct Cache3DState {
     value: f64,
 }
 
-/// Java: `private static final class CacheOnceMarker extends Marker`(L759-786).
+/// 仅缓存最近一次 (X, Y, Z) 采样结果的缓存标记。
+///
+/// Cache marker retaining only the most recent (X, Y, Z) sample.
 struct CacheOnceMarker {
     id: u64,
     wrapped: Arc<dyn DensityFunction>,
@@ -1283,7 +1331,9 @@ const INV_CELL_SIZE_Y: f64 = 1.0 / CELL_SIZE_Y as f64;
 
 // --- CacheAllInCellMarker(Java L788-877) ------------------------------------
 
-/// Java: `CacheAllInCellMarker.CacheAllInCellState`(L822-875).
+/// 一个 4×8×4 单元格的缓存值及填充时复用的上下文。
+///
+/// Cached values for one 4×8×4 cell plus the contexts reused while filling it.
 struct CacheAllInCellState {
     values: Box<[f64; CELL_VALUE_COUNT]>,
     context: MutableFunctionContext,
@@ -1377,7 +1427,9 @@ impl CacheAllInCellState {
     }
 }
 
-/// Java: `private static final class CacheAllInCellMarker extends Marker`(L788-877).
+/// 按 4×8×4 单元格一次性计算并缓存整格密度值的缓存标记。
+///
+/// Cache marker that computes and caches all values of the containing 4×8×4 cell at once.
 struct CacheAllInCellMarker {
     id: u64,
     wrapped: Arc<dyn DensityFunction>,
@@ -1431,7 +1483,9 @@ impl DensityFunction for CacheAllInCellMarker {
 
 // --- InterpolatedMarker(Java L879-1010) --------------------------------------
 
-/// Java: `InterpolatedMarker.InterpolatedState`(L914-1008).
+/// 一个 4×8×4 单元格的三线性插值结果及填充时复用的上下文。
+///
+/// Trilinearly interpolated values for one 4×8×4 cell plus the contexts reused while filling it.
 struct InterpolatedState {
     values: Box<[f64; CELL_VALUE_COUNT]>,
     context: MutableFunctionContext,
@@ -1564,7 +1618,9 @@ impl InterpolatedState {
     }
 }
 
-/// Java: `private static final class InterpolatedMarker extends Marker`(L879-1010).
+/// 采样 4×8×4 单元格的 8 个角点并做三线性插值的缓存标记。
+///
+/// Cache marker sampling the 8 corners of a 4×8×4 cell and applying trilinear interpolation.
 struct InterpolatedMarker {
     id: u64,
     wrapped: Arc<dyn DensityFunction>,
@@ -1625,7 +1681,9 @@ fn compute_shift(offset_noise: &NoiseHolder, x: f64, y: f64, z: f64) -> f64 {
     offset_noise.get_value(x * 0.25, y * 0.25, z * 0.25) * 4.0
 }
 
-/// Java: `record Shift(NoiseHolder offsetNoise) implements ShiftNoise`(L1086-1092).
+/// 用偏移噪声沿全部三个轴平移采样坐标的密度函数。
+///
+/// Density function shifting sample coordinates on all three axes by offset noise.
 pub struct Shift {
     pub offset_noise: NoiseHolder,
 }
@@ -1657,7 +1715,9 @@ impl DensityFunction for Shift {
     }
 }
 
-/// Java: `record ShiftA(NoiseHolder offsetNoise) implements ShiftNoise`(L1094-1100).
+/// 在 X/Z 平面（Y 固定为 0）用偏移噪声平移采样坐标的密度函数。
+///
+/// Density function shifting sample coordinates in the X/Z plane with Y fixed at 0.
 pub struct ShiftA {
     pub offset_noise: NoiseHolder,
 }
@@ -1689,7 +1749,9 @@ impl DensityFunction for ShiftA {
     }
 }
 
-/// Java: `record ShiftB(NoiseHolder offsetNoise) implements ShiftNoise`(L1102-1108).
+/// 以 (Z, X, 0) 为输入采样偏移噪声来平移采样坐标的密度函数。
+///
+/// Density function shifting sample coordinates by offset noise sampled at (Z, X, 0).
 pub struct ShiftB {
     pub offset_noise: NoiseHolder,
 }
@@ -1746,7 +1808,9 @@ pub fn shift(noise: Arc<NormalNoise>) -> Arc<dyn DensityFunction> {
 // ShiftedNoise(Java L1110-1140)
 // ---------------------------------------------------------------------------
 
-/// Java: `record ShiftedNoise(...)`(L1110-1140).
+/// 在缩放后的采样坐标上叠加三轴偏移量后采样噪声的密度函数。
+///
+/// Density function sampling noise at scaled coordinates with per-axis shift offsets added.
 pub struct ShiftedNoise {
     pub shift_x: Arc<dyn DensityFunction>,
     pub shift_y: Arc<dyn DensityFunction>,
@@ -1785,7 +1849,9 @@ impl DensityFunction for ShiftedNoise {
 // TwoArgumentSimpleFunction / Ap2 / MulOrAdd(Java L1142-1249)
 // ---------------------------------------------------------------------------
 
-/// Java: `TwoArgumentSimpleFunction.Type`(L1178-1183).
+/// 二元密度函数组合类型：加、乘、最小值与最大值。
+///
+/// Two-argument density combination type: add, multiply, minimum, or maximum.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TwoArgumentType {
     Add,
@@ -1794,7 +1860,9 @@ pub enum TwoArgumentType {
     Max,
 }
 
-/// Java: `record Ap2(...)`(L1186-1233).
+/// 以 Add/Mul/Min/Max 组合两个密度函数并保存预计算值域的密度函数。
+///
+/// Density function combining two density functions with Add/Mul/Min/Max and storing precomputed value bounds.
 pub struct Ap2 {
     pub type_: TwoArgumentType,
     pub argument1: Arc<dyn DensityFunction>,
@@ -1892,7 +1960,9 @@ impl DensityFunction for Ap2 {
     }
 }
 
-/// Java: `record MulOrAdd(...)`(L1235-1249).
+/// 将输入密度值乘以或加上常量的密度函数。
+///
+/// Density function multiplying or adding a constant to its input.
 pub struct MulOrAdd {
     pub specific_type: TwoArgumentType,
     pub input: Arc<dyn DensityFunction>,
@@ -2072,7 +2142,9 @@ mod tests {
         f.compute(&ctx(x, y, z))
     }
 
-    /// Call-counting wrapper (cache-semantics tests).
+    /// 统计 compute 调用次数的测试包装器。
+    ///
+    /// Test wrapper that counts compute calls.
     struct Counting {
         inner: Arc<dyn DensityFunction>,
         calls: std::rc::Rc<Cell<u32>>,
@@ -2107,7 +2179,9 @@ mod tests {
         })
     }
 
-    /// Records received coordinates (flatCache y=0 checks).
+    /// 记录最近一次采样坐标的测试密度函数。
+    ///
+    /// Test density function that records the most recent sampled coordinates.
     struct Recorder {
         last: std::rc::Rc<Cell<(i32, i32, i32)>>,
     }

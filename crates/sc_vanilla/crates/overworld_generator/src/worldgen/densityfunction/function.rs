@@ -1,16 +1,10 @@
-//! Density function interfaces and per-chunk evaluation contexts.
+//! 密度函数接口与求值上下文。
 //!
-//! Notes:
-//! - Interface default combinators (`clamp`/`abs`/`square`/...) live as free
-//!   functions in [`super::common`]; tree nodes are `Arc<dyn DensityFunction>`,
-//!   so free-function composition is used directly.
-//! - Fill delegation is inlined in each implementation; there is no separate
-//!   simple-function trait.
-//! - The whole density-function tree assumes single-threaded use: interior
-//!   state uses `Cell`/`RefCell`/`Rc`. Parallel chunk generation must use a
-//!   separate tree per thread/chunk or external serialization.
-//! - The chunk-cache context infrastructure lives in this file because the
-//!   downcast hooks need it (see below).
+//! 定义单点与可变坐标的求值上下文、区块缓存以及噪声采样接口。
+//!
+//! Density function interfaces and evaluation contexts.
+//!
+//! Defines single-point and mutable-coordinate contexts, the chunk cache, and the noise sampler interface.
 
 use crate::worldgen::noise::noise::NormalNoise;
 use std::any::Any;
@@ -19,6 +13,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
+/// 密度函数接口。
+///
 /// Density function interface.
 pub trait DensityFunction {
     /// Samples the density value at the given context.
@@ -38,6 +34,8 @@ pub trait DensityFunction {
     fn as_any(&self) -> &dyn Any;
 }
 
+/// 上下文提供者接口。
+///
 /// Context provider interface.
 pub trait ContextProvider {
     /// Returns the context for `index`.
@@ -51,6 +49,8 @@ pub trait ContextProvider {
     }
 }
 
+/// 保存方块位置的求值上下文。
+///
 /// Evaluation context holding a block position.
 pub trait FunctionContext {
     /// Block X coordinate.
@@ -69,6 +69,8 @@ pub trait FunctionContext {
     }
 }
 
+/// 区块缓存上下文：暴露按区块的密度缓存。
+///
 /// Chunk-cache context: exposes the per-chunk density cache.
 pub trait ChunkCacheContext: FunctionContext {
     /// Returns the per-chunk density cache.
@@ -78,6 +80,10 @@ pub trait ChunkCacheContext: FunctionContext {
     fn density_chunk_cache(&self) -> Rc<ChunkCache>;
 }
 
+/// 按区块的密度缓存。
+///
+/// 按标记实例身份缓存区块内状态。键是标记的全局唯一 id（由 [`super::common`] 中的计数器分配），值是 `Rc<dyn Any>`（具体类型为 `Rc<RefCell<S>>`）。取出条目后先释放 map 的借用，再借用内部的 `RefCell`，避免同一 map 上的嵌套标记访问死锁。
+///
 /// Per-chunk density cache.
 ///
 /// Caches per-chunk state by marker instance identity.
@@ -129,6 +135,8 @@ impl Default for ChunkCache {
     }
 }
 
+/// 噪声采样器接口。
+///
 /// Noise sampler interface.
 pub trait NoiseSampler {
     /// Samples the noise value at the given position.
@@ -138,6 +146,8 @@ pub trait NoiseSampler {
     fn max_value(&self) -> f64;
 }
 
+/// 可空的噪声采样器 holder。
+///
 /// Nullable noise-sampler holder.
 pub struct NoiseHolder {
     /// Wrapped sampler (`None` means empty).
@@ -179,6 +189,8 @@ impl NoiseHolder {
     }
 }
 
+/// 将 NormalNoise 适配为采样器接口。
+///
 /// Adapter from normal noise to the sampler interface.
 struct NormalNoiseAdapter(Arc<NormalNoise>);
 
@@ -193,6 +205,8 @@ impl NoiseSampler for NormalNoiseAdapter {
     }
 }
 
+/// 单点求值上下文。
+///
 /// Single-point evaluation context.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SinglePointContext {
@@ -215,9 +229,9 @@ impl FunctionContext for SinglePointContext {
     }
 }
 
-/// Reusable mutable evaluation context.
+/// 可复用的可变求值上下文，通过 Cell 在共享引用下更新坐标。
 ///
-/// Reusable mutable context (`set` updates through `Cell` via `&self`).
+/// Reusable mutable evaluation context updating coordinates through Cell behind a shared reference.
 #[derive(Debug)]
 pub struct MutableFunctionContext {
     block_x: Cell<i32>,

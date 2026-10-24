@@ -40,6 +40,8 @@ impl Server {
         self.clients.insert(uuid, entity);
     }
 
+    /// 从在线列表移除一个客户端。玩家
+    ///
     /// Remove a client from the online list. Must be called when a player
     /// disconnects to prevent the `clients` HashMap from growing unbounded
     /// over many join/leave cycles. Also shrinks the HashMap to release

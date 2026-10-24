@@ -51,6 +51,8 @@ impl<'a, E: SCEventTrait + Send + Sync + 'static> SCEventIteratorWithId<'a, E> {
         }
     }
 
+    /// 只迭代事件本身。
+    ///
     /// Iterate over only the events.
     pub fn without_id(self) -> SCEventIterator<'a, E> {
         SCEventIterator { iter: self }
@@ -94,6 +96,9 @@ impl<'a, E: SCEventTrait + Send + Sync + 'static> Iterator for SCEventIteratorMu
     }
 }
 
+/// 可变迭代：需要独占 `Events` 访问（`ResMut` 写守卫）；
+/// 取消标记（`set_cancelled`）通过 `&mut SCEvent<E>` 直接生效。
+///
 /// Mutable iteration: requires exclusive `Events` access (`ResMut` write guard);
 /// cancellation (`set_cancelled`) applies directly via `&mut SCEvent<E>`.
 #[derive(Debug)]

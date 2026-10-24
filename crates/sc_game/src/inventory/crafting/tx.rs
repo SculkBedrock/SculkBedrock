@@ -74,8 +74,9 @@ fn write_back_inventory(
 
 // ===================== submit =====================
 
-/// Outcome of submitting one craft intent (terminal receipt + side effects
-/// to publish).
+/// 提交一次合成意图的结果：终止回执与待发布的副作用。
+///
+/// Outcome of submitting one craft intent: the terminal receipt and side effects to publish.
 #[derive(Clone, Debug)]
 pub struct CraftOutcome {
     pub receipt: CraftReceipt,
@@ -315,11 +316,9 @@ pub fn snapshot_from_sources(
     Ok((snapshot, disabled))
 }
 
-/// Craft request boundary event (sent after network translation).
+/// 合成请求边界事件，携带配方网络 ID 与工作站信息。
 ///
-/// Carries only the recipe network id (snapshot index), never identifier
-/// strings: forged client strings stay out of the execution path.
-/// Workstations derive from recipe declarations and nearby real blocks.
+/// Craft request boundary event carrying the recipe network ID and workstation information.
 #[derive(sc_ecs::event::Event, Clone, Debug)]
 pub struct CraftRequestEvent {
     pub actions: Vec<crate::inventory::craft_inventory::InventoryAction>,
@@ -501,6 +500,53 @@ fn publish_response(
                             fuel: slots[1].clone(),
                             result: slots[2].clone(),
                         });
+                }
+            }
+        }
+        // Chest viewers always get authoritative slots after a request
+        // (success applies the move, failure rolls the window back).
+        if let Some(open) = world.get_component::<ContainerOpen>(&request.entity) {
+            if let Some((world_id, (x, y, z), paired)) = open.chest_info() {
+                let slots = crate::inventory::chest::load_chest_slots(
+                    world,
+                    &world_id,
+                    (x, y, z),
+                    paired,
+                );
+                crate::net::IntentPublisher::new(outbox)
+                    .with_world(&world)
+                    .publish(crate::net::SyncChestWindow {
+                        entity_id: actor.0,
+                        window_id: open.window_id,
+                        slots: slots.clone(),
+                    });
+                for other_entity in world.entities_with_component::<ContainerOpen>() {
+                    if other_entity == request.entity {
+                        continue;
+                    }
+                    let Some(other_open) = world.get_component::<ContainerOpen>(&other_entity) else {
+                        continue;
+                    };
+                    if let Some((other_world, (ox, oy, oz), other_paired)) = other_open.chest_info() {
+                        if other_world == world_id
+                            && ((ox, oy, oz) == (x, y, z)
+                                || Some((ox, oy, oz)) == paired
+                                || other_paired == Some((x, y, z))
+                                || (paired.is_some() && other_paired == paired))
+                        {
+                            if let Some(other_actor) =
+                                world.get_component::<sc_entity::MinecraftEntityId>(&other_entity)
+                            {
+                                crate::net::IntentPublisher::new(outbox)
+                                    .with_world(&world)
+                                    .publish(crate::net::SyncChestWindow {
+                                        entity_id: other_actor.0,
+                                        window_id: other_open.window_id,
+                                        slots: slots.clone(),
+                                    });
+                            }
+                        }
+                    }
                 }
             }
         }

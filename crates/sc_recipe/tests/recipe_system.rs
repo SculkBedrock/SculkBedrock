@@ -1,4 +1,6 @@
-//! Integration: compile + match + transaction over MS-docs fixtures.
+//! 集成测试：按配方文档样例跑 compile + match + transaction。
+//!
+//! Integration: compile + match + transaction over recipe-documentation fixtures.
 
 use std::collections::{HashMap, HashSet};
 
@@ -140,7 +142,7 @@ fn furnace_brewing_smithing_material_reducer_fixtures_compile() {
 }
 
 #[test]
-fn unknown_fields_are_preserved_for_diagnostics() {
+fn unknown_fields_are_preserved() {
     let source = src(
         "p",
         0,

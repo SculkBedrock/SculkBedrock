@@ -30,7 +30,7 @@ impl Plugin for TestPlugin {
 }
 
 #[test]
-fn test() {
+fn app_runs_startup_systems_with_plugins_and_resources() {
     App::new()
         .add_plugins(TestPlugin)
         .add_systems(Startup, (async_system_test, system_test, res_mut_test))
@@ -65,7 +65,6 @@ fn events_resource_id_distinct() {
 
 #[async_system("block_on")]
 async fn async_system_test(world: World, mut res: ResMut<TestResource>) {
-    println!("Async System Test");
     let id = world.spawn(TestComponent {
         test: "Component Test",
     });
@@ -73,13 +72,17 @@ async fn async_system_test(world: World, mut res: ResMut<TestResource>) {
 }
 
 fn system_test(mut res: ResMut<TestResource>) {
-    println!("{}", res.text);
     res.text = "Modify Resource Test";
 }
 
 fn res_mut_test(res: Res<TestResource>, components: Components<TestComponent>) {
-    println!("{}", res.text);
-    println!("{}", components.get(&res.id.unwrap()).unwrap().test)
+    // The read conflicts with the async system's write, so the entity it
+    // spawned must already be queryable with its component payload.
+    let id = res.id.expect("the async startup system must set the entity id");
+    let component = components
+        .get(&id)
+        .expect("the spawned entity must carry its component");
+    assert_eq!(component.test, "Component Test");
 }
 
 #[test]
@@ -125,7 +128,7 @@ fn schedule_labels_match_across_module_copies() {
     // instance leaks its own box (distinct heap addresses, distinct TypeId
     // namespaces) into its own interner. Identity must still hold by
     // stable type name, or plugin `add_systems` lands in an orphaned
-    // schedule slot the host tick loop never visits (/give, /say dead).
+    // schedule slot the host tick loop never visits.
     let host_leaked: &'static dyn ScheduleLabel = Box::leak(Box::new(ProbeLabel(5)));
     let plugin_leaked: &'static dyn ScheduleLabel = Box::leak(Box::new(ProbeLabel(5)));
     assert!(

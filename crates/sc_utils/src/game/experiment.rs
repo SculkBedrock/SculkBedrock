@@ -2,6 +2,9 @@ use crate::nbt::deserialize_nbt_bool;
 use serde::Deserialize;
 use serde_inline_default::serde_inline_default;
 
+/// 对应 world.dat NBT 中的 "experiments" compound。
+/// 只存元数据标志，实际实验开关来自 ServerProperties。
+///
 /// Represents the "experiments" compound in world.dat NBT.
 /// Only stores metadata flags; actual experiment toggles come from ServerProperties.
 #[serde_inline_default]

@@ -1,25 +1,6 @@
-//! Port of the `object/` tree generator series.
+//! 树木生成对象：倒伏木、云杉、橡木、金合欢、丛林树、樱花树、杜鹃树、苍白橡木与红树林。
 //!
-//! | Rust item | Upstream source |
-//! |---|---|
-//! | [`FallenTree`] | `ObjectFallenTree.java` |
-//! | [`SmallSpruceTree`] | `ObjectSmallSpruceTree.java` |
-//! | [`SwampOakTree`] | `ObjectSwampOakTree.java` |
-//! | [`SavannaTree`] | `ObjectSavannaTree.java` |
-//! | [`JungleTree`] | `ObjectJungleTree.java` |
-//! | [`JungleBush`] | `ObjectJungleBush.java` |
-//! | [`BigSpruceTree`] | `ObjectBigSpruceTree.java` |
-//! | [`FancyOakTree`] | `ObjectFancyOakTree.java` |
-//! | [`DarkOakTree`] | `ObjectDarkOakTree.java` |
-//! | [`CherryTree`] | `ObjectCherryTree.java` |
-//! | [`AzaleaTree`] | `ObjectAzaleaTree.java` |
-//! | [`JungleBigTree`] | `ObjectJungleBigTree.java` |
-//! | [`PaleOakTree`] | `ObjectPaleOakTree.java` |
-//! | [`SmallPaleOakTree`] | `ObjectSmallPaleOakTree.java` |
-//! | [`MangroveTree`] | `ObjectMangroveTree.java` |
-//!
-//! Shared helpers (from `TreeGenerator.java`): `add_vine`/`add_vines_around_log`
-//! /`set_dirt_at`.
+//! Tree generation objects: fallen trees, spruces, oaks, acacias, jungle trees, cherry trees, azalea trees, pale oaks, and mangroves.
 
 use std::sync::Arc;
 
@@ -35,7 +16,9 @@ use crate::worldgen::stages::terrain::SEA_LEVEL;
 /// Java: `TreeGenerator.TREE_WITH_VINES_CHANCE`(L14).
 pub const TREE_WITH_VINES_CHANCE: i32 = 20;
 
-/// Horizontal directions (N/E/S/W order).
+/// 水平朝向：北、东、南、西。
+///
+/// Horizontal direction: north, east, south, or west.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HorizontalFace {
     North,
@@ -146,7 +129,9 @@ fn set_dirt_at(table: &TreeBlockTable, level: &mut BlockManager<'_>, x: i32, y: 
 // ObjectFallenTree
 // ---------------------------------------------------------------------------
 
-/// Java: `ObjectFallenTree.java`.
+/// 生成倒伏树木的对象：沿水平方向铺设原木与树叶。
+///
+/// Object that generates a fallen tree by laying logs and leaves along a horizontal direction.
 pub struct FallenTree {
     wood: WoodType,
     min_log_length: i32,
@@ -407,7 +392,9 @@ impl ObjectGenerator for FallenTree {
 // ObjectSmallSpruceTree
 // ---------------------------------------------------------------------------
 
-/// Java: `ObjectSmallSpruceTree.java`.
+/// 生成小型云杉的对象。
+///
+/// Object that generates a small spruce.
 pub struct SmallSpruceTree {
     table: Arc<TreeBlockTable>,
 }
@@ -558,7 +545,9 @@ impl ObjectGenerator for SmallSpruceTree {
 // ObjectSwampOakTree
 // ---------------------------------------------------------------------------
 
-/// Java: `ObjectSwampOakTree.java`.
+/// 生成沼泽橡木的对象：树高在最小与最大高度之间随机。
+///
+/// Object that generates a swamp oak with a height chosen between the minimum and maximum.
 pub struct SwampOakTree {
     min_tree_height: i32,
     max_tree_height: i32,
@@ -692,7 +681,9 @@ impl ObjectGenerator for SwampOakTree {
 // ObjectSavannaTree
 // ---------------------------------------------------------------------------
 
-/// Acacia trees.
+/// 生成金合欢树的对象。
+///
+/// Object that generates an acacia tree.
 pub struct SavannaTree {
     table: Arc<TreeBlockTable>,
 }
@@ -869,7 +860,9 @@ impl ObjectGenerator for SavannaTree {
 // ObjectJungleTree
 // ---------------------------------------------------------------------------
 
-/// Java: `ObjectJungleTree.java`.
+/// 生成丛林树的对象：树高在最小与最大高度之间随机。
+///
+/// Object that generates a jungle tree with a height chosen between the minimum and maximum.
 pub struct JungleTree {
     min_tree_height: i32,
     max_tree_height: i32,
@@ -1134,7 +1127,9 @@ impl ObjectGenerator for JungleTree {
 // ObjectJungleBush
 // ---------------------------------------------------------------------------
 
-/// Java: `ObjectJungleBush.java`.
+/// 生成丛林灌木的对象。
+///
+/// Object that generates a jungle bush.
 pub struct JungleBush {
     table: Arc<TreeBlockTable>,
 }
@@ -1198,7 +1193,9 @@ const BIG_SPRUCE_FOLIAGES: [&[i32]; 4] = [
     &[1, 2, 1, 3, 2, 4, 3],
 ];
 
-/// Big spruce (2x2 trunk).
+/// 生成 2×2 树干大型云杉的对象。
+///
+/// Object that generates a big spruce with a 2x2 trunk.
 pub struct BigSpruceTree {
     table: Arc<TreeBlockTable>,
 }
@@ -1336,7 +1333,9 @@ const FANCY_OAK_FOLIAGE_HEIGHT: i32 = 4;
 const FANCY_OAK_FOLIAGE_RADIUS: i32 = 2;
 const FANCY_OAK_FOLIAGE_OFFSET: i32 = 4;
 
-/// Java: `ObjectFancyOakTree.FoliageCoords`(L235-243).
+/// 树冠树叶的坐标。
+///
+/// Coordinates of foliage leaves.
 #[derive(Clone, Copy)]
 struct FoliageCoords {
     x: i32,
@@ -1345,7 +1344,9 @@ struct FoliageCoords {
     branch_base: i32,
 }
 
-/// Java: `ObjectFancyOakTree.java`.
+/// 生成大型橡木的对象：树高由基础高度与随机高度参数决定。
+///
+/// Object that generates a fancy oak whose height derives from the base-height and random-height parameters.
 pub struct FancyOakTree {
     base_height: i32,
     height_rand_a: i32,
@@ -1677,7 +1678,9 @@ impl ObjectGenerator for FancyOakTree {
 // ObjectDarkOakTree
 // ---------------------------------------------------------------------------
 
-/// Dark oak (2x2 trunk).
+/// 生成 2×2 树干深色橡木的对象。
+///
+/// Object that generates a dark oak with a 2x2 trunk.
 pub struct DarkOakTree {
     table: Arc<TreeBlockTable>,
 }
@@ -1886,7 +1889,9 @@ impl ObjectGenerator for DarkOakTree {
 /// Java: `ObjectCherryTree.LEAVES_RADIUS`(L234).
 const CHERRY_LEAVES_RADIUS: i32 = 4;
 
-/// Java: `ObjectCherryTree.java`.
+/// 生成樱花树的对象。
+///
+/// Object that generates a cherry tree.
 pub struct CherryTree {
     table: Arc<TreeBlockTable>,
 }
@@ -2335,7 +2340,9 @@ impl ObjectGenerator for CherryTree {
 // ObjectAzaleaTree
 // ---------------------------------------------------------------------------
 
-/// Java: `ObjectAzaleaTree.java`.
+/// 生成杜鹃树的对象。
+///
+/// Object that generates an azalea tree.
 pub struct AzaleaTree {
     table: Arc<TreeBlockTable>,
 }
@@ -2495,8 +2502,9 @@ impl ObjectGenerator for AzaleaTree {
 // ObjectJungleBigTree (HugeTreesGenerator helpers inlined).
 // ---------------------------------------------------------------------------
 
-/// Jungle big tree (`HugeTreesGenerator` subclass; base helpers
-/// inlined as private methods).
+/// 生成丛林大树的对象：使用基础高度参数并内联大树树干与树冠步骤。
+///
+/// Object that generates a jungle big tree using the base-height parameters with inlined trunk and canopy steps.
 pub struct JungleBigTree {
     /// Java: `HugeTreesGenerator.baseHeight`.
     base_height: i32,
@@ -2685,7 +2693,7 @@ impl ObjectGenerator for JungleBigTree {
         }
 
         // Java L36: createCrown(level, position.up(height), 2)
-        // —— j=-2..=0: growLeavesLayerStrict(pos.up(j), 2 + 1 - j).
+        // j=-2..=0: growLeavesLayerStrict(pos.up(j), 2 + 1 - j).
         for j in -2..=0 {
             self.grow_leaves_layer_strict(level, x, y + height + j, z, 2 + 1 - j);
         }
@@ -2803,7 +2811,9 @@ impl ObjectGenerator for JungleBigTree {
 // ObjectPaleOakTree
 // ---------------------------------------------------------------------------
 
-/// Pale oak (2x2 trunk with creaking hearts and hanging moss).
+/// 生成 2×2 树干苍白橡木的对象，可附带嘎枝之心与垂苔。
+///
+/// Object that generates a pale oak with a 2x2 trunk, optionally with creaking hearts and hanging moss.
 pub struct PaleOakTree {
     table: Arc<TreeBlockTable>,
     /// tryCreakingHeart flips a mutable field after placing one
@@ -2948,7 +2958,7 @@ impl ObjectGenerator for PaleOakTree {
                     .table
                     .can_grow_into(level.get_block_if_cached_or_loaded(k1, k2, l1))
                 {
-                    // Java L71-77: creaking = nextInt(3) ∈ 0-2——
+                    // Java L71-77: creaking = nextInt(3) in 0-2;
                     // `creaking == 3` never holds (upstream quirk).
                     let mut creaking = -1;
                     if self.try_creaking_heart && k2 > k && rand.next_int_max(i) == 0 {
@@ -3039,7 +3049,9 @@ impl ObjectGenerator for PaleOakTree {
 // ObjectSmallPaleOakTree
 // ---------------------------------------------------------------------------
 
-/// Small pale oak (pale variant of the small oak).
+/// 生成小型苍白橡木的对象。
+///
+/// Object that generates a small pale oak.
 pub struct SmallPaleOakTree {
     /// Java: `minTreeHeight`.
     min_tree_height: i32,
@@ -3200,7 +3212,9 @@ const MANGROVE_LEAF_PLACEMENT_ATTEMPTS: i32 = 70;
 const MANGROVE_VINE_PROBABILITY: f32 = 0.125;
 const MANGROVE_PROPAGULE_PROBABILITY: f32 = 0.14;
 
-/// Java: `ObjectMangroveTree.MangroveProperties` record(L394-404).
+/// 生成红树林树木时使用的尺寸参数。
+///
+/// Size parameters used when generating a mangrove tree.
 struct MangroveProperties {
     base_height: i32,
     height_rand_a: i32,
@@ -3216,7 +3230,9 @@ struct MangroveProperties {
 /// Position tuples.
 type Pos = (i32, i32, i32);
 
-/// 48-bit LCG random, used only for shuffling.
+/// 48 位线性同余随机数生成器，仅用于洗牌。
+///
+/// 48-bit linear congruential random generator used only for shuffling.
 struct JavaUtilRandom {
     seed: u64,
 }
@@ -3285,7 +3301,9 @@ fn mangrove_random_horizontal(rand: &mut Xoroshiro128) -> HorizontalFace {
     }
 }
 
-/// Mangrove trees (prop roots, branches, propagules, vines).
+/// 生成红树林树木的对象：包含支柱根、枝干、胎生苗与藤蔓。
+///
+/// Object that generates a mangrove tree with prop roots, branches, propagules, and vines.
 pub struct MangroveTree {
     table: Arc<TreeBlockTable>,
     /// withBeenest defaults false (nests need entity NBT, unbuilt).

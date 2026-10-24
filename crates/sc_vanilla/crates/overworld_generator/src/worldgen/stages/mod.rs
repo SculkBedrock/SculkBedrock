@@ -1,10 +1,6 @@
-//! Generation stage trait, ordered stage chain, and chunk-coordinate helper.
+//! 生成阶段接口、有序阶段链与区块坐标辅助函数。
 //!
-//! Notes:
-//! - A stage receives `&mut ChunkGenerateContext` and edits the chunk in place.
-//! - The builder collects stages into an ordered vector; `run_stages` executes
-//!   a `[start_idx, end_name]` closed range synchronously in order.
-//! - The chunk-coordinate packing helper is provided here for seed mixing.
+//! Generation stage interface, ordered stage chain, and chunk-coordinate helpers.
 
 use crate::worldgen::context::ChunkGenerateContext;
 
@@ -20,6 +16,10 @@ pub mod terrain;
 // GenerateStage trait: one step of the chunk generation chain
 // ---------------------------------------------------------------------------
 
+/// 区块生成链中的一个阶段。
+///
+/// 每个阶段接收 `&mut ChunkGenerateContext` 并原地修改区块。`name()` 返回阶段名（如 `"normal_terrain"`），用于按名称定位起止阶段。
+///
 /// One step of the chunk generation chain.
 ///
 /// Each stage receives `&mut ChunkGenerateContext` and edits the chunk in place.
@@ -37,6 +37,10 @@ pub trait GenerateStage: Send + Sync {
 // GenerateStageBuilder: ordered stage list
 // ---------------------------------------------------------------------------
 
+/// 有序阶段列表构建器。
+///
+/// 阶段保存在保持插入顺序的向量中，无需手动遍历链表。`start` 设置第一个元素，`next` 追加，`build` 将构建器转换为向量。
+///
 /// Ordered stage-list builder.
 ///
 /// Stages are kept in a vector preserving insertion order, without manual

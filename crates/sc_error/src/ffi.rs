@@ -1,3 +1,8 @@
+//! 跨 C-ABI 插件边界的错误 FFI 映射。
+//!
+//! Rust 错误绝不越过 `extern "C"` 边界；调用方将其转换为稳定的 `i32`，
+//! 并在宿主侧记录完整错误。
+//!
 //! FFI mapping for errors crossing the C-ABI plugin boundary.
 //!
 //! Rust errors never cross `extern "C"`; callers convert to a stable
@@ -8,6 +13,8 @@ use crate::ScCode;
 /// Generic failure when no specific code applies.
 pub const FFI_UNKNOWN: i32 = -1;
 
+/// 把稳定错误码映射为 FFI 整数。已知码得到较小正整数
+///
 /// Map a stable code to an FFI integer. Known codes get small positive
 /// values; unknown codes map to [`FFI_UNKNOWN`].
 pub fn code_to_int(code: ScCode) -> i32 {
@@ -89,7 +96,6 @@ pub fn code_to_int(code: ScCode) -> i32 {
         "packloader.version.io" => 5104,
         "packloader.version.not_found" => 5105,
         "packloader.version.deserialization" => 5106,
-        "packloader.split.missing_defaults" => 5110,
         "packloader.split.invalid" => 5111,
         "command.duplicate_name" => 5201,
         "command.duplicate_alias" => 5202,

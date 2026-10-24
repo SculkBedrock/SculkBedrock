@@ -1,3 +1,12 @@
+//! 命令网络处理器：
+//! - `command_request`：CommandRequest 数据包 -> sc_command 中的 RawCommandInput 事件；
+//! - `command_feedback`：来自 sc_command 的 CommandFeedback 事件 -> CommandOutput 数据包；
+//! - `gamemode_command`：/gamemode 执行（玩家游戏模式切换）；
+//! - `give_command`：/give 执行（测试用发放 + 槽位同步）。
+//!
+//! 命令解析与权限门槛位于 sc_command；/gamemode 的状态变更与协议同步位于网络层，
+//! 因为 sc_command 不得依赖 sc_entity/sc_network（会形成循环依赖）。
+//!
 //! Command network handlers:
 //! - `command_request`: CommandRequest packet -> RawCommandInput event in sc_command;
 //! - `command_feedback`: CommandFeedback event from sc_command -> CommandOutput packet;
@@ -6,7 +15,7 @@
 //!
 //! Command parsing and permission gates live in sc_command; /gamemode state changes
 //! and protocol sync live in the network layer, since sc_command must not depend on
-//! sc_entity/sc_network (would be a cyclic dependency). This module has full
+//! sc_entity/sc_network (would be a cyclic dependency).
 
 use sc_command::events::{
     CommandFeedback, CommandInvocation, CommandOrigin, CommandRequestContext, RawCommandInput,
@@ -94,6 +103,14 @@ pub(crate) fn command_feedback(world: World, mut event_reader: EventReader<Comma
     }
 }
 
+/// 执行 /gamemode：切换玩家游戏模式并同步客户端。
+///
+/// 用法：`/gamemode <survival|creative|adventure|spectator> [player]`。
+/// 接受原版别名（`Gamemode::from_str`：0/s、1/c、2/a、6/sp）。
+/// 未指定目标时切换自己（玩家发起）；控制台必须指定目标。
+/// 修改他人需要发起者是 OP（`MinecraftClient.data.is_op`）；
+/// 修改自己始终允许，便于单元与集成测试。
+///
 /// Runs /gamemode: switches a player game mode and syncs the client.
 ///
 /// Usage: `/gamemode <survival|creative|adventure|spectator> [player]`.
@@ -225,6 +242,8 @@ pub(crate) fn gamemode_command(world: World, mut reader: EventReader<CommandInvo
     }
 }
 
+/// 按名称查找在线玩家（不区分大小写）。
+///
 /// Finds an online player by name (case-insensitive).
 fn find_player_by_name(world: &World, name: &str) -> Option<sc_ecs::entity::EntityId> {
     use sc_utils::components::DisplayName;
@@ -239,17 +258,26 @@ fn find_player_by_name(world: &World, name: &str) -> Option<sc_ecs::entity::Enti
     None
 }
 
+/// 执行 /give：发放版本包物品并做权威槽位同步。
+///
+/// 玩家：`/give <item> [count]` 以自己为目标；控制台：`give <player> <item>
+/// [count]` 按显示名（不区分大小写）指定目标。裸名称默认使用 minecraft 命名空间。
+/// 数量限制在 1..=64。
+///
+/// 本处理器位于网络层：发放过程会触及实体组件，而组件不跨越 cdylib 边界
+/// （插件侧的 `Any` downcast 会失败）。在玩家权限组件落地之前，权限保持 `Any`，
+/// 届时收紧为 Host/Admin。
+///
 /// Runs /give: testing grant of version-pack items with authoritative slot sync.
 ///
 /// Players: `/give <item> [count]` targets self; console: `give <player>
 /// <item> [count]` targets by display name (case-insensitive). Bare names
 /// default to the minecraft namespace. Count clamps to 1..=64.
 ///
-/// Lives here (not in a version-pack plugin) for two reasons: the grant
-/// touches entity components, which do not cross the cdylib boundary
-/// (`Any` downcast fails plugin-side), and plugin schedule systems only
-/// started running after the label-identity fix. Permission stays `Any`
-/// until the player permission component lands; tighten to Host/Admin then.
+/// The grant touches entity components, which do not cross the cdylib boundary
+/// (`Any` downcast fails plugin-side), so this handler lives in the network
+/// layer. Permission stays `Any` until the player permission component lands;
+/// tighten to Host/Admin then.
 pub(crate) fn give_command(world: World, mut reader: EventReader<CommandInvocation>) {
     use sc_command::events::CommandOrigin;
     for invocation in reader.read() {
@@ -330,7 +358,7 @@ fn give_to(
         ));
         return;
     };
-    let stack = sc_item::ItemStack::new(runtime_id, count);
+    let stack = items.create_stack(runtime_id, count);
     let (leftover, changed) = inventory.insert_tracked(stack, &items);
     // Authoritative slot sync (same intent the pickup path uses, so the
     // client sees new items without reopening the inventory).
@@ -371,8 +399,10 @@ mod tests {
     use super::*;
     use sc_ecs::app::App;
 
-    /// The live /give failure: dispatch ran but no feedback and no items ever
-    /// appeared. Drives the real host chain (dispatch on SCConnectionUpdate ->
+    /// 走完整的宿主链路（SCConnectionUpdate 上分发 -> SCEventUpdate 上执行 give），
+    /// 要求产生玩家反馈并更新背包。
+    ///
+    /// Drives the real host chain (dispatch on SCConnectionUpdate ->
     /// give on SCEventUpdate) and requires player feedback plus inventory.
     #[test]
     fn give_flows_from_raw_input_to_feedback_and_inventory() {

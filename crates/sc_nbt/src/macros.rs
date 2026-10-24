@@ -14,3 +14,40 @@ macro_rules! write_impl {
         )*
     };
 }
+
+#[macro_export]
+macro_rules! item_nbt {
+    ($($key:expr => $val:tt),* $(,)?) => {{
+        let mut compound = $crate::CompoundNbt::new(None);
+        $(
+            compound.insert($key, $crate::nbt_val!($val));
+        )*
+        compound
+    }};
+    ($($key:ident : $val:tt),* $(,)?) => {{
+        let mut compound = $crate::CompoundNbt::new(None);
+        $(
+            compound.insert(stringify!($key), $crate::nbt_val!($val));
+        )*
+        compound
+    }};
+    () => {
+        $crate::CompoundNbt::new(None)
+    };
+}
+
+#[macro_export]
+macro_rules! nbt_val {
+    ({ $($key:expr => $val:tt),* $(,)? }) => {
+        $crate::NbtValue::Compound($crate::item_nbt! { $($key => $val),* })
+    };
+    ({ $($key:ident : $val:tt),* $(,)? }) => {
+        $crate::NbtValue::Compound($crate::item_nbt! { $($key : $val),* })
+    };
+    ([ $($elem:tt),* $(,)? ]) => {
+        $crate::NbtValue::List(vec![ $( $crate::nbt_val!($elem) ),* ])
+    };
+    ($val:expr) => {
+        $crate::NbtValue::from($val)
+    };
+}

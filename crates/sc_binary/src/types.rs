@@ -37,8 +37,9 @@ macro_rules! impl_type {
 }
 
 /// Little Endian (LE) wrapper type
-/// This type is used to indicate that the value is in little endian format
-/// It's primary use is in deriving from `BinaryIo` trait
+/// 标记字段以小端格式读写，主要配合 `BinaryIo` 派生宏使用。
+///
+/// Marks a field as little-endian; intended for use with the `BinaryIo` derive.
 ///
 /// # Example
 /// ```rust ignore
@@ -71,9 +72,9 @@ impl_type!(LE<i128>, i128);
 impl_type!(LE<f32>, f32);
 impl_type!(LE<f64>, f64);
 
-/// Big Endian (BE) wrapper type
-/// This type is used to indicate that the value is in big endian format
-/// It's primary use is in deriving from `BinaryIo` trait
+/// 标记字段以大端格式读写，主要配合 `BinaryIo` 派生宏使用。
+///
+/// Marks a field as big-endian; intended for use with the `BinaryIo` derive.
 ///
 /// # Example
 /// ```rust ignore
@@ -107,9 +108,9 @@ impl_type!(BE<i128>, i128);
 impl_type!(BE<f32>, f32);
 impl_type!(BE<f64>, f64);
 
-/// Unsigned 24 bit integer explicit type.
-/// You should really only use this when you need to derive the `BinaryIo` trait
-/// as it is a helper type.
+/// 无符号 24 位整数，用于 `BinaryIo` 派生。
+///
+/// Unsigned 24-bit integer, used with the `BinaryIo` derive.
 ///
 /// # Example
 /// ```rust ignore
@@ -143,9 +144,9 @@ impl fmt::Display for u24 {
 
 impl_type!(u24, u32);
 
-/// Signed 24 bit integer explicit type.
-/// You should really only use this when you need to derive the `BinaryIo` trait
-/// as it is a helper type.
+/// 有符号 24 位整数，用于 `BinaryIo` 派生。
+///
+/// Signed 24-bit integer, used with the `BinaryIo` derive.
 ///
 /// # Example
 /// ```rust ignore
@@ -179,12 +180,12 @@ impl fmt::Display for i24 {
 
 impl_type!(i24, i32);
 
-/// A variable length integer type that can be up to 32 bits.
-/// This is a helper type for deriving the `BinaryIo` trait.
+/// 最长 32 位的无符号变长整数，用于 `BinaryIo` 派生。直接读写变长整数时请使用
+/// `ByteReader` / `ByteWriter` 的 `read_var_u32` / `write_var_u32`。
 ///
-/// You should not use this type directly, if you are reading or writing
-/// a variable length integer, use the `ByteWriter` or `ByteReader` and use
-/// the corresponding `read_var_u32` or `write_var_u32` methods.
+/// Unsigned variable-length integer of up to 32 bits, used with the `BinaryIo`
+/// derive. For direct reads and writes use the `ByteReader` / `ByteWriter`
+/// methods `read_var_u32` / `write_var_u32`.
 #[allow(non_camel_case_types)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct varu32(pub u32);
@@ -196,12 +197,12 @@ impl varu32 {
 }
 impl_type!(varu32, u32);
 
-/// A variable length integer type that can be up to 32 bits.
-/// This is a helper type for deriving the `BinaryIo` trait.
+/// 最长 32 位的有符号变长整数，用于 `BinaryIo` 派生。直接读写变长整数时请使用
+/// `ByteReader` / `ByteWriter` 的 `read_var_i32` / `write_var_i32`。
 ///
-/// You should not use this type directly, if you are reading or writing
-/// a variable length integer, use the `ByteWriter` or `ByteReader` and use
-/// the corresponding `read_var_i32` or `write_var_i32` methods.
+/// Signed variable-length integer of up to 32 bits, used with the `BinaryIo`
+/// derive. For direct reads and writes use the `ByteReader` / `ByteWriter`
+/// methods `read_var_i32` / `write_var_i32`.
 #[allow(non_camel_case_types)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct vari32(pub i32);
@@ -213,12 +214,12 @@ impl vari32 {
 }
 impl_type!(vari32, i32);
 
-/// A variable length integer type that can be up to 64 bits.
-/// This is a helper type for deriving the `BinaryIo` trait.
+/// 最长 64 位的无符号变长整数，用于 `BinaryIo` 派生。直接读写变长整数时请使用
+/// `ByteReader` / `ByteWriter` 的 `read_var_u64` / `write_var_u64`。
 ///
-/// > You should not use this type directly, if you are reading or writing
-/// > a variable length integer, use the `ByteWriter` or `ByteReader` and use
-/// > the corresponding `read_var_u64` or `write_var_u64` methods.
+/// Unsigned variable-length integer of up to 64 bits, used with the `BinaryIo`
+/// derive. For direct reads and writes use the `ByteReader` / `ByteWriter`
+/// methods `read_var_u64` / `write_var_u64`.
 #[allow(non_camel_case_types)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct varu64(pub u64);
@@ -231,12 +232,12 @@ impl varu64 {
 
 impl_type!(varu64, u64);
 
-/// A variable length integer type that can be up to 64 bits.
-/// This is a helper type for deriving the `BinaryIo` trait.
+/// 最长 64 位的有符号变长整数，用于 `BinaryIo` 派生。直接读写变长整数时请使用
+/// `ByteReader` / `ByteWriter` 的 `read_var_i64` / `write_var_i64`。
 ///
-/// > You should not use this type directly, if you are reading or writing
-/// > a variable length integer, use the `ByteWriter` or `ByteReader` and use
-/// > the corresponding `read_var_i64` or `write_var_i64` methods.
+/// Signed variable-length integer of up to 64 bits, used with the `BinaryIo`
+/// derive. For direct reads and writes use the `ByteReader` / `ByteWriter`
+/// methods `read_var_i64` / `write_var_i64`.
 #[allow(non_camel_case_types)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct vari64(pub i64);

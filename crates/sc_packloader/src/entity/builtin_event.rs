@@ -1,1 +1,3 @@
-//todo: https://learn.microsoft.com/en-us/minecraft/creator/reference/content/entityreference/examples/eventlist?view=minecraft-bedrock-stable
+//! 内置实体事件定义（预留）。
+//!
+//! Built-in entity event definitions (reserved).

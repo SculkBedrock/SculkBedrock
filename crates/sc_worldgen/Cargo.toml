@@ -1,0 +1,23 @@
+[package]
+name = "sc_worldgen"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+md-5 = "0.10"
+sc_world = { path = "../sc_world" }
+
+[dev-dependencies]
+sc_packloader = { path = "../sc_packloader" }
+sc_vanilla_overworld = { path = "../sc_vanilla/crates/overworld_generator" }
+
+[lints]
+workspace = true
+
+# 吞吐基准（自建 harness，不引入 criterion）：分别测单线程与多线程 CPS。
+# cargo bench -p sc_worldgen --bench worldgen_cps -- --threads 1,4,8
+[[bench]]
+name = "worldgen_cps"
+harness = false

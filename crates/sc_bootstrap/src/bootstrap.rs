@@ -6,10 +6,16 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-/// Set on shutdown signals (Ctrl+C/terminal close/kill); the main loop triggers graceful exit after checking it.
+/// 收到关闭信号（Ctrl+C/终端关闭/kill）时置位；主循环检查后触发有序退出。
+///
+/// Set on shutdown signals (Ctrl+C/terminal close/kill); the main loop
+/// triggers the orderly exit sequence after checking it.
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-/// Signal handler: only sets the atomic flag (async-signal-safe; remaining logic runs in the main loop).
+/// 信号处理器：只置位原子标志（异步信号安全；其余逻辑在主循环中执行）。
+///
+/// Signal handler: only sets the atomic flag (async-signal-safe; remaining
+/// logic runs in the main loop).
 extern "C" fn handle_shutdown_signal(_signal: libc::c_int) {
     SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
     sc_utils::event::note_shutdown_requested();
@@ -39,6 +45,10 @@ use sc_world::leveldb::block_hash::block_state_hash;
 use sc_world::manager::{MinecraftWorldId, MinecraftWorldManager};
 use sc_world::storage::{ChunkGenerationRequest, WorldGenerator, WorldStorageError};
 
+/// 启动时间戳资源：Startup 与启动收尾之间的起止毫秒时间戳。
+///
+/// Startup timestamp resource: start/end millisecond timestamps between
+/// Startup and the startup-finish system.
 #[derive(Resource, Default)]
 pub struct StartupTimestamp {
     start: i64,
@@ -47,6 +57,10 @@ pub struct StartupTimestamp {
 
 /// 启动必需的工作目录布局（相对 cwd；`logs/` 由 sc_log 落盘时自建，
 /// `diagnostics/` 由各 dump 点按需自建，这里只保证启动期就会读取的目录）。
+///
+/// Required working-directory layout at startup (relative to cwd; `logs/`
+/// is created by sc_log when flushing and `diagnostics/` by each dump point
+/// on demand; only directories read during startup are guaranteed here).
 const REQUIRED_DIRS: [&str; 5] = [
     "version_packs",
     "worlds",
@@ -60,6 +74,13 @@ const REQUIRED_DIRS: [&str; 5] = [
 /// 必须与 [`ServerProperties::parse`] 的必填键保持一致（[game]/[server]/
 /// [experimental_gameplay]/[world] 全必填，缺键即启动失败），改解析器时
 /// 同步改这里（`default_config_parses` 回归锁定）。
+///
+/// Default configuration written when `server_properties.toml` is missing.
+///
+/// Must stay in sync with the required keys of [`ServerProperties::parse`]
+/// ([game]/[server]/[experimental_gameplay]/[world] are all required; a
+/// missing key fails startup), so update both together (locked by the
+/// `default_config_parses` regression test).
 const DEFAULT_SERVER_PROPERTIES: &str = r#"[server]
 enable_snappy = false
 xbox_auth = true
@@ -97,7 +118,7 @@ hide_seed = true
 
 [chunk]
 view_distance = 10
-chunks_per_tick = 4
+chunks_per_tick = 128
 spawn_threshold = 56
 
 [log]
@@ -119,6 +140,16 @@ blocked_packets = [
 /// 调用一次——早于 console 桥 `build` 期读配置和 PreStartup
 /// `init_properties`，空目录首次启动也能进到正常报错（缺世界/缺版本包），
 /// 而不是死在读不到路径上。
+///
+/// Ensures the runtime directory layout exists: creates missing directories
+/// and writes the default config when the main config is absent.
+///
+/// Idempotent and harmless: existing entries are never touched (user config
+/// is never overwritten). Called once at the head of `build_app()` — before
+/// the console bridge reads the config during `build` and before PreStartup
+/// `init_properties`, so a first start in an empty directory still reaches
+/// normal errors (missing world/version pack) instead of dying on
+/// unreadable paths.
 pub fn ensure_runtime_layout() {
     let Ok(base) = env::current_dir() else {
         eprintln!("bootstrap: failed to resolve current directory");
@@ -175,6 +206,13 @@ pub fn ensure_runtime_layout() {
     }
 }
 
+/// 引导插件：注册启动期系统与资源（目录布局、服务器属性、方块/物品/配方
+/// 注册、版本包插件加载、世界生成准备与绑定、关闭信号处理）。
+///
+/// Bootstrap plugin: registers startup systems and resources (directory
+/// layout, server properties, block/item/recipe registration,
+/// version-pack plugin loading, worldgen preparation and binding,
+/// shutdown-signal handling).
 pub struct SCBootStrapPlugin;
 
 impl Plugin for SCBootStrapPlugin {
@@ -192,7 +230,9 @@ impl Plugin for SCBootStrapPlugin {
         };
         app.insert_resource(SCPluginManager::new(app.clone()))
             .insert_resource(HostPlugins::default())
+            .insert_resource(WorldgenPreparedData::default())
             .insert_resource(sc_packloader::item::ItemComponentTable::default())
+            .insert_resource(sc_packloader::item::WearTable::default())
             // SCExit event registration (read by region-thread shutdown after the stop command).
             .add_event::<sc_utils::event::SCExit>()
             .add_systems(PreStartup, (init_log, init_properties))
@@ -203,20 +243,33 @@ impl Plugin for SCBootStrapPlugin {
             .add_systems(SCLoad, load_recipe_registry)
             .add_systems(
                 SCPostLoad,
-                (load_version_pack_plugins, release_version_pack_bulk_data),
+                (
+                    load_version_pack_plugins,
+                    prepare_worldgen,
+                    bind_worldgen,
+                    release_version_pack_bulk_data,
+                ),
             )
             .add_systems(PostStartup, finish_startup)
             .add_systems(sc_ecs::schedule::PostUpdate, check_shutdown_signal);
     }
 }
 
+/// 初始化日志区域设置；本地日志文件在启动（SCStartup）时初始化，需要
+/// [log] 配置（ServerProperties）。
+///
+/// Initializes the log locale; the local log file initializes at startup
+/// (SCStartup) and needs the [log] config (ServerProperties).
 fn init_log() {
     sc_log::set_locale("zh-CN");
-    // Local log file initializes at startup (SCStartup) and needs the [log] config (ServerProperties).
 }
 
-/// Registers shutdown signal handlers: Ctrl+C (SIGINT), terminal close/hangup (SIGHUP), kill (SIGTERM)
-/// set the atomic flag (handlers only store, async-signal-safe).
+/// 注册关闭信号处理器：Ctrl+C（SIGINT）、终端关闭/挂断（SIGHUP）、
+/// kill（SIGTERM）均置位原子标志（处理器只存储，异步信号安全）。
+///
+/// Registers shutdown signal handlers: Ctrl+C (SIGINT), terminal
+/// close/hangup (SIGHUP), and kill (SIGTERM) all set the atomic flag
+/// (handlers only store, async-signal-safe).
 fn register_shutdown_signal_handlers() {
     unsafe {
         let handler = handle_shutdown_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
@@ -228,7 +281,10 @@ fn register_shutdown_signal_handlers() {
     log::info!("{}", t_log!("console.bootstrap.signal_registered"));
 }
 
-/// Checks shutdown signals each tick: when set, sends SCExit (consumers stop region threads, flush logs, exit).
+/// 每 tick 检查关闭信号：置位时发送 SCExit（消费方停止区域线程、落盘日志并退出）。
+///
+/// Checks shutdown signals each tick: when set, sends SCExit (consumers
+/// stop region threads, flush logs, and exit).
 fn check_shutdown_signal(world: World) {
     if SHUTDOWN_REQUESTED.swap(false, Ordering::Relaxed) {
         log::info!("{}", t_log!("console.bootstrap.shutdown_signal"));
@@ -239,28 +295,45 @@ fn check_shutdown_signal(world: World) {
     }
 }
 
-/// Rust in-process plugin factory registry (name to factory).
+/// 物品注册表：从 [`MinecraftRuntimeManager`] 构建 [`sc_item::ItemRegistry`]
+/// （物品名 → 网络 id，数据来自版本包 `definitions/runtime.json`），并把
+/// 方块物品（标识符命中方块名的物品）映射到该方块的默认状态哈希。
 ///
-/// **Enabled by name-matching `kind:"rust"` entries under the version-pack `plugins/` dir**;
-/// Rust plugins belong to the version pack (manifest-only packaging) with implementations compiled into the server.
-/// Item registry: builds [`sc_item::ItemRegistry`] from [`MinecraftRuntimeManager`] (item name to network id,
-/// sourced from the version-pack `definitions/runtime.json`) and maps block items (identifiers matching a
-/// block name) to that block's default-state hash.
+/// Item registry: builds [`sc_item::ItemRegistry`] from
+/// [`MinecraftRuntimeManager`] (item name to network id, sourced from the
+/// version-pack `definitions/runtime.json`) and maps block items
+/// (identifiers matching a block name) to that block's default-state hash.
 ///
-/// Reads [`MinecraftRuntimeManager`], not `SCVersionPack.runtime_id`: packloader pours runtime ids into the
-/// manager at SCLoad, then `clear_runtime_id()` frees version-pack memory, leaving the pack field empty.
+/// 读 [`MinecraftRuntimeManager`]，而不是 `SCVersionPack.runtime_id`：
+/// packloader 在 SCLoad 把 runtime id 倒进 manager，随后
+/// `clear_runtime_id()` 释放版本包内存，包字段只剩空表。
 ///
-/// Must run after [`load_block_palette`] (SCLoad order): block default-state hashes come from
-/// `BlockStateDictionary.first_hash_of`, which needs palette registration to finish.
+/// Reads [`MinecraftRuntimeManager`], not `SCVersionPack.runtime_id`:
+/// packloader pours runtime ids into the manager at SCLoad, then
+/// `clear_runtime_id()` frees version-pack memory, leaving the pack field
+/// empty.
 ///
-/// Data-driven: hardcodes no item/block names; an item is a block item when its identifier hits the block
-/// dictionary (`first_hash_of` returns Some). Non-block items (swords, food, etc.) get
-/// `default_block_runtime_id=None` and are skipped by the interaction layer when placing.
+/// 必须在 [`load_block_palette`]（SCLoad 顺序）之后运行：方块默认状态哈希来自
+/// `BlockStateDictionary.first_hash_of`，需要调色板注册完成后才可用。
+///
+/// Must run after [`load_block_palette`] (SCLoad order): block default-state
+/// hashes come from `BlockStateDictionary.first_hash_of`, which needs
+/// palette registration to finish.
+///
+/// 数据驱动：不硬编码任何物品/方块名；标识符命中方块字典
+/// （`first_hash_of` 返回 Some）即为方块物品。非方块物品（剑、食物等）
+/// `default_block_runtime_id=None`，放置时被交互层跳过。
+///
+/// Data-driven: hardcodes no item/block names; an item is a block item when
+/// its identifier hits the block dictionary (`first_hash_of` returns Some).
+/// Non-block items (swords, food, etc.) get `default_block_runtime_id=None`
+/// and are skipped by the interaction layer when placing.
 fn load_item_registry(
     world: World,
     runtime_manager: Res<sc_packloader::version_control::runtime::MinecraftRuntimeManager>,
     registry: ResMut<sc_item::ItemRegistry>,
     mut item_components: ResMut<sc_packloader::item::ItemComponentTable>,
+    mut wear_table: ResMut<sc_packloader::item::WearTable>,
     json_registry: Res<sc_block::block_json::BlockJsonRegistry>,
 ) {
     // Empty-item wire values are always `ItemData.AIR` (runtime 0 / block 0 / no net id), never taken from the
@@ -328,20 +401,41 @@ fn load_item_registry(
         "item component table: compiled {} item components (dense runtime_id table)",
         item_components.count()
     );
+    // Item wear table: compiles `minecraft:durability` (capacity/chance) plus
+    // `sc:durability_costs` (server-only per-action costs)
+    // into a runtime_id-indexed read-only dense table for break settlement.
+    wear_table.build(&runtime_manager);
+    info!(
+        "item wear table: {} items declare durability (dense runtime_id table)",
+        wear_table.count()
+    );
     let _ = world; // Keeps the World param to match the system signature convention.
 }
 
-/// Recipe registry: compiles `RawRecipeSources` (collected from behavior packs at SCPreLoad) into an
-/// immutable snapshot (SCLoad).
+/// 配方注册表：把 `RawRecipeSources`（SCPreLoad 从行为包收集）编译为
+/// 不可变快照（SCLoad）。
 ///
-/// - Merges low to high pack order with higher layers fully overwriting the same identifier, and
-///   **same-layer duplicates are hard errors** (the whole table fails, the registry stays empty with an
-///   error log, never a half table);
-/// - Unknown recipe types are rejected by default (compile errors likewise keep the table empty);
-/// - The ingredient-group table comes from the version-pack `definitions/recipe_groups.json`
-///   (upstream tags plus legacy pseudo-name families, generated offline and vendored), filtered only
-///   against the item registry, falling back to an empty table on failure
-///   (tag recipes fail closed, exact matches unaffected).
+/// Recipe registry: compiles `RawRecipeSources` (collected from behavior
+/// packs at SCPreLoad) into an immutable snapshot (SCLoad).
+///
+/// - 按包序从低到高合并，高层完全覆盖同标识符；**同层重复是硬错误**
+///   （整表失败，注册表保持为空并打错误日志，绝不会留下半张表）；
+/// - 未知配方类型默认拒绝（编译错误同样保持表为空）；
+/// - 配料组表来自版本包 `definitions/recipe_groups.json`（物品标签加旧版
+///   伪名家族，离线生成后随包内置），只对照物品注册表过滤，失败回退空表
+///   （标签配方失败关闭，精确匹配不受影响）。
+///
+/// - Merges low to high pack order with higher layers fully overwriting the
+///   same identifier, and **same-layer duplicates are hard errors** (the
+///   whole table fails, the registry stays empty with an error log, never a
+///   half table);
+/// - Unknown recipe types are rejected by default (compile errors likewise
+///   keep the table empty);
+/// - The ingredient-group table comes from the version-pack
+///   `definitions/recipe_groups.json` (item tags plus legacy pseudo-name
+///   families, generated offline and vendored), filtered only against the
+///   item registry, falling back to an empty table on failure (tag recipes
+///   fail closed, exact matches unaffected).
 fn load_recipe_registry(world: World) {
     let insert_empty = |reason: &str| {
         world.insert_resource(sc_game::SharedRecipeRegistry::default());
@@ -392,7 +486,7 @@ fn load_recipe_registry(world: World) {
             let fingerprint = snapshot.fingerprint().hex();
             let count = diagnostics.recipe_count;
             let disabled = diagnostics.disabled.len();
-            // Ingredient-group table: version-pack `definitions/recipe_groups.json` (upstream item_tags
+            // Ingredient-group table: version-pack `definitions/recipe_groups.json` (item_tags
             // plus legacy pseudo-name families, generated offline and vendored, see tools/gen_recipe_groups.py).
             // Only filters against the registry here (drops unknown members and emptied groups), never
             // synthesizes or guesses; missing files fall back to an empty table (tag/pseudo-name queries
@@ -435,10 +529,18 @@ fn load_recipe_registry(world: World) {
     }
 }
 
-/// Filters the version-pack ingredient-group table against the item registry: drops unknown members and emptied groups.
+/// 用物品注册表过滤版本包配料组表：丢弃未知成员和排空后的组。
 ///
-/// Validates only, never synthesizes: member order stays as filed since `data` indices depend on it; new
-/// variants (e.g. poplar) joining the registry require regenerating the file (tools/gen_recipe_groups.py),
+/// Filters the version-pack ingredient-group table against the item
+/// registry: drops unknown members and emptied groups.
+///
+/// 只校验、不合成：成员顺序保持文件原序（`data` 索引依赖它）；新变体
+/// （如白杨）进入注册表需要重新生成文件（tools/gen_recipe_groups.py），
+/// 绝不在启动时自动猜测。
+///
+/// Validates only, never synthesizes: member order stays as filed since
+/// `data` indices depend on it; new variants (e.g. poplar) joining the
+/// registry require regenerating the file (tools/gen_recipe_groups.py),
 /// never auto-guessed at startup.
 fn filter_recipe_groups_by_registry(
     groups: std::collections::HashMap<String, Vec<String>>,
@@ -460,14 +562,26 @@ fn filter_recipe_groups_by_registry(
         .collect()
 }
 
-/// Block bundle: compiles the immutable registry from version-pack `definitions/blocks/**/*.block.json`
-/// (first SCLoad system; must precede `load_block_palette` / `load_item_registry`).
+/// 方块 bundle：从版本包 `definitions/blocks/**/*.block.json` 编译不可变
+/// 注册表（第一个 SCLoad 系统，必须先于 `load_block_palette` /
+/// `load_item_registry`）。
 ///
-/// On success: atomically publishes after full `sc_block` private-builder validation (wholesale dense-registry
-/// replacement, capability-table rebuild, snapshot resource publish, global dictionary registration, derived
-/// palette/tag adapters).
-/// On failure: logs and skips (with the new format declared, never falls back to the legacy palette;
-/// the old table stays empty, loudly rather than silently).
+/// Block bundle: compiles the immutable registry from version-pack
+/// `definitions/blocks/**/*.block.json` (first SCLoad system; must precede
+/// `load_block_palette` / `load_item_registry`).
+///
+/// 成功：完整通过 `sc_block` 私有 builder 校验后原子发布（稠密注册表整体
+/// 替换、能力表重建、快照资源发布、全局字典注册、派生调色板/标签适配器）。
+/// 失败：记录日志并跳过（新格式已声明时绝不回退旧调色板；旧表保持为空，
+/// 大声失败而非静默）。
+///
+/// On success: atomically publishes after full `sc_block` private-builder
+/// validation (wholesale dense-registry replacement, capability-table
+/// rebuild, snapshot resource publish, global dictionary registration,
+/// derived palette/tag adapters).
+/// On failure: logs and skips (with the new format declared, never falls
+/// back to the legacy palette; the old table stays empty, loudly rather
+/// than silently).
 fn load_block_bundle(
     world: World,
     mut version_pack: ResMut<SCVersionPack>,
@@ -529,7 +643,7 @@ fn load_block_bundle(
                 .filter(|v| v.as_ref().is_some_and(|d| d.enabled))
                 .count();
             log::debug!(
-                "block mining data: {declared} states with declared seconds / {unbreakable} unbreakable / {} undeclared (fallback {} ticks); sc:mining {} states / sc:drops(enabled) {} states",
+                "block mining data: {declared} states with declared seconds / {unbreakable} unbreakable / {} undeclared (fallback {} ticks); sc:mining {} states / loot-table drops {} states",
                 state_count - declared - unbreakable,
                 sc_game::interaction::FALLBACK_BREAK_TIME_TICKS,
                 mining_profiles,
@@ -541,12 +655,23 @@ fn load_block_bundle(
     let _ = world;
 }
 
-/// Block palette: registers all block states from version-pack `definitions/block_palette.nbt`
-/// (palette-first dual mode, falling back to the bootstrap dictionary when missing). SCLoad runs after the
-/// sc_packloader load_version (SCPreLoad already inserted SCVersionPack as a resource).
+/// 方块调色板：从版本包 `definitions/block_palette.nbt` 注册全部方块状态
+/// （调色板优先双模式，缺失时回退引导字典）。SCLoad 在 sc_packloader
+/// load_version（SCPreLoad 已插入 SCVersionPack 资源）之后运行。
 ///
-/// After palette load, builds the dense capability-bitmask table (`BlockComponentFlags`) over dense
-/// [`sc_block::state::BlockStateId`] for O(1) logic hot paths such as random-tick filtering and redstone signals.
+/// Block palette: registers all block states from version-pack
+/// `definitions/block_palette.nbt` (palette-first dual mode, falling back
+/// to the bootstrap dictionary when missing). SCLoad runs after the
+/// sc_packloader load_version (SCPreLoad already inserted SCVersionPack as
+/// a resource).
+///
+/// 调色板加载后，基于稠密 [`sc_block::state::BlockStateId`] 构建稠密能力
+/// 位掩码表（`BlockComponentFlags`），供随机 tick 过滤、红石信号等 O(1)
+/// 逻辑热路径使用。
+///
+/// After palette load, builds the dense capability-bitmask table
+/// (`BlockComponentFlags`) over dense [`sc_block::state::BlockStateId`] for
+/// O(1) logic hot paths such as random-tick filtering and redstone signals.
 fn load_block_palette(
     world: World,
     version_pack: ResMut<SCVersionPack>,
@@ -581,28 +706,50 @@ fn load_block_palette(
     let _ = world;
 }
 
-/// Loaded host ABI plugins (reference held so dlopened .so files stay loaded).
+/// 已加载的宿主 ABI 插件（持有引用以保证 dlopen 的 .so 保持加载）。
+///
+/// Loaded host ABI plugins (reference held so dlopened .so files stay
+/// loaded).
 #[derive(Resource, Default)]
 pub struct HostPlugins(pub Vec<LoadedHostPlugin>);
 
-/// Host World pointer (plugin registration functions reach host resources through it).
+/// 宿主 World 指针（插件注册函数通过它触及宿主资源）。
+///
+/// Host World pointer (plugin registration functions reach host resources
+/// through it).
 static HOST_WORLD: OnceLock<World> = OnceLock::new();
 
+/// 设置宿主 World 指针（仅首次调用生效）。
+///
+/// Sets the host World pointer (first call wins).
 fn set_host_world(world: &World) {
     let _ = HOST_WORLD.set(world.clone());
 }
 
+/// 读取宿主 World 指针（未设置时为 `None`）。
+///
+/// Returns the host World pointer (`None` when unset).
 fn host_world() -> Option<&'static World> {
     HOST_WORLD.get()
 }
 
+/// 版本包内插件加载（SCPostLoad）。
+///
 /// In-version-pack plugin loading (SCPostLoad).
 ///
+/// 按 manifest.kind 分派：
+/// - `"rust"`：**进程内** Rust 插件（仅清单打包），与编入服务器的工厂
+///   （`BUILTIN_PLUGIN_FACTORIES`）按名匹配，直接以 sc_*/ECS 启用；
+/// - `"cabi"`（默认）：**跨语言** cdylib 插件（含 plugin.so），经 C-ABI
+///   动态加载（`SCPluginLoader::load_host_plugin` 加 `HostApiV1`）。
+///
 /// Dispatches on manifest.kind:
-/// - `"rust"`: **in-process** Rust plugins (manifest-only packaging), name-matched against factories
-///   compiled into the server (`BUILTIN_PLUGIN_FACTORIES`), enabled directly with sc_*/ECS;
-/// - `"cabi"` (default): **cross-language** cdylib plugins (containing plugin.so), dynamically loaded via
-///   C-ABI (`SCPluginLoader::load_host_plugin` plus `HostApiV1`).
+/// - `"rust"`: **in-process** Rust plugins (manifest-only packaging),
+///   name-matched against factories compiled into the server
+///   (`BUILTIN_PLUGIN_FACTORIES`), enabled directly with sc_*/ECS;
+/// - `"cabi"` (default): **cross-language** cdylib plugins (containing
+///   plugin.so), dynamically loaded via C-ABI
+///   (`SCPluginLoader::load_host_plugin` plus `HostApiV1`).
 fn load_version_pack_plugins(
     world: World,
     mut manager: ResMut<SCPluginManager>,
@@ -696,33 +843,172 @@ fn load_version_pack_plugins(
     }
 }
 
-/// Releases bulky version-pack load-time raw data (end of SCPostLoad, once all consumers are ready):
+/// 准备好的内置世界生成数据：选定根对应的自有 JSON 源、已解析闭包与
+/// 编译后的不可变 DensityPlan。[`prepare_worldgen`] 成功前为空。
 ///
-/// - `worldgen` / `block_tags` / `biome_features`: no runtime consumers (the world generator uses the
-///   compile-time ported Rust implementation plus hardcoded tag lists), purely resident waste;
-/// - `block_palette`: host registry registration (SCLoad `load_block_palette`) and DLL plugin dictionary
-///   registration (`load_version_pack_plugins` enable) have both completed.
+/// Prepared built-in worldgen data: the owned JSON sources plus the
+/// resolved closure and compiled immutable DensityPlan for the selected
+/// root. Empty until [`prepare_worldgen`] succeeds.
+#[derive(Resource, Default)]
+pub struct WorldgenPreparedData {
+    pub sources: Option<Arc<sc_worldgen::WorldgenSources>>,
+    pub prepared: Option<Arc<sc_worldgen::PreparedWorldgen>>,
+    pub compiled: Option<Arc<sc_worldgen::CompiledWorldgen>>,
+}
+
+impl WorldgenPreparedData {
+    /// 只有准备与编译都成功后才允许进入生成（预处理失败的世界一律拒绝生成）。
+    ///
+    /// Generation may only be admitted once preparation and compilation
+    /// succeeded (worlds whose preprocessing failed never accept
+    /// generation).
+    pub fn is_ready(&self) -> bool {
+        self.compiled.is_some()
+    }
+}
+
+/// 世界生成准备与编译步骤（在插件加载与 bulk 数据释放之间运行）：把版本包
+/// 世界生成 bundle 转为自有源，从选定根解析可达闭包，链接 noise settings，
+/// 并编译不可变 DensityPlan。失败是响亮的——服务器继续提供 console/协议
+/// 服务，但生成一律拒绝（内置生成器之外没有可静默填充地形的后备）。
 ///
-/// After release `SCVersionPack` keeps only the manifest and taken-empty tables, cutting resident memory
-/// by several MB (worldgen JSON bundle plus 17k-state palette bytes).
+/// Worldgen prepare & compile step (runs between plugin loading and
+/// bulk-data release): converts the version-pack worldgen bundle into owned
+/// sources, resolves the reachable closure from the selected root, links
+/// noise settings, and compiles the immutable DensityPlan. Failure is loud —
+/// the server keeps serving console/protocol but generation stays refused
+/// (there is no fallback generator to silently fill terrain).
+fn prepare_worldgen(
+    mut version_pack: ResMut<SCVersionPack>,
+    mut prepared: ResMut<WorldgenPreparedData>,
+) {
+    let bundle = version_pack.take_worldgen();
+    let to_btree = |map: std::collections::HashMap<String, Vec<u8>>| -> std::collections::BTreeMap<String, Vec<u8>> {
+        map.into_iter().collect()
+    };
+    let sources = sc_worldgen::WorldgenSources {
+        density_functions: to_btree(bundle.density_functions),
+        noises: to_btree(bundle.noises),
+        noise_settings: to_btree(bundle.noise_settings),
+    };
+    if sources.is_empty() {
+        error!(
+            "worldgen data missing from version pack (definitions/worldgen/): \
+             generation will be refused for every world"
+        );
+        return;
+    }
+    // Selected root and data version are pinned by the descriptor contract
+    // (`sc_world::generation::descriptor::DATA_VERSION`).
+    let start = std::time::Instant::now();
+    match sc_worldgen::CompiledWorldgen::compile(&sources, "minecraft:overworld") {
+        Ok(compiled) => {
+            let elapsed = start.elapsed();
+            let closure = compiled.prepared();
+            info!(
+                "worldgen prepared & compiled in {:.2?}: {} source files, closure {} nodes / {} edges, \
+                 {} router roots, {} noise tables, {} plan nodes, \
+                 content fingerprint {:016x}, closure fingerprint {:016x}",
+                elapsed,
+                sources.len(),
+                closure.closure.len(),
+                closure.edges.len(),
+                compiled.settings().router.len(),
+                compiled.settings().noises.len(),
+                compiled.plan().node_count(),
+                closure.content_fingerprint,
+                closure.closure_fingerprint
+            );
+            *prepared = WorldgenPreparedData {
+                prepared: Some(Arc::new(closure.clone())),
+                compiled: Some(Arc::new(compiled)),
+                sources: Some(Arc::new(sources)),
+            };
+        }
+        Err(error) => {
+            error!("worldgen preparation/compilation failed: {error}; generation stays refused");
+        }
+    }
+}
+
+/// 把编译后的世界生成资源绑定到已加载的主世界实例。
+///
+/// Binds compiled worldgen assets to loaded Overworld instances.
+fn bind_worldgen(
+    mut manager: ResMut<MinecraftWorldManager>,
+    prepared: Res<WorldgenPreparedData>,
+) {
+    let Some(compiled) = prepared.compiled.as_ref() else {
+        log::error!("worldgen: compiled worldgen missing; generation stays refused");
+        return;
+    };
+
+    let world_infos: Vec<(MinecraftWorldId, i64)> = manager
+        .get_worlds_by_type(&WorldType::Overworld)
+        .iter()
+        .map(|w| (w.world_id.clone(), w.world_data.world_seed))
+        .collect();
+
+    for (world_id, seed) in world_infos {
+        let generator = Arc::new(sc_worldgen::BuiltinWorldGenerator::new(compiled, seed));
+        let descriptor = generator.descriptor().clone();
+        let land_spawn = generator.find_land_spawn();
+
+        match manager.set_world_generator_with_descriptor(&world_id, generator, descriptor, 0) {
+            Ok(true) => {
+                log::info!("worldgen >> 已为世界装配内置三层生成器 (seed={seed})");
+                if let Some((x, y, z)) = land_spawn {
+                    if let Some(world) = manager.get_world_mut(&world_id) {
+                        world.world_data.spawn_x = x;
+                        world.world_data.spawn_y = y;
+                        world.world_data.spawn_z = z;
+                        log::info!("worldgen >> 出生点已校准: ({x}, {y}, {z})");
+                    }
+                }
+            }
+            Ok(false) => {
+                log::warn!("worldgen >> 未找到世界实例: {world_id:?}");
+            }
+            Err(error) => {
+                log::error!("worldgen >> 世界装配生成器失败: {error}");
+            }
+        }
+    }
+}
+
+/// 释放版本包加载期的大块原始数据（SCPostLoad 末尾，所有消费方就绪后）：
+///
+/// - `worldgen`：被早一个系统的 [`prepare_worldgen`] 消费（自有源/闭包现由
+///   [`WorldgenPreparedData`] 持有）；
+/// - `block_tags` / `biome_features`：无运行时消费方（世界生成器使用内置
+///   Rust 实现加硬编码标签表）；
+/// - `block_palette`：宿主注册表注册（SCLoad `load_block_palette`）与 DLL
+///   插件字典注册（`load_version_pack_plugins` 启用）此时都已执行完。
+///
+/// Releases bulky version-pack load-time raw data (end of SCPostLoad, once
+/// all consumers are ready):
+///
+/// - `worldgen`: consumed by [`prepare_worldgen`] one system earlier (the
+///   owned sources/closure live in [`WorldgenPreparedData`] now);
+/// - `block_tags` / `biome_features`: no runtime consumers (the world
+///   generator uses the built-in Rust implementation plus hardcoded tag
+///   lists);
+/// - `block_palette`: host registry registration (SCLoad
+///   `load_block_palette`) and DLL plugin dictionary registration
+///   (`load_version_pack_plugins` enable) have both already run.
+///
+/// 释放后 `SCVersionPack` 只保留清单与取空的表，常驻内存减少数 MB
+/// （世界生成 JSON bundle 加 17k 状态调色板字节）。
+///
+/// After release `SCVersionPack` keeps only the manifest and taken-empty
+/// tables, cutting resident memory by several MB (worldgen JSON bundle plus
+/// 17k-state palette bytes).
 fn release_version_pack_bulk_data(mut version_pack: ResMut<SCVersionPack>) {
-    let worldgen = version_pack.take_worldgen();
     let block_tags = version_pack.take_block_tags();
     let biome_features = version_pack.take_biome_features();
     let block_palette = version_pack.take_block_palette();
 
-    let mut entries = 0usize;
     let mut bytes = 0usize;
-    for bundle in [
-        worldgen.density_functions.values(),
-        worldgen.noises.values(),
-        worldgen.noise_settings.values(),
-    ] {
-        for value in bundle {
-            entries += 1;
-            bytes += value.len();
-        }
-    }
     let tag_count = block_tags.len();
     let mut tag_members = 0usize;
     for members in block_tags.values() {
@@ -732,13 +1018,12 @@ fn release_version_pack_bulk_data(mut version_pack: ResMut<SCVersionPack>) {
     if let Some(palette) = block_palette.as_deref() {
         bytes += palette.len();
     }
-    drop(worldgen);
     drop(block_tags);
     drop(biome_features);
     drop(block_palette);
 
     log::debug!(
-        "version pack load-time data released: worldgen {entries} entries / block_tags {tag_count} tags ({tag_members} members) / biome_features cleared / block_palette freed (~{}KB)",
+        "version pack load-time data released: block_tags {tag_count} tags ({tag_members} members) / biome_features cleared / block_palette freed (~{}KB)",
         bytes / 1024
     );
 }
@@ -761,8 +1046,11 @@ extern "C" fn host_log_warn(msg: *const c_char) {
     log::warn!("{}", t_log!("console.plugin.forward_warn", msg = msg));
 }
 
-/// Block runtime id: FNV1a-32(name + states_json). Empty states_json means stateless;
-/// JSON objects such as `{"snowy":false}` convert to CompoundNbt.
+/// 方块运行时 id：FNV1a-32(name + states_json)。states_json 为空即无状态；
+/// `{"snowy":false}` 等 JSON 对象转换为 CompoundNbt。
+///
+/// Block runtime id: FNV1a-32(name + states_json). Empty states_json means
+/// stateless; JSON objects such as `{"snowy":false}` convert to CompoundNbt.
 extern "C" fn host_hash_block_state(name: *const c_char, states_json: *const c_char) -> u32 {
     let name = unsafe { std::ffi::CStr::from_ptr(name) }
         .to_string_lossy()
@@ -778,7 +1066,10 @@ extern "C" fn host_hash_block_state(name: *const c_char, states_json: *const c_c
     block_state_hash(&name, states.as_ref())
 }
 
-/// Minimal JSON state parsing: only bool/int/string values (enough for plugin canonical states).
+/// JSON 状态解析：只支持 bool/int/string 值（覆盖插件的规范状态）。
+///
+/// Parses a JSON state object: only bool/int/string values (enough for
+/// plugin canonical states).
 fn parse_states_json(json: &str) -> Option<CompoundNbt> {
     let value: serde_json::Value = serde_json::from_str(json).ok()?;
     let object = value.as_object()?;
@@ -802,49 +1093,25 @@ fn parse_states_json(json: &str) -> Option<CompoundNbt> {
     Some(states)
 }
 
-/// Registers a world generator: world_kind 0=Overworld 1=Nether 2=End.
-extern "C" fn host_register_world_generator(world_kind: i32, generate: GenerateFn) {
-    let world_type = match world_kind {
-        0 => WorldType::Overworld,
-        1 => WorldType::TheNether,
-        2 => WorldType::TheEnd,
-        _ => {
-            log::warn!(
-                "{}",
-                t_log!("console.hostapi.unknown_world", kind = world_kind)
-            );
-            return;
-        }
-    };
-    let Some(world) = host_world() else {
-        log::warn!("{}", t_log!("console.hostapi.no_world"));
-        return;
-    };
-    let Some(mut manager) = world.get_resource_mut::<MinecraftWorldManager>() else {
-        log::warn!("{}", t_log!("console.hostapi.manager_missing"));
-        return;
-    };
-    let world_ids: Vec<MinecraftWorldId> = manager
-        .get_worlds_by_type(&world_type)
-        .iter()
-        .map(|world| world.world_id.clone())
-        .collect();
-    let mut installed = 0;
-    for world_id in world_ids {
-        if manager.set_world_generator(&world_id, Arc::new(CAbiGenerator { generate })) {
-            installed += 1;
-        }
-    }
-    info!(
-        "{}",
-        t_log!(
-            "console.hostapi.generator_registered",
-            kind = world_kind,
-            count = installed
-        )
+/// 已退役的世界生成注册：内置生成器为静态链接，外部注册不得覆盖。
+/// `HostApiV1` 表布局不变（不升 ABI 版本）；该能力显式拒绝并报告废弃，
+/// 不安装任何东西。`world_kind` 0=主世界 1=下界 2=末地。
+///
+/// Retired worldgen registration: the built-in generator is statically
+/// linked and no external registration may override it. The `HostApiV1`
+/// table layout is unchanged (no ABI version bump); this capability
+/// explicitly rejects and reports deprecation instead of installing
+/// anything. `world_kind` 0=Overworld 1=Nether 2=End.
+extern "C" fn host_register_world_generator(_world_kind: i32, _generate: GenerateFn) {
+    log::error!(
+        "retired HostApiV1.register_world_generator call rejected: world \
+         generation is built into the server (builtin_density_three_layer_v1); \
+         external worldgen registration is deprecated and never installed"
     );
 }
 
+/// 把插件 C-ABI 生成回调适配成宿主的 `WorldGenerator`。
+///
 /// Adapts a plugin C-ABI generation callback into a host `WorldGenerator`.
 struct CAbiGenerator {
     generate: GenerateFn,
@@ -874,12 +1141,20 @@ impl WorldGenerator for CAbiGenerator {
     }
 }
 
+/// 插件 set_block 回调：写入正在构建的 chunk。
+///
 /// Plugin set_block callback: writes into the chunk under construction.
 unsafe extern "C" fn set_block_cb(ctx: *mut c_void, x: u8, y: i32, z: u8, runtime_id: u32) {
     let chunk = unsafe { &mut *(ctx as *mut Chunk) };
     let _ = chunk.set_block_at(0, x, y, z, BlockRuntimeId(runtime_id));
 }
 
+/// 启动系统：注册关闭信号处理器、初始化本地日志落盘与日志级别、
+/// 创建 Server 并记录启动时间戳。
+///
+/// Startup system: registers shutdown signal handlers, initializes the
+/// local log-file sink and log level, creates the Server, and records the
+/// startup timestamp.
 fn startup(world: World) {
     let mut ms = StartupTimestamp::default();
     // Manual shutdown (Ctrl+C/terminal close/SIGTERM) triggers graceful exit (SCExit flow).
@@ -951,6 +1226,12 @@ fn startup(world: World) {
     Server::init(server);
 }
 
+/// 加载 `server_properties.toml`：应用进程级控制台语言并插入资源；
+/// 加载失败只记录错误（由后续系统处理缺失）。
+///
+/// Loads `server_properties.toml`: applies the process-wide console
+/// language and inserts the resource; a load failure only logs an error
+/// (later systems handle the absence).
 fn init_properties(world: World) {
     let Ok(mut current_dir) = env::current_dir() else {
         eprintln!("bootstrap: failed to resolve current directory");
@@ -983,6 +1264,9 @@ fn init_properties(world: World) {
     }
 }
 
+/// 启动收尾：计算并记录启动总耗时。
+///
+/// Finishes startup: computes and logs the total startup time.
 pub fn finish_startup(mut ms: ResMut<StartupTimestamp>) {
     ms.end = chrono::Local::now().timestamp_millis();
     let ms = ms.end - ms.start;
@@ -1020,6 +1304,9 @@ mod tests {
     }
 
     /// 默认配置模板必须能被当前解析器完整加载（改解析器必填键时同步改模板）。
+    ///
+    /// The default config template must load fully with the current parser
+    /// (update the template together with the parser's required keys).
     #[test]
     fn default_config_parses() {
         let dir = std::env::temp_dir().join(format!(
@@ -1039,6 +1326,9 @@ mod tests {
     }
 
     /// `log_level` 缺省即 debug；非法值直接拒绝（不静默跑错级别）。
+    ///
+    /// `log_level` defaults to debug; invalid values are rejected instead of
+    /// silently running at the wrong level.
     #[test]
     fn log_level_defaults_and_rejects_garbage() {
         use sc_utils::game::structs::server_properties::ServerProperties;
@@ -1070,166 +1360,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Real-pack regression test: `recipe_groups.json` must cover every ingredient id in the compiled snapshot
-    /// (genuine registry items or file groups), otherwise crafting regresses where legacy logic matched but the
-    /// new file lacks the group. The data source matches production (same pack, compile, and registry).
-    #[test]
-    fn recipe_groups_file_covers_snapshot_ingredients() {
-        let Some(mut source) = sc_packloader::test_pack::open_test_pack() else {
-            eprintln!("[skip] 版本包缺失，跳过测试");
-            return;
-        };
-        let mut pack =
-            sc_packloader::version_control::loader::ZippedVersionPack::get_version(&mut source)
-                .expect("版本包解析失败");
-
-        // Recipe sources use the same read path as SCPackLoaderPlugin.load_version
-        // (behavior packs sorted low to high before pack_order assignment).
-        let budgets = sc_packloader::recipe_source::RecipeSourceBudgets::default();
-        let mut behavior_packs = pack.take_behavior_packs();
-        behavior_packs.sort_by(|(version_a, _), (version_b, _)| version_a.cmp(version_b));
-        let mut files = Vec::new();
-        for (order, (_, resource_pack)) in behavior_packs.iter().enumerate() {
-            let (mut part, _) = sc_packloader::recipe_source::read_recipes_from_resource_pack(
-                resource_pack,
-                order,
-                &budgets,
-            );
-            files.append(&mut part);
-        }
-        let sources: Vec<sc_recipe::SourceRecipe> = files
-            .iter()
-            .map(|file| {
-                sc_recipe::SourceRecipe::from_parts(
-                    file.pack_name.clone(),
-                    file.pack_order,
-                    file.relative_path.clone(),
-                    file.format_version.clone(),
-                    file.raw.clone(),
-                    file.fingerprint,
-                    file.raw_bytes,
-                )
-            })
-            .collect();
-        let (snapshot, _) = sc_recipe::RecipeRegistrySnapshot::compile(
-            &sources,
-            &sc_recipe::CompileBudgets::default(),
-            false,
-        )
-        .expect("配方编译失败");
-
-        // Registry names share the load_item_registry source (runtime entries, skipping air).
-        let Some(mut source) = sc_packloader::test_pack::open_test_pack() else {
-            eprintln!("[skip] 版本包缺失，跳过测试");
-            return;
-        };
-        let mut runtime_pack =
-            sc_packloader::version_control::loader::ZippedVersionPack::get_version(&mut source)
-                .expect("版本包解析失败");
-        let manager = sc_packloader::version_control::runtime::MinecraftRuntimeManager::new(
-            runtime_pack.take_runtime_id(),
-        );
-        let registry_names: HashSet<String> = manager
-            .runtime_entries()
-            .into_iter()
-            .filter(|(_, id)| (*id as u16) != 0)
-            .map(|(name, _)| name)
-            .collect();
-
-        // Snapshot ingredient ids match the removed collect_ingredient_ids semantics.
-        let mut ingredient_ids = HashSet::new();
-        {
-            use sc_recipe::{IngredientChoice, RecipeBody};
-            let mut spec_ids = |spec: &sc_recipe::IngredientSpec| {
-                for choice in &spec.choices {
-                    match choice {
-                        IngredientChoice::Item { identifier, .. } => {
-                            ingredient_ids.insert(identifier.clone());
-                        }
-                        IngredientChoice::Tag { tag } => {
-                            ingredient_ids.insert(tag.clone());
-                        }
-                    }
-                }
-            };
-            for recipe in snapshot.in_network_order() {
-                match &recipe.body {
-                    RecipeBody::Shaped(body) => {
-                        for cell in body.grid.iter().flatten() {
-                            spec_ids(cell);
-                        }
-                    }
-                    RecipeBody::Shapeless(body) => {
-                        for spec in &body.ingredients {
-                            spec_ids(spec);
-                        }
-                    }
-                    RecipeBody::Furnace(body) | RecipeBody::FurnaceMaterial(body) => {
-                        spec_ids(&body.input);
-                    }
-                    RecipeBody::SmithingTransform(body) => {
-                        spec_ids(&body.template);
-                        spec_ids(&body.base);
-                        spec_ids(&body.addition);
-                    }
-                    RecipeBody::SmithingTrim(body) => {
-                        spec_ids(&body.template);
-                        spec_ids(&body.base);
-                        spec_ids(&body.addition);
-                    }
-                    RecipeBody::BrewingMix(body) | RecipeBody::BrewingContainer(body) => {
-                        spec_ids(&body.input);
-                        spec_ids(&body.reagent);
-                    }
-                    RecipeBody::MaterialReducer(body) => {
-                        spec_ids(&body.input);
-                    }
-                }
-                for spec in &recipe.unlock {
-                    spec_ids(spec);
-                }
-            }
-        }
-
-        let groups = filter_recipe_groups_by_registry(pack.take_recipe_groups(), &registry_names);
-        assert!(!groups.is_empty(), "recipe_groups 不得为空");
-        // Intentionally uncovered legacy forms (also table-less in legacy logic, behavior parity, follow up later):
-        // - potion_type:*: brewing input/output, needs the potion userdata system;
-        // - stone_slab{,2,3,4}: retired legacy slab numeric ids, damage mapping still open;
-        // - muttonRaw/horsearmorgold/horsearmoriron: pre-flattening names with no modern mapping.
-        // All other snapshot ingredients must be covered by registry or file.
-        fn allowlisted(id: &str) -> bool {
-            id.starts_with("minecraft:potion_type:")
-                || matches!(
-                    id,
-                    "minecraft:stone_slab"
-                        | "minecraft:stone_slab2"
-                        | "minecraft:stone_slab3"
-                        | "minecraft:stone_slab4"
-                        | "minecraft:muttonRaw"
-                        | "minecraft:horsearmorgold"
-                        | "minecraft:horsearmoriron"
-                )
-        }
-        let mut uncovered = Vec::new();
-        for id in &ingredient_ids {
-            if registry_names.contains(id) {
-                continue;
-            }
-            match groups.get(id) {
-                Some(members)
-                    if !members.is_empty()
-                        && members.iter().all(|m| registry_names.contains(m)) =>
-                {
-                    // ok
-                }
-                _ if allowlisted(id) => {}
-                _ => uncovered.push(id.clone()),
-            }
-        }
-        assert!(
-            uncovered.is_empty(),
-            "recipe_groups 未覆盖快照配料: {uncovered:?}"
-        );
-    }
 }

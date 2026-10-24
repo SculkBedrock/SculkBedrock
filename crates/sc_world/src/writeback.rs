@@ -1,3 +1,8 @@
+//! 有界异步脏列写回。
+//!
+//! 主世界持有者准入脏快照并轮询终止收据。worker 线程只调用既有存储
+//! 接口；它们从不清除脏状态或改动 `ChunkColumn`。
+//!
 //! Bounded asynchronous dirty-column writeback.
 //!
 //! The root-world owner admits dirty snapshots and polls terminal receipts.
@@ -22,77 +27,237 @@ use crate::storage::{
 };
 use sc_log::t_log;
 
+/// 默认最大在途任务数。
+///
+/// Default maximum number of in-flight jobs.
 const DEFAULT_MAX_JOBS: usize = 128;
+/// 默认最大在途字节数（64 MiB）。
+///
+/// Default maximum in-flight bytes (64 MiB).
 const DEFAULT_MAX_BYTES: usize = 64 * 1024 * 1024;
+/// 每世界每 tick 扫描的脏列候选上限。
+///
+/// Maximum dirty-column candidates scanned per world per tick.
 const MAX_DIRTY_CANDIDATES_PER_WORLD_TICK: usize = 64;
+/// 失败退避表的最大键数（FIFO 淘汰上限）。
+///
+/// Maximum number of keys in the failure-backoff table (FIFO cap).
 const MAX_FAILURE_KEYS: usize = 4096;
+/// 失败重试的初始延迟。
+///
+/// Initial failure-retry delay.
 const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(100);
+/// 失败重试的最大延迟。
+///
+/// Maximum failure-retry delay.
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(5);
 
+/// 写回键：世界 id + 区块坐标。
+///
+/// Writeback key: world id plus chunk coordinates.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 struct WritebackKey {
+    /// 所属世界 id。
+    ///
+    /// Owning world id.
     world_id: MinecraftWorldId,
+    /// 区块坐标键。
+    ///
+    /// Chunk coordinate key.
     chunk: ChunkKey,
 }
 
+/// 一个写回任务：脏快照 + 各脏位 + spillover 确认 + 存储句柄。
+///
+/// One writeback job: the dirty snapshot, its dirty flags, spillover acks and
+/// the storage handle.
 struct WritebackJob {
+    /// 写回键。
+    ///
+    /// Writeback key.
     key: WritebackKey,
+    /// 尝试号（用于识别过期 ack）。
+    ///
+    /// Attempt id (identifies stale acks).
     attempt_id: u64,
+    /// 源列句柄（ack 回到持有者手里）。
+    ///
+    /// Source column handle (returned to the owner with the ack).
     column: Arc<ChunkColumn>,
+    /// 快照对应的内容代际。
+    ///
+    /// Content generation the snapshot corresponds to.
     generation: u64,
+    /// 方块实体是否脏。
+    ///
+    /// Whether block entities are dirty.
     block_entities_dirty: bool,
+    /// 生物群系是否脏。
+    ///
+    /// Whether biomes are dirty.
     biomes_dirty: bool,
+    /// 高度图是否脏。
+    ///
+    /// Whether the heightmap is dirty.
     heightmap_dirty: bool,
+    /// 快照携带的 spillover 操作确认列表。
+    ///
+    /// Spillover operation acks carried by the snapshot.
     spillover_acks: Vec<SpilloverOperationId>,
+    /// 存储后端句柄。
+    ///
+    /// Storage backend handle.
     storage: Arc<dyn WorldStorage>,
+    /// 克隆出的区块快照（worker 独占写）。
+    ///
+    /// Cloned chunk snapshot (owned by the worker).
     snapshot: Chunk,
 }
 
+/// 一次写回完成的确认回执。
+///
+/// The acknowledgement receipt of one completed writeback.
 struct WritebackAck {
+    /// 写回键。
+    ///
+    /// Writeback key.
     key: WritebackKey,
+    /// 尝试号。
+    ///
+    /// Attempt id.
     attempt_id: u64,
+    /// 源列句柄。
+    ///
+    /// Source column handle.
     column: Arc<ChunkColumn>,
+    /// 快照内容代际。
+    ///
+    /// Snapshot content generation.
     generation: u64,
+    /// spillover 操作确认列表。
+    ///
+    /// Spillover operation acks.
     spillover_acks: Vec<SpilloverOperationId>,
+    /// 写结果（`Err` 为错误信息）。
+    ///
+    /// Write result (`Err` carries the error message).
     result: Result<(), String>,
 }
 
+/// 在途写回记录：预留字节、受理时刻与所属 provider。
+///
+/// In-flight writeback record: reserved bytes, acceptance time and owning
+/// provider.
 struct InFlightWriteback {
+    /// 尝试号。
+    ///
+    /// Attempt id.
     attempt_id: u64,
+    /// 预留的字节数。
+    ///
+    /// Reserved bytes.
     reserved_bytes: usize,
+    /// 受理时刻。
+    ///
+    /// Acceptance time.
     accepted_at: Instant,
+    /// 超龄警告是否已发过（每次尝试只发一次）。
+    ///
+    /// Whether the overdue warning was already emitted (once per attempt).
     age_warning_emitted: bool,
+    /// 所属 provider，确认写回后可释放其脏数据预算。
+    ///
     /// Owning provider, so a confirmed write can release its dirty budget.
     provider: WorldChunkProvider,
+    /// 已向 provider 计费的字节数。
+    ///
+    /// Bytes charged to the provider.
     dirty_bytes_charged: usize,
 }
 
+/// 写回超龄报告（观测用）。
+///
+/// Writeback overdue report (for observability).
 #[derive(Default)]
 pub(crate) struct WritebackAgeReport {
+    /// 本次新发现的超龄任务数。
+    ///
+    /// Number of newly overdue jobs.
     pub newly_overdue: usize,
+    /// 超龄任务总数。
+    ///
+    /// Total overdue jobs.
     pub overdue: usize,
+    /// 最老任务的时长。
+    ///
+    /// Age of the oldest job.
     pub oldest_age: Option<Duration>,
+    /// 采样键列表（有界）。
+    ///
+    /// Sampled keys (bounded).
     pub key_samples: Vec<(MinecraftWorldId, ChunkKey)>,
 }
 
+/// 单条失败记录：下次可重试时刻与尝试次数。
+///
+/// One failure record: the next retry time and the attempt count.
 #[derive(Clone, Copy)]
 struct FailureRecord {
+    /// 下次允许重试的时刻。
+    ///
+    /// Instant when a retry is allowed again.
     retry_at: Instant,
+    /// 连续失败次数。
+    ///
+    /// Consecutive failure count.
     attempts: u8,
 }
 
+/// 写回执行器的可变状态。
+///
+/// Mutable state of the writeback executor.
 #[derive(Default)]
 struct WritebackState {
+    /// 在途写回表。
+    ///
+    /// In-flight writeback table.
     in_flight: HashMap<WritebackKey, InFlightWriteback>,
+    /// 在途字节数。
+    ///
+    /// In-flight bytes.
     in_flight_bytes: usize,
+    /// 下一个尝试号。
+    ///
+    /// Next attempt id.
     next_attempt_id: u64,
+    /// 失败退避表。
+    ///
+    /// Failure-backoff table.
     retry: HashMap<WritebackKey, FailureRecord>,
+    /// 失败退避的插入顺序（FIFO 淘汰用）。
+    ///
+    /// Failure-backoff insertion order (for FIFO eviction).
     retry_order: VecDeque<WritebackKey>,
+    /// 每世界的脏列扫描游标。
+    ///
+    /// Per-world dirty-column scan cursor.
     dirty_cursor: HashMap<MinecraftWorldId, ChunkKey>,
+    /// 轮转游标：下一个被服务的世界。
+    ///
+    /// Rotation cursor: the next world to be served.
     world_cursor: Option<MinecraftWorldId>,
 }
 
 impl WritebackState {
+    /// 生成超龄报告：超过 `threshold` 的任务计数、最老时长与
+    /// 新超龄任务的键采样。
+    ///
+    /// Builds the overdue report: counts jobs older than `threshold`, the
+    /// oldest age and a sample of newly overdue keys.
+    ///
+    /// - `now`: 当前时刻
+    /// - `threshold`: 超龄阈值
+    /// - `sample_limit`: 键采样上限
     fn overdue_report(
         &mut self,
         now: Instant,
@@ -118,12 +283,26 @@ impl WritebackState {
         report
     }
 
+    /// 该键当前是否处于重试退避期（未到 `retry_at`）。
+    ///
+    /// Whether the key is currently in retry backoff (before its `retry_at`).
+    ///
+    /// - `key`: 写回键
+    /// - `now`: 当前时刻
     fn retry_blocked(&self, key: &WritebackKey, now: Instant) -> bool {
         self.retry
             .get(key)
             .is_some_and(|record| record.retry_at > now)
     }
 
+    /// 记录一次失败：指数拉长退避（上限 [`MAX_RETRY_DELAY`]），
+    /// 超容时按 FIFO 淘汰最旧键。
+    ///
+    /// Records a failure: grows the backoff exponentially (capped at
+    /// [`MAX_RETRY_DELAY`]) and evicts the oldest key when full.
+    ///
+    /// - `key`: 写回键
+    /// - `now`: 失败发生时刻
     fn record_failure(&mut self, key: WritebackKey, now: Instant) {
         let attempts = if let Some(record) = self.retry.get_mut(&key) {
             record.attempts = record.attempts.saturating_add(1);
@@ -156,6 +335,11 @@ impl WritebackState {
         }
     }
 
+    /// 清除某键的失败记录（成功后的清理）。
+    ///
+    /// Clears a key's failure record (cleanup after success).
+    ///
+    /// - `key`: 写回键
     fn clear_failure(&mut self, key: &WritebackKey) {
         if self.retry.remove(key).is_some() {
             self.retry_order.retain(|entry| entry != key);
@@ -163,35 +347,97 @@ impl WritebackState {
     }
 }
 
+/// 执行器内部状态（worker 与持有者共享）。
+///
+/// Executor internal state (shared by workers and the owner).
 struct WritebackInner {
+    /// 任务发送端（`shutdown` 时取出以断流）。
+    ///
+    /// Job sender (taken at `shutdown` to close the stream).
     jobs: Mutex<Option<mpsc::SyncSender<WritebackJob>>>,
+    /// 确认回执接收端。
+    ///
+    /// Acknowledgement receiver.
     acknowledgements: Mutex<mpsc::Receiver<WritebackAck>>,
+    /// 可变状态。
+    ///
+    /// Mutable state.
     state: Mutex<WritebackState>,
+    /// worker 线程句柄（`shutdown` 时取出并 join）。
+    ///
+    /// Worker thread handles (taken and joined at `shutdown`).
     workers: Mutex<Option<Vec<thread::JoinHandle<()>>>>,
+    /// 最大在途任务数。
+    ///
+    /// Maximum in-flight jobs.
     max_jobs: usize,
+    /// 最大在途字节数。
+    ///
+    /// Maximum in-flight bytes.
     max_bytes: usize,
 }
 
+/// 脏快照调度的非阻塞准入结果。
+///
 /// Non-blocking admission outcomes for dirty snapshot scheduling.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WritebackSubmit {
+    /// 已入队。
+    ///
+    /// Queued.
     Queued,
+    /// 同键任务已在途。
+    ///
+    /// A job for the same key is already in flight.
     AlreadyInFlight,
+    /// 列不脏，无需写回。
+    ///
+    /// The column is clean; no writeback needed.
     Clean,
+    /// 队列/字节预算已满，稍后重试。
+    ///
+    /// The job/byte budget is full; retry later.
     Busy,
+    /// 快照超过总字节预算。
+    ///
+    /// The snapshot exceeds the total byte budget.
     Oversize,
+    /// 处于失败退避期。
+    ///
+    /// In failure backoff.
     Backoff,
+    /// 执行器已关闭。
+    ///
+    /// The executor is closed.
     Closed,
 }
 
+/// 一次 `poll_completed` 的统计报告。
+///
+/// Statistics report of one `poll_completed` call.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct WritebackPollReport {
+    /// 处理完成的 ack 数。
+    ///
+    /// Number of processed acks.
     pub completed: usize,
+    /// 确认保存数。
+    ///
+    /// Number of confirmed saves.
     pub saved: usize,
+    /// 失败数。
+    ///
+    /// Number of failures.
     pub failed: usize,
+    /// 被更新代际取代的数。
+    ///
+    /// Number superseded by a newer generation.
     pub superseded: usize,
 }
 
+/// 存储写回的有界共享 worker 池。已接受的计数/字节许可一直保留到
+/// 所属 tick 消费对应完成事件为止。
+///
 /// Bounded shared worker pool for storage writeback. Accepted count/byte
 /// permits remain reserved until the owning tick consumes each completion.
 #[derive(Resource, Clone)]
@@ -200,6 +446,9 @@ pub struct ChunkWritebackExecutor {
 }
 
 impl ChunkWritebackExecutor {
+    /// 默认 worker 数：并行度的 1/4，钳制在 1..=2。
+    ///
+    /// Default worker count: a quarter of the parallelism, clamped to 1..=2.
     pub fn default_worker_count() -> usize {
         let parallelism = thread::available_parallelism()
             .map(|count| count.get())
@@ -207,23 +456,29 @@ impl ChunkWritebackExecutor {
         (parallelism / 4).clamp(1, 2)
     }
 
+    /// 以 worker 数与默认预算构造执行器。
+    ///
+    /// Builds an executor with the given worker count and default budgets.
+    ///
+    /// - `worker_count`: worker 线程数（钳制在 1..=4）
     pub fn new(worker_count: usize) -> io::Result<Self> {
         Self::with_limits(worker_count, DEFAULT_MAX_JOBS, DEFAULT_MAX_BYTES)
     }
 
+    /// 以显式 worker 数与预算构造执行器。
+    ///
+    /// Builds an executor with explicit worker count and budgets.
+    ///
+    /// - `worker_count`: worker 线程数（钳制在 1..=4）
+    /// - `max_jobs`: 最大在途任务数
+    /// - `max_bytes`: 最大在途字节数
     fn with_limits(worker_count: usize, max_jobs: usize, max_bytes: usize) -> io::Result<Self> {
         let max_jobs = max_jobs.max(1);
         let max_bytes = max_bytes.max(1);
         let worker_count = worker_count.clamp(1, 4);
         let (job_tx, job_rx) = mpsc::sync_channel::<WritebackJob>(max_jobs);
         let job_rx = Arc::new(Mutex::new(job_rx));
-        // Completion-slot reservation invariant (§13.2): the acknowledgement
-        // channel holds exactly as many slots as the executor can accept
-        // outstanding jobs, and a job's byte permit is only released when the
-        // owning tick polls its completion. A worker therefore never blocks on
-        // `ack_tx.send`, so "drain the accepted jobs, then join" is a valid
-        // shutdown order. Changing either capacity invalidates that order.
-        // Completion-slot reservation invariant (§13.2): the acknowledgement
+        // Completion-slot reservation invariant: the acknowledgement
         // channel holds exactly as many slots as the executor can accept
         // outstanding jobs, and a job's byte permit is only released when the
         // owning tick polls its completion. A worker therefore never blocks on
@@ -265,6 +520,25 @@ impl ChunkWritebackExecutor {
         })
     }
 
+    /// 尝试准入一个脏列快照（非阻塞）。
+    ///
+    /// Tries to admit a dirty-column snapshot (non-blocking).
+    ///
+    /// 列不脏返回 [`WritebackSubmit::Clean`]；同键已在途返回
+    /// [`WritebackSubmit::AlreadyInFlight`]；退避期返回
+    /// [`WritebackSubmit::Backoff`]；超预算返回 [`WritebackSubmit::Busy`]
+    /// 或 [`WritebackSubmit::Oversize`]；快照阶段出问题会撤销预留。
+    ///
+    /// Returns [`WritebackSubmit::Clean`] for a clean column,
+    /// [`WritebackSubmit::AlreadyInFlight`] when the same key is in flight,
+    /// [`WritebackSubmit::Backoff`] during backoff, and
+    /// [`WritebackSubmit::Busy`] or [`WritebackSubmit::Oversize`] when over
+    /// budget; snapshot-phase failures cancel the reservation.
+    ///
+    /// - `world_id`: 所属世界 id
+    /// - `provider`: 区块提供器
+    /// - `key`: 区块坐标键
+    /// - `column`: 区块列句柄
     pub fn try_submit(
         &self,
         world_id: MinecraftWorldId,
@@ -294,7 +568,7 @@ impl ChunkWritebackExecutor {
             self.inner.state.lock().record_failure(key, Instant::now());
             return WritebackSubmit::Oversize;
         }
-        // §3.2 dirty budget: charge the snapshot once it is accepted for
+        // Dirty budget: charge the snapshot once it is accepted for
         // persistence. The charge is released again when the SaveAck confirms the
         // write (or when the reservation is cancelled), so the high-water mark
         // tracks *unacknowledged* dirty data only.
@@ -402,6 +676,13 @@ impl ChunkWritebackExecutor {
         }
     }
 
+    /// 撤销一次准入预留：摘除在途记录并释放字节预算。
+    ///
+    /// Cancels an admission reservation: removes the in-flight record and
+    /// releases the byte budget.
+    ///
+    /// - `key`: 写回键
+    /// - `attempt_id`: 尝试号（不匹配说明已被更新的尝试取代）
     fn cancel_reservation(&self, key: &WritebackKey, attempt_id: u64) {
         let mut state = self.inner.state.lock();
         if state
@@ -418,7 +699,22 @@ impl ChunkWritebackExecutor {
         }
     }
 
+    /// 从一个世界的脏列中提交一个有界循环窗口。
+    ///
     /// Submit a bounded cyclic window from one world's dirty columns.
+    ///
+    /// 扫描游标记录上次检查位置，避免每 tick 重复扫同一批脏列。
+    ///
+    /// The scan cursor remembers the last examined position so each tick does
+    /// not rescan the same dirty columns.
+    ///
+    /// - `world_id`: 目标世界 id
+    /// - `provider`: 区块提供器
+    /// - `max_submits`: 本次最多提交数
+    ///
+    /// 返回实际提交数。
+    ///
+    /// Returns the number actually submitted.
     pub fn submit_dirty_window(
         &self,
         world_id: &MinecraftWorldId,
@@ -471,8 +767,18 @@ impl ChunkWritebackExecutor {
         submitted
     }
 
+    /// 轮转首个被服务的世界，使一个大世界的脏集合不会在其它世界
+    /// 被访问前耗尽整 tick 的准入额度。
+    ///
     /// Rotate the first-serviced world so a large world's dirty set cannot
     /// consume every per-tick admission before other worlds are visited.
+    ///
+    /// - `worlds`: `(世界 id, provider)` 列表
+    /// - `max_submits`: 本次最多提交数
+    ///
+    /// 返回实际提交总数。
+    ///
+    /// Returns the total number actually submitted.
     pub fn submit_worlds_round_robin(
         &self,
         worlds: &[(MinecraftWorldId, WorldChunkProvider)],
@@ -501,6 +807,20 @@ impl ChunkWritebackExecutor {
         submitted
     }
 
+    /// 轮询至多 `max_acks` 个完成回执：释放预留、清除脏位并统计结果。
+    ///
+    /// Polls up to `max_acks` completion receipts: releases reservations,
+    /// clears dirty flags and tallies the outcome.
+    ///
+    /// ack 的尝试号与在途记录不匹配（被取代）时跳过；保存成功后按
+    /// 代际/spillover 确认清除脏位，被新代际取代或失败都记退避。
+    ///
+    /// Acks whose attempt id no longer matches the in-flight record (they
+    /// were superseded) are skipped; a confirmed save clears the dirty flags
+    /// by generation/spillover, while superseded or failed writes record
+    /// backoff.
+    ///
+    /// - `max_acks`: 本次最多处理的 ack 数
     pub fn poll_completed(&self, max_acks: usize) -> WritebackPollReport {
         let mut report = WritebackPollReport::default();
         for _ in 0..max_acks {
@@ -561,16 +881,28 @@ impl ChunkWritebackExecutor {
         report
     }
 
+    /// 在途任务数。
+    ///
+    /// Number of in-flight jobs.
     pub fn in_flight_jobs(&self) -> usize {
         self.inner.state.lock().in_flight.len()
     }
 
+    /// 在途字节数。
+    ///
+    /// In-flight bytes.
     pub fn in_flight_bytes(&self) -> usize {
         self.inner.state.lock().in_flight_bytes
     }
 
+    /// 观测超龄的已接受写回，不释放其许可，也不尝试取消可能正在
+    /// 改库的存储调用。
+    ///
     /// Observe old accepted writebacks without releasing their permits or
     /// attempting to cancel storage calls that may already be mutating the DB.
+    ///
+    /// - `threshold`: 超龄阈值
+    /// - `sample_limit`: 键采样上限
     pub(crate) fn overdue_report(
         &self,
         threshold: Duration,
@@ -582,12 +914,20 @@ impl ChunkWritebackExecutor {
             .overdue_report(Instant::now(), threshold, sample_limit)
     }
 
+    /// 停止准入、经 DB 持有者排空已接受的写入并 join。
+    ///
     /// Stop admission, drain accepted writes through the DB owner, and join.
     pub fn shutdown(&self) -> WritebackShutdownReport {
         self.shutdown_with_timeout(Self::DEFAULT_SHUTDOWN_TIMEOUT)
     }
 
-    /// Default bounded shutdown wait.
+    /// 默认有界关闭等待时长（30s）。
+    ///
+    /// Default bounded shutdown wait (30s).
+    ///
+    /// 永久阻塞的存储后端（盘挂死、网络挂起）不能让关闭无限等待且
+    /// 一声不吭。预算到期后报告明确指出哪些写未确认；worker 线程
+    /// 在可能仍在写库时被有意**不**强杀。
     ///
     /// A storage backend that blocks forever (hung disk, stalled network mount)
     /// must not make shutdown wait forever while reporting nothing. After the
@@ -596,11 +936,19 @@ impl ChunkWritebackExecutor {
     /// mutating the database.
     pub const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 
+    /// 带显式等待预算的关闭。
+    ///
     /// Shutdown with an explicit wait budget.
+    ///
+    /// 「ack 槽位数 == 最大可接受任务数」的不变式使排空顺序成立：
+    /// 许可只在其完成事件被轮询时释放，因此 worker 总能把手里的
+    /// 每次已接受写回交还给持有者。
     ///
     /// The invariant "ack slot count == maximum accepted jobs" keeps the drain
     /// order valid: a permit is only released when its completion is polled, so
     /// the workers can always hand every accepted write back to the owner.
+    ///
+    /// - `timeout`: 等待预算
     pub fn shutdown_with_timeout(&self, timeout: Duration) -> WritebackShutdownReport {
         let _ = self.inner.jobs.lock().take();
         let Some(workers) = self.inner.workers.lock().take() else {
@@ -647,26 +995,49 @@ impl ChunkWritebackExecutor {
     }
 }
 
+/// 有界关闭等待能确认什么。
+///
 /// What the bounded shutdown wait could confirm.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct WritebackShutdownReport {
+    /// 已完成并被 join 的 worker 数。
+    ///
     /// Workers that finished and were joined.
     pub joined_workers: usize,
+    /// 等待预算到期时仍有 worker 在运行。
+    ///
     /// The wait budget expired while a worker was still running.
     pub timed_out: bool,
+    /// SaveAck 从未被观测到的已接受写入数。
+    ///
     /// Accepted writes whose SaveAck was never observed.
     pub unconfirmed_jobs: usize,
+    /// 这些写入占用的估计字节数。
+    ///
     /// Estimated bytes retained by those writes.
     pub unconfirmed_bytes: usize,
 }
 
 impl WritebackShutdownReport {
+    /// 是否每次已接受写入都到达了确认的终止状态。
+    ///
     /// Whether every accepted write reached a confirmed terminal state.
     pub fn is_complete(&self) -> bool {
         !self.timed_out && self.unconfirmed_jobs == 0
     }
 }
 
+/// 写回 worker 主循环：取任务、写存储、发回执。
+///
+/// Writeback worker main loop: take a job, write storage, send the receipt.
+///
+/// 存储 panic 被隔离为一条错误回执，worker 继续处理后续任务。
+///
+/// A storage panic is isolated into an error receipt and the worker keeps
+/// processing later jobs.
+///
+/// - `receiver`: 任务接收端（worker 间共享）
+/// - `acknowledgements`: 回执发送端
 fn writeback_worker(
     receiver: Arc<Mutex<mpsc::Receiver<WritebackJob>>>,
     acknowledgements: mpsc::SyncSender<WritebackAck>,
@@ -748,7 +1119,7 @@ mod tests {
                     reserved_bytes: 1,
                     accepted_at: now - Duration::from_secs(20 + x as u64),
                     age_warning_emitted: false,
-                    provider: WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default())),
+                    provider: WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default())),
                     dirty_bytes_charged: 0,
                 },
             );
@@ -801,6 +1172,8 @@ mod tests {
         }
     }
 
+    /// 永不返回的存储后端，模拟永久挂死的磁盘。
+    ///
     /// A storage backend that never returns models a permanently hung disk.
     struct HangingStorage {
         released: Arc<AtomicBool>,
@@ -861,6 +1234,8 @@ mod tests {
         column
     }
 
+    /// 记录被要求执行多少次保存的存储后端。
+    ///
     /// A storage backend that records how many saves it was asked to perform.
     #[derive(Default)]
     struct CountingStorage {
@@ -908,12 +1283,15 @@ mod tests {
         }
     }
 
+    /// 完成槽位在准入时即预留：受理最大数量的作业绝不能让任何 worker
+    /// 阻塞在确认通道上，因此"先 join、再 drain"的关机顺序始终成立。
+    ///
     /// Completion slots are reserved at admission: accepting the maximum number
     /// of jobs must not block any worker on the acknowledgement channel, so the
-    /// shutdown order "join, then drain" stays valid (§13.2 / §16.3).
+    /// shutdown order "join, then drain" stays valid.
     #[test]
     fn confirmed_writes_release_the_dirty_budget_and_cancellations_too() {
-        let provider = WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default()));
+        let provider = WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default()));
         let executor = ChunkWritebackExecutor::with_limits(1, 4, 8 * 1024 * 1024)
             .expect("create writeback executor");
 
@@ -951,7 +1329,7 @@ mod tests {
     fn accepted_jobs_never_block_workers_on_completion_slots() {
         const MAX_JOBS: usize = 4;
         let saves = Arc::new(AtomicUsize::new(0));
-        let provider = WorldChunkProvider::new(Arc::new(CountingStorage {
+        let provider = WorldChunkProvider::new_testing(Arc::new(CountingStorage {
             saves: Arc::clone(&saves),
         }));
         let executor = ChunkWritebackExecutor::with_limits(2, MAX_JOBS, 64 * 1024 * 1024)
@@ -1008,7 +1386,7 @@ mod tests {
     #[test]
     fn bounded_shutdown_reports_unconfirmed_writes_instead_of_hanging_forever() {
         let released = Arc::new(AtomicBool::new(false));
-        let provider = WorldChunkProvider::new(Arc::new(HangingStorage {
+        let provider = WorldChunkProvider::new_testing(Arc::new(HangingStorage {
             released: Arc::clone(&released),
         }));
         let key = ChunkKey::new(0, ChunkPosition::new(5, 5));
@@ -1047,7 +1425,7 @@ mod tests {
 
     #[test]
     fn bounded_shutdown_reports_complete_when_workers_drain() {
-        let provider = WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default()));
+        let provider = WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default()));
         let key = ChunkKey::new(0, ChunkPosition::new(6, 6));
         let column = dirty_column(&provider, key);
         let executor = ChunkWritebackExecutor::with_limits(1, 4, 8 * 1024 * 1024)
@@ -1074,7 +1452,7 @@ mod tests {
         let storage = Arc::new(MetadataTrackingStorage {
             saved: Mutex::new(Vec::new()),
         });
-        let provider = WorldChunkProvider::new(storage.clone());
+        let provider = WorldChunkProvider::new_testing(storage.clone());
         let subchunk_key = ChunkKey::new(0, ChunkPosition::new(20, 2));
         let metadata_key = ChunkKey::new(0, ChunkPosition::new(21, 2));
         let biome_key = ChunkKey::new(0, ChunkPosition::new(22, 2));
@@ -1132,7 +1510,7 @@ mod tests {
 
     #[test]
     fn oversized_nested_nbt_snapshot_is_rejected_before_clone_and_stays_dirty() {
-        let provider = WorldChunkProvider::new(Arc::new(InMemoryWorldStorage::default()));
+        let provider = WorldChunkProvider::new_testing(Arc::new(InMemoryWorldStorage::default()));
         let key = ChunkKey::new(0, ChunkPosition::new(23, 5));
         let column = provider.ensure_chunk(key, -64, 319).expect("ensure column");
         let base_bytes = column.writeback_snapshot_estimated_bytes();
@@ -1172,7 +1550,7 @@ mod tests {
     #[test]
     fn async_writeback_saves_snapshot_and_owner_poll_clears_dirty() {
         let storage = Arc::new(InMemoryWorldStorage::default());
-        let provider = WorldChunkProvider::new(storage.clone());
+        let provider = WorldChunkProvider::new_testing(storage.clone());
         let key = ChunkKey::new(0, ChunkPosition::new(2, 3));
         let column = provider.ensure_chunk(key, -64, 319).expect("ensure column");
         {
@@ -1246,7 +1624,7 @@ mod tests {
         let storage = Arc::new(OwnedOnlyStorage {
             saved: Mutex::new(Vec::new()),
         });
-        let provider = WorldChunkProvider::new(storage.clone());
+        let provider = WorldChunkProvider::new_testing(storage.clone());
         let key = ChunkKey::new(0, ChunkPosition::new(6, 7));
         let column = provider.ensure_chunk(key, -64, 319).expect("ensure column");
         column.mark_dirty(-4);
@@ -1305,7 +1683,7 @@ mod tests {
             started: started_tx,
             release: Mutex::new(release_rx),
         });
-        let provider = WorldChunkProvider::new(storage);
+        let provider = WorldChunkProvider::new_testing(storage);
         let first_key = ChunkKey::new(0, ChunkPosition::new(4, 4));
         let second_key = ChunkKey::new(0, ChunkPosition::new(5, 4));
         let first = provider.ensure_chunk(first_key, -64, 319).expect("first");
@@ -1385,7 +1763,7 @@ mod tests {
             started: started_tx,
             release: Mutex::new(release_rx),
         });
-        let provider = WorldChunkProvider::new(storage);
+        let provider = WorldChunkProvider::new_testing(storage);
         let key = ChunkKey::new(0, ChunkPosition::new(8, 9));
         let column = provider.ensure_chunk(key, -64, 319).expect("ensure column");
         column.mark_dirty(-4);

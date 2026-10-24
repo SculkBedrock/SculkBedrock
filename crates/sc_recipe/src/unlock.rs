@@ -1,3 +1,10 @@
+//! 配方解锁：世界 `recipesUnlock` 规则、配方书状态与指纹迁移。
+//!
+//! 世界规则关闭解锁时，客户端直接请求不能强制执行未解锁的配方。最小的持久化
+//! 模型是 [`PlayerRecipeBook`]（已解锁标识符 + 注册表指纹）。
+//! 保存范围：配方书与玩家数据并存，并按注册表指纹做版本校验；调用方通过既有的
+//! 玩家存档路径持久化它（不允许绕过该路径）。
+//!
 //! Recipe unlock: world `recipesUnlock` rule, recipe-book state and
 //! fingerprint migration.
 //!
@@ -14,6 +21,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::registry::RecipeRegistryFingerprint;
 
+/// 由 `recipesUnlock` 游戏规则导出的世界级解锁策略。
+///
 /// World-level unlock policy derived from the `recipesUnlock` game rule.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UnlockPolicy {
@@ -22,6 +31,8 @@ pub struct UnlockPolicy {
 }
 
 impl UnlockPolicy {
+    /// 规则开启时，每个已编译配方都无需
+    ///
     /// When the rule is on, every compiled recipe is usable without an
     /// explicit unlock entry (vanilla default for most worlds).
     pub fn all_available(&self) -> bool {
@@ -46,6 +57,12 @@ impl UnlockPolicy {
     }
 }
 
+/// 最小化的玩家配方书状态。
+///
+/// `registry` 记录该配方书最后一次对齐的注册表指纹；不一致时由
+/// [`PlayerRecipeBook::migrate`] 处理：保留仍然存在的已解锁项，丢弃已被移除的
+/// 项，并把丢弃列表回报给调用方，便于游戏层重新同步客户端。
+///
 /// Minimal player recipe-book state.
 ///
 /// `registry` records the fingerprint the book was last reconciled with;
@@ -67,6 +84,8 @@ impl PlayerRecipeBook {
         self.unlocked.insert(recipe_id.into());
     }
 
+    /// 在注册表指纹变化后进行对齐。返回被
+    ///
     /// Reconcile after a registry fingerprint change. Returns the list of
     /// dropped (removed-recipe) identifiers.
     pub fn migrate(

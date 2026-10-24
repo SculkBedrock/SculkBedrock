@@ -1,11 +1,13 @@
-//! `BytePools`: byte-slice pool that reuses slices to avoid repeated allocation.
+//! 字节切片池：复用切片以减少重复分配。
 //!
-//! Returned slices are reused immediately; do not share across threads (adds lock contention).
+//! 归还的切片会立即被复用；不要在多个线程间共享（会增加锁竞争）。
+//!
+//! Byte-slice pool that reuses slices to avoid repeated allocation.
+//!
+//! Returned slices are reused immediately; do not share across threads (adds
+//! lock contention).
 
-/// Byte pools a specialized structure that allows you to reuse byte slices
-/// instead of allocating new ones.
+/// 复用字节切片以避免重复分配。
 ///
-/// When an byteslice is returned to the pool, it is immediately reused.
-/// Do not use this if you are using a `BinaryStream` in multiple threads.
-/// This will cause latency issues.
+/// Byte-slice pool that reuses slices instead of allocating new ones.
 pub struct BytePool {}

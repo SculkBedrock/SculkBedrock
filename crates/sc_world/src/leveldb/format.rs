@@ -17,6 +17,7 @@ use crate::chunk::{
     packed_word_count, palette_bits, read_packed_word, BlockRuntimeId, PalettedBiomeStorage,
     PalettedBlockStorage, SubChunk, SubChunkIndex, SUBCHUNK_VOLUME,
 };
+use crate::generation::{GeneratorDescriptor, PersistedGenerationRecord};
 use crate::storage::{BlockSpilloverWrite, SpilloverOperationId};
 use crate::storage::{ChunkKey, WorldStorageError};
 
@@ -120,8 +121,77 @@ pub fn decode_spillover_journal_value(
     })
 }
 
+/// 已存储 GeneratorDescriptor 的私有、带版本的命名空间。
+///
+/// Private, versioned namespace for stored GeneratorDescriptor.
+pub const GENERATOR_DESCRIPTOR_NAMESPACE: &[u8] = b"SCGD";
+pub const GENERATOR_DESCRIPTOR_VERSION: u8 = 1;
+
+pub fn generator_descriptor_key(dimension: i32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(9);
+    out.extend_from_slice(GENERATOR_DESCRIPTOR_NAMESPACE);
+    out.push(GENERATOR_DESCRIPTOR_VERSION);
+    out.extend_from_slice(&dimension.to_le_bytes());
+    out
+}
+
+pub fn encode_generator_descriptor(
+    descriptor: &GeneratorDescriptor,
+) -> Result<Vec<u8>, WorldStorageError> {
+    serde_json::to_vec(descriptor).map_err(|error| {
+        WorldStorageError::corrupt(format!("encode generator descriptor: {error}"))
+    })
+}
+
+pub fn decode_generator_descriptor(
+    bytes: &[u8],
+) -> Result<GeneratorDescriptor, WorldStorageError> {
+    serde_json::from_slice(bytes).map_err(|error| {
+        WorldStorageError::corrupt(format!("decode generator descriptor: {error}"))
+    })
+}
+
+/// 已受理区块生成完成记录的私有、带版本命名空间。
+///
+/// Private, versioned namespace for accepted chunk generation completion records.
+pub const CHUNK_READY_RECORD_NAMESPACE: &[u8] = b"SCRD";
+pub const CHUNK_READY_RECORD_VERSION: u8 = 1;
+
+pub fn chunk_ready_record_key(key: ChunkKey) -> Vec<u8> {
+    let mut out = Vec::with_capacity(17);
+    out.extend_from_slice(CHUNK_READY_RECORD_NAMESPACE);
+    out.push(CHUNK_READY_RECORD_VERSION);
+    out.extend_from_slice(&key.dimension.to_le_bytes());
+    out.extend_from_slice(&key.position.x.to_le_bytes());
+    out.extend_from_slice(&key.position.z.to_le_bytes());
+    out
+}
+
+pub fn encode_persisted_generation_record(
+    record: &PersistedGenerationRecord,
+) -> Result<Vec<u8>, WorldStorageError> {
+    serde_json::to_vec(record).map_err(|error| {
+        WorldStorageError::corrupt(format!("encode generation record: {error}"))
+    })
+}
+
+pub fn decode_persisted_generation_record(
+    bytes: &[u8],
+) -> Result<PersistedGenerationRecord, WorldStorageError> {
+    serde_json::from_slice(bytes).map_err(|error| {
+        WorldStorageError::corrupt(format!("decode generation record: {error}"))
+    })
+}
+
+/// 构造区块级记录的 LevelDB 键：
+/// `x:i32 LE, z:i32 LE, [非主世界时 dimension:i32 LE], tag, [子区块 y:i8]`。
+///
 /// Builds a LevelDB key for a chunk-scoped record:
 /// `x:i32 LE, z:i32 LE, [dimension:i32 LE when not overworld], tag, [subchunk y:i8]`.
+///
+/// - `key`: 区块键
+/// - `tag`: 记录 tag 字节
+/// - `subchunk_y`: 子区块 y 索引（如有）
 pub fn chunk_record_key(key: ChunkKey, tag: u8, subchunk_y: Option<i8>) -> Vec<u8> {
     let mut out = Vec::with_capacity(14);
     out.extend_from_slice(&key.position.x.to_le_bytes());
@@ -153,9 +223,16 @@ fn read_error(context: &str, error: std::io::Error) -> WorldStorageError {
     corrupt(format!("{context}: {error}"))
 }
 
+/// 读取盘上打包字（4096 个调色板索引按 `bits` 位宽打包进 u32 LE 字）。
+/// 字布局与内存规范形式一致；仅当条目 ≤2 时盘上用 1 位而规范用 2 位，
+/// 由 [`PalettedBlockStorage::from_packed`] 重新打包。
+///
 /// Read on-disk packed words (4096 palette indices packed `bits` wide into u32 LE words).
 /// Word layout matches the in-memory canonical form; only at 2 or fewer entries does disk use 1 bit
 /// while canonical uses 2 bits, repacked by [`PalettedBlockStorage::from_packed`].
+///
+/// - `reader`: 字节读取器
+/// - `bits`: 打包位宽
 fn read_packed_words(reader: &mut ByteReader, bits: u8) -> Result<Vec<u32>, WorldStorageError> {
     if !matches!(bits, 1 | 2 | 3 | 4 | 5 | 6 | 8 | 16) {
         return Err(corrupt(format!(
@@ -174,6 +251,8 @@ fn read_packed_words(reader: &mut ByteReader, bits: u8) -> Result<Vec<u32>, Worl
     Ok(words)
 }
 
+/// 校验所有打包索引都在调色板范围内。
+///
 /// Check that every packed index is inside the palette range.
 fn packed_indices_in_range(words: &[u32], bits: u8, palette_len: usize) -> bool {
     if words.len() != packed_word_count(bits) {
@@ -184,6 +263,10 @@ fn packed_indices_in_range(words: &[u32], bits: u8, palette_len: usize) -> bool 
     })
 }
 
+/// 读取一个持久化 block storage：header、打包索引、随后小端 NBT 调色板。
+/// 调色板条目哈希为网络 runtime id；`version` 字段与未知字段不影响哈希，
+/// 被无错误地忽略。
+///
 /// Reads one persistent block storage: header, packed indices, then a
 /// little-endian NBT palette. Palette entries are hashed into network
 /// runtime ids; the `version` field and unknown fields do not affect the
@@ -259,8 +342,14 @@ fn read_palette_entry(reader: &mut ByteReader) -> Result<BlockRuntimeId, WorldSt
 // Subchunks
 // ---------------------------------------------------------------------------
 
+/// 解析一个 `SubChunkPrefix` 值。`key_y` 是取自 LevelDB 键的子区块索引；
+/// 格式版本 9 内嵌自身索引并优先。
+///
 /// Parses one `SubChunkPrefix` value. `key_y` is the subchunk index taken
 /// from the LevelDB key; format version 9 embeds its own index and wins.
+///
+/// - `bytes`: 盘上值字节
+/// - `key_y`: 键中的子区块索引
 pub fn parse_subchunk(bytes: &[u8], key_y: i8) -> Result<SubChunk, WorldStorageError> {
     let mut reader = ByteReader::from(bytes.to_vec());
     let version = reader
@@ -358,9 +447,16 @@ fn read_biome_storage(
     Ok(PalettedBiomeStorage::from_packed(palette, words, bits))
 }
 
+/// 解析 `Data3D` 值：512 字节高度图后接每个子区块 section 一个生物群系
+/// storage（含 0xFF「与上一个相同」标记）。结果归一化为恰好
+/// `section_count` 项。
+///
 /// Parses a `Data3D` value: a 512-byte heightmap followed by one biome
 /// storage per subchunk section (with 0xFF "copy previous" markers).
 /// The result is normalized to exactly `section_count` entries.
+///
+/// - `bytes`: 盘上值字节
+/// - `section_count`: 期望的 section 数
 pub fn parse_data_3d(
     bytes: &[u8],
     section_count: usize,
@@ -382,8 +478,14 @@ pub fn parse_data_3d(
     Ok(sections)
 }
 
+/// 将旧版 `Data2D` 值（512 字节高度图 + 256 列生物群系字节）按列垂直
+/// 复制，解析为逐 section 的 3D storage。
+///
 /// Parses the legacy `Data2D` value (512-byte heightmap + 256 column biome
 /// bytes) into per-section 3D storages by replicating each column vertically.
+///
+/// - `bytes`: 盘上值字节
+/// - `section_count`: 期望的 section 数
 pub fn parse_data_2d(
     bytes: &[u8],
     section_count: usize,
@@ -445,8 +547,15 @@ fn normalize_sections(sections: &mut Vec<PalettedBiomeStorage>, section_count: u
     }
 }
 
+/// 编码完整的持久化 Data3D 记录。高度图字节由调用方原样提供，
+/// 以精确保留既有 Bedrock 值。
+///
 /// Encode a complete persistent Data3D record. Heightmap bytes are supplied
 /// opaquely by the caller so existing Bedrock values can be preserved exactly.
+///
+/// - `heightmap`: 512 字节高度图
+/// - `sections`: 各 section 的生物群系 storage
+/// - `section_count`: 期望的 section 数
 pub fn encode_data_3d(
     heightmap: &[u8; 512],
     sections: &[PalettedBiomeStorage],
@@ -540,7 +649,11 @@ fn write_biome_storage(
 // Block entities
 // ---------------------------------------------------------------------------
 
+/// 解析 `BlockEntity` 值：连续排列的小端 NBT compound。
+///
 /// Parses a `BlockEntity` value: little-endian NBT compounds back to back.
+///
+/// - `bytes`: 盘上值字节
 pub fn parse_block_entities(bytes: &[u8]) -> Result<Vec<NbtValue>, WorldStorageError> {
     let mut reader = ByteReader::from(bytes.to_vec());
     let mut entities = Vec::new();
@@ -557,7 +670,11 @@ pub fn parse_block_entities(bytes: &[u8]) -> Result<Vec<NbtValue>, WorldStorageE
 // Write side: persistent subchunk encoding.
 // ---------------------------------------------------------------------------
 
+/// 持久化调色板位宽（读取侧支持集合；超过 16 位不支持，返回 None）。
+///
 /// Persistent palette bit width (read-side supported set; widths above 16 bits are unsupported, returns None).
+///
+/// - `palette_len`: 调色板条目数
 fn persistent_bits(palette_len: usize) -> Option<u8> {
     let mut bits = 1u8;
     while (1usize << bits) < palette_len && bits < 16 {
@@ -571,7 +688,12 @@ fn persistent_bits(palette_len: usize) -> Option<u8> {
     }
 }
 
+/// 打包字写出为 u32 LE 字节流（盘上位宽与规范位宽一致时直接拷贝）。
+///
 /// Packed words to u32 LE byte stream (direct copy when disk and canonical widths agree).
+///
+/// - `words`: 打包字
+/// - `writer`: 字节写入器
 fn write_packed_words(words: &[u32], writer: &mut ByteWriter) -> Result<(), WorldStorageError> {
     for word in words {
         writer
@@ -581,8 +703,14 @@ fn write_packed_words(words: &[u32], writer: &mut ByteWriter) -> Result<(), Worl
     Ok(())
 }
 
+/// 写入一个调色板条目 NBT：{name, states, version:0}。读取侧对
+/// name+states 做哈希（与网络同一 FNV 算法），version 不参与哈希。
+///
 /// Write one palette-entry NBT: {name, states, version:0} (read side hashes name+states,
 /// same FNV algorithm as the network; version is excluded from the hash).
+///
+/// - `writer`: 字节写入器
+/// - `entry`: 方块状态条目
 fn write_palette_entry(
     writer: &mut ByteWriter,
     entry: &BlockStateEntry,
@@ -598,7 +726,12 @@ fn write_palette_entry(
         .map_err(|error| read_error("palette entry NBT", error))
 }
 
+/// 持久化 block storage（与 read_block_storage 互为镜像）。
+///
 /// Persistent block storage (mirror of read_block_storage).
+///
+/// - `storage`: 调色板方块存储
+/// - `writer`: 字节写入器
 fn encode_block_storage_persistent(
     storage: &PalettedBlockStorage,
     writer: &mut ByteWriter,
@@ -661,7 +794,11 @@ fn encode_block_storage_persistent(
     }
 }
 
+/// 持久化子区块（v8：version 8 + layer_count + layers；索引来自 key_y）。
+///
 /// Persistent subchunk (v8: version 8 + layer_count + layers; index comes from key_y).
+///
+/// - `subchunk`: 待编码子区块
 pub fn encode_subchunk_persistent(subchunk: &SubChunk) -> Result<Vec<u8>, WorldStorageError> {
     let mut writer = ByteWriter::new();
     writer
@@ -697,7 +834,11 @@ mod tests {
         out
     }
 
+    /// 名字到 FNV1a 状态哈希（无 states）。
+    ///
     /// name to FNV1a state hash (no states).
+    ///
+    /// - `name`: 方块状态名
     fn palette_hash(name: &str) -> u32 {
         block_state_hash(name, None)
     }

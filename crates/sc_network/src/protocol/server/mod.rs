@@ -1,3 +1,6 @@
+//! 服务端发往客户端的协议包定义（Play 阶段）。
+//!
+//! Server-to-client protocol packet definitions (play phase).
 pub mod block;
 pub mod chunk;
 pub mod command;
